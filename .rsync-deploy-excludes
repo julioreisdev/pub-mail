@@ -1,0 +1,21 @@
+# Lista de exclusões para rsync de deploy.
+# Uso: rsync -azc --exclude-from=.rsync-deploy-excludes ./ root@VPS:/opt/pub-mail/
+#
+# Inclui .env de produção que NÃO deve ser sobrescrito pelos .env locais.
+
+node_modules
+.git
+dist
+back/uploads
+back/generated
+front/vite/dist
+*.log
+.DS_Store
+
+# .env de produção fica APENAS no servidor (chmod 600)
+.env
+
+# Settings/configs locais
+.vscode
+.idea
+*.swp

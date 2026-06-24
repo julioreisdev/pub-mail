@@ -1,0 +1,814 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model billing_cards {
+  id               String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String        @db.Char(36)
+  provider_token   String        @db.VarChar(255)
+  last_four_digits String?       @db.VarChar(4)
+  brand            String?       @db.VarChar(50)
+  holder_name      String        @db.VarChar(255)
+  is_default       Boolean
+  organizations    organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_billing_cards_organization_id")
+
+  @@index([organization_id], map: "idx_cards_org")
+}
+
+model organizations {
+  id                                  String                                @id @default(uuid()) @db.Char(36)
+  name                                String                                @db.VarChar(255)
+  document_id                         String?                               @unique(map: "document_id") @db.VarChar(20)
+  status                              Boolean                               @default(true)
+  stripe_customer_id                  String?                               @db.VarChar(255)
+  created_at                          DateTime                              @default(now()) @db.DateTime(0)
+  updated_at                          DateTime                              @updatedAt @db.DateTime(0)
+  
+  agentes_ia                          agentes_ia[]
+  billing_cards                       billing_cards[]
+  email_leads                         email_leads[]
+  email_projects                      email_projects[]
+  organization_domains                organization_domains[]
+  users                               users[]
+  wallets                             wallets[]
+  webchat_domains                     webchat_domains[]
+  webchat_ads                         webchat_ads[]
+  webchat_ad_events                   webchat_ad_events[]
+  webchat_leads                       webchat_leads[]
+  webchat_sessions                    webchat_sessions[]
+  webchats                            webchats[]
+  webchat_splits                      webchat_splits[]
+  quizzes                             quizzes[]
+  quiz_splits                         quiz_splits[]
+  quiz_leads                          quiz_leads[]
+  quiz_ads                            quiz_ads[]
+  posts                               posts[]
+  social_accounts                     social_accounts[]
+  social_app_credentials              organization_social_app_credentials[]
+  social_post_schedules               social_post_schedules[]
+  social_post_schedule_runs           social_post_schedule_runs[]
+  
+  // Novas relações do Módulo de Avatares
+  avatars                             avatars[]
+  avatar_generations                  avatar_generations[]
+}
+
+model transactions {
+  id                      String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  wallet_id               String   @db.Char(36)
+  amount                  Decimal  @db.Decimal(15, 4)
+  type                    String   @db.VarChar(50)
+  description             String   @db.VarChar(255)
+  provider_transaction_id String?  @db.VarChar(255)
+  created_at              DateTime @default(dbgenerated("(now())")) @db.DateTime(0)
+  wallets                 wallets  @relation(fields: [wallet_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_transactions_wallet_id")
+
+  @@index([wallet_id, created_at], map: "idx_tx_wallet_created")
+}
+
+model users {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  name            String        @db.VarChar(255)
+  email           String        @unique(map: "email") @db.VarChar(255)
+  password_hash   String        @db.VarChar(255)
+  role            users_role    @default(OWNER)
+  refresh_token   String?       @db.VarChar(512)
+  active          Boolean       @default(dbgenerated("(true)"))
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_organization_id")
+
+  @@index([organization_id], map: "idx_users_org")
+}
+
+model wallets {
+  id              String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String         @db.Char(36)
+  balance         Decimal        @default(0.0000) @db.Decimal(15, 4)
+  status          wallets_status @default(ACTIVE)
+  transactions    transactions[]
+  organizations   organizations  @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_wallets_organization_id")
+
+  @@unique([id, organization_id], map: "uk_wallet_org")
+  @@index([organization_id], map: "idx_wallets_org")
+}
+
+model email_projects {
+  id              String                     @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                     @db.Char(36)
+  name            String                     @db.VarChar(255)
+  settings        Json?
+  created_at      DateTime                   @default(now()) @db.DateTime(0)
+  active          Boolean                    @default(true)
+  project_leads   email_project_leads[]
+  organizations   organizations              @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_email_projects_organization_id")
+  schedules       email_projects_schedules[]
+  templates       email_templates[]
+  webchats        webchats[]
+  quizzes         quizzes[]
+
+  @@index([organization_id], map: "idx_email_projects_org")
+}
+
+model email_templates {
+  id         String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  project_id String         @db.Char(36)
+  name       String         @db.VarChar(255)
+  subject    String         @db.VarChar(255)
+  body_html  String?        @db.LongText
+  body_text  String?        @db.LongText
+  projects   email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_templates_project_id")
+
+  @@index([project_id], map: "idx_email_templates_project")
+}
+
+model email_leads {
+  id              String                    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                    @db.Char(36)
+  email           String                    @db.VarChar(255)
+  name            String?                   @db.VarChar(255)
+  attributes      Json?
+  global_status   email_leads_global_status @default(ACTIVE)
+  organizations   organizations             @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_email_leads_organization_id")
+  project_links   email_project_leads[]
+
+  @@unique([organization_id, email], map: "uk_email_leads_org_email")
+  @@index([organization_id], map: "idx_email_leads_org")
+}
+
+model email_project_leads {
+  project_id String                     @db.Char(36)
+  lead_id    String                     @db.Char(36)
+  status     email_project_leads_status @default(SUBSCRIBED)
+  created_at DateTime                   @default(now()) @db.DateTime(0)
+  updated_at DateTime                   @updatedAt @db.DateTime(0)
+  leads      email_leads                @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_project_leads_lead_id")
+  projects   email_projects             @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_project_leads_project_id")
+
+  metrics    Json?                      @default("{}")
+
+  @@id([project_id, lead_id])
+  @@index([lead_id], map: "idx_email_project_leads_lead")
+  @@index([project_id, status], map: "idx_email_project_leads_project_status")
+}
+
+model email_projects_schedules {
+  id         String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  project_id String         @db.Char(36)
+  daily      Boolean        @default(false)
+  date       DateTime?      @db.DateTime(0)
+  time       Int?           @db.SmallInt
+  for_x_days Int?           @db.SmallInt
+  last_run   DateTime?      @db.DateTime(0)
+
+  created_at DateTime       @default(now()) @db.DateTime(0)
+  updated_at DateTime       @updatedAt @db.DateTime(0)
+  projects   email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_projects_schedules_project_id")
+
+  sents      email_projects_schedules_sent[]
+
+  @@index([project_id], map: "idx_email_projects_schedules_project")
+  @@index([daily, date], map: "idx_email_projects_schedules_daily_date")
+  @@index([daily, time], map: "idx_email_projects_schedules_daily_time")
+  @@index([for_x_days, last_run], map: "idx_email_projects_schedules_interval")
+}
+
+model email_projects_schedules_sent {
+  id              String @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String @db.Char(36)
+  project_id      String @db.Char(36)
+  schedule_id     String? @db.Char(36)
+
+  open_count      Int @default(0)
+  click_cta_count Int @default(0)
+
+  schedule        email_projects_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull)
+
+  schedule_time   Int?
+  schedule_date   DateTime?
+  schedule_daily  Boolean
+
+  run_at          DateTime @db.DateTime(0)
+  sent            Boolean  @default(false)
+  status          schedule_sent_status @default(PROCESSING)
+
+  subject         String?  @db.VarChar(255)
+  body_html       String?  @db.LongText
+  body_text       String?  @db.LongText
+
+  total_leads     Int      @default(0)
+  sent_for_leads  Int      @default(0)
+  
+  error_message   String?  @db.VarChar(255)
+
+  created_at       DateTime @default(now()) @db.DateTime(0)
+  tokens_unit_cost Int      @default(0)
+  tokens_cost      Int      @default(0)
+
+  opens           email_schedules_sent_opens[]
+
+  @@unique([project_id, schedule_id, run_at], map: "uk_project_schedule_run_at")
+  @@index([organization_id, project_id, run_at], map: "idx_sent_org_project_runat")
+  @@index([organization_id, sent], map: "idx_sent_org_sent")
+}
+
+model email_schedules_sent_opens {
+  id               String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  schedule_sent_id String   @db.Char(36)
+  email            String   @db.VarChar(255)
+  created_at       DateTime @default(now()) @db.DateTime(0)
+
+  sent_campaign    email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
+
+  @@unique([schedule_sent_id, email], map: "uk_schedule_sent_email_open")
+  @@index([schedule_sent_id], map: "idx_opens_schedule_sent")
+}
+
+model organization_domains {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  domain          String        @db.VarChar(255)
+  status          domain_status @default(PENDING)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+
+  provider_id     String?       @db.VarChar(255)
+  dns_records     Json?
+
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_org_domains_org_id")
+
+  @@unique([organization_id, domain], map: "uk_org_domains_org_domain")
+  @@index([organization_id, status], map: "idx_org_domains_org_status")
+}
+
+model agentes_ia {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  name            String        @db.VarChar(255)
+  description     String?       @db.VarChar(500)
+  ia_config       Json
+  active          Boolean       @default(true)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_agentes_ia_organization_id")
+  webchats        webchats[]
+
+  @@index([organization_id], map: "idx_agentes_ia_org")
+}
+
+model webchats {
+  id                String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String              @db.Char(36)
+  agent_id          String              @db.Char(36)
+  name              String              @db.VarChar(255)
+  slug              String              @db.VarChar(160)
+  domain            String              @db.VarChar(255)
+  email_project_id  String?             @db.Char(36)
+  active            Boolean             @default(true)
+  settings          Json?
+  header_scripts    String?             @db.Text
+  footer_scripts    String?             @db.Text
+  ads_config        Json?
+  split_id          String?             @db.Char(36)
+  split_weight      Int                 @default(100)
+  created_at        DateTime            @default(now()) @db.DateTime(0)
+  updated_at        DateTime            @updatedAt @db.DateTime(0)
+  agentes_ia        agentes_ia          @relation(fields: [agent_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchats_agent_id")
+  email_projects    email_projects?     @relation(fields: [email_project_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_webchats_email_project_id")
+  organizations     organizations       @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchats_organization_id")
+  webchat_splits    webchat_splits?     @relation(fields: [split_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_webchats_split_id")
+  webchat_ads       webchat_ads[]
+  webchat_ad_events webchat_ad_events[]
+  webchat_leads     webchat_leads[]
+  webchat_sessions  webchat_sessions[]
+
+  @@unique([domain, slug], map: "uk_webchats_domain_slug")
+  @@index([split_id], map: "idx_webchats_split")
+  @@index([agent_id], map: "idx_webchats_agent")
+  @@index([email_project_id], map: "idx_webchats_email_project")
+  @@index([organization_id, created_at], map: "idx_webchats_org_created_at")
+  @@index([organization_id], map: "idx_webchats_org")
+}
+
+model webchat_splits {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  name            String        @db.VarChar(255)
+  slug            String        @unique(map: "uk_webchat_splits_slug") @db.VarChar(255)
+  is_default      Boolean       @default(false)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_splits_organization_id")
+  webchats        webchats[]
+
+  @@index([organization_id], map: "idx_webchat_splits_org")
+}
+
+model quizzes {
+  id               String          @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String          @db.Char(36)
+  name             String          @db.VarChar(255)
+  slug             String          @db.VarChar(160)
+  domain           String          @db.VarChar(255)
+  email_project_id String?         @db.Char(36)
+  active           Boolean         @default(true)
+  settings           Json?
+  header_scripts     String?       @db.Text
+  footer_scripts     String?       @db.Text
+  lead_email_html    String?       @db.LongText
+  lead_email_subject String?       @db.VarChar(255)
+  split_id         String?         @db.Char(36)
+  split_weight     Int             @default(100)
+  created_at       DateTime        @default(now()) @db.DateTime(0)
+  updated_at       DateTime        @updatedAt @db.DateTime(0)
+  email_projects   email_projects? @relation(fields: [email_project_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_email_project_id")
+  organizations    organizations   @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_quizzes_organization_id")
+  quiz_splits      quiz_splits?    @relation(fields: [split_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_split_id")
+  quiz_leads       quiz_leads[]
+  quiz_ads         quiz_ads[]
+
+  @@unique([domain, slug], map: "uk_quizzes_domain_slug")
+  @@index([organization_id], map: "idx_quizzes_org")
+  @@index([email_project_id], map: "idx_quizzes_email_project")
+  @@index([split_id], map: "idx_quizzes_split")
+}
+
+model quiz_splits {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  name            String        @db.VarChar(255)
+  slug            String        @unique(map: "uk_quiz_splits_slug") @db.VarChar(255)
+  is_default      Boolean       @default(false)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_quiz_splits_organization_id")
+  quizzes         quizzes[]
+
+  @@index([organization_id], map: "idx_quiz_splits_org")
+}
+
+model quiz_leads {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  quiz_id         String        @db.Char(36)
+  email           String?       @db.VarChar(255)
+  name            String?       @db.VarChar(255)
+  phone           String?       @db.VarChar(30)
+  source          String?       @db.VarChar(100)
+  context         Json?
+  custom_fields   Json?
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_quiz_leads_organization_id")
+  quizzes         quizzes       @relation(fields: [quiz_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_quiz_leads_quiz_id")
+
+  @@unique([quiz_id, email], map: "uk_quiz_leads_quiz_email")
+  @@index([organization_id, quiz_id], map: "idx_quiz_leads_org_quiz")
+  @@index([organization_id, email], map: "idx_quiz_leads_org_email")
+}
+
+model quiz_ads {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  quiz_id         String        @db.Char(36)
+  position        String        @db.VarChar(40)
+  codigo_tag      String        @db.Text
+  gpt_sizes       String?       @db.VarChar(255)
+  gpt_slot        String?       @db.VarChar(255)
+  gpt_div_id      String?       @db.VarChar(255)
+  anuncio_fixed   String?       @db.Text
+  rotulo          String?       @db.VarChar(100)
+  rotulo_ativo    Boolean       @default(true)
+  ativo           Boolean       @default(true)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_quiz_ads_organization_id")
+  quizzes         quizzes       @relation(fields: [quiz_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_quiz_ads_quiz_id")
+
+  @@unique([quiz_id, position], map: "uk_quiz_ads_quiz_position")
+  @@index([organization_id, quiz_id], map: "idx_quiz_ads_org_quiz")
+  @@index([position], map: "idx_quiz_ads_position")
+}
+
+model webchat_ads {
+  id                  String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String        @db.Char(36)
+  webchat_id          String        @db.Char(36)
+  position            String        @db.VarChar(40)
+  codigo_tag          String        @db.Text
+  gpt_sizes           String?       @db.VarChar(255)
+  gpt_slot            String?       @db.VarChar(255)
+  gpt_div_id          String?       @db.VarChar(255)
+  anuncio_fixed       String?       @db.Text
+  rotulo              String?       @db.VarChar(100)
+  rotulo_ativo        Boolean       @default(true)
+  intervalo_mensagens Int?
+  sequence_ads        Json?
+  ativo               Boolean       @default(true)
+  created_at          DateTime      @default(now()) @db.DateTime(0)
+  updated_at          DateTime      @updatedAt @db.DateTime(0)
+  organizations       organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_ads_organization_id")
+  webchats            webchats      @relation(fields: [webchat_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_webchat_ads_webchat_id")
+
+  @@unique([webchat_id, position], map: "uk_webchat_ads_webchat_position")
+  @@index([organization_id, webchat_id], map: "idx_webchat_ads_org_webchat")
+  @@index([position], map: "idx_webchat_ads_position")
+}
+
+model webchat_ad_events {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  webchat_id      String        @db.Char(36)
+  session_id      String?       @db.VarChar(100)
+  domain          String?       @db.VarChar(255)
+  ad_position     String        @db.VarChar(40)
+  event_name      String        @db.VarChar(40)
+  ad_key          String?       @db.VarChar(255)
+  payload         Json?
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_ad_events_organization_id")
+  webchats        webchats      @relation(fields: [webchat_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_webchat_ad_events_webchat_id")
+
+  @@index([organization_id, webchat_id, created_at], map: "idx_webchat_ad_events_org_webchat_created")
+  @@index([webchat_id, session_id], map: "idx_webchat_ad_events_webchat_session")
+  @@index([ad_position, event_name], map: "idx_webchat_ad_events_position_event")
+}
+
+model webchat_leads {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  webchat_id      String        @db.Char(36)
+  email           String?       @db.VarChar(255)
+  name            String?       @db.VarChar(255)
+  phone           String?       @db.VarChar(30)
+  source          String?       @db.VarChar(100)
+  session_id      String?       @db.VarChar(100)
+  context         Json?
+  custom_fields   Json?
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_leads_organization_id")
+  webchats        webchats      @relation(fields: [webchat_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_leads_webchat_id")
+
+  @@index([organization_id, email], map: "idx_webchat_leads_org_email")
+  @@index([organization_id, webchat_id], map: "idx_webchat_leads_org_webchat")
+}
+
+model webchat_sessions {
+  id                   String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id      String        @db.Char(36)
+  webchat_id           String        @db.Char(36)
+  session_id           String        @db.VarChar(100)
+  lead_state           Json?
+  conversation_history Json?
+  created_at           DateTime      @default(now()) @db.DateTime(0)
+  updated_at           DateTime      @updatedAt @db.DateTime(0)
+  organizations        organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_webchat_sessions_organization_id")
+  webchats             webchats      @relation(fields: [webchat_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_webchat_sessions_webchat_id")
+
+  @@unique([webchat_id, session_id], map: "uk_webchat_sessions_webchat_session")
+  @@index([organization_id, webchat_id], map: "idx_webchat_sessions_org_webchat")
+  @@index([organization_id, session_id], map: "idx_webchat_sessions_org_session")
+}
+
+model webchat_domains {
+  id               String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String        @db.Char(36)
+  domain           String        @db.VarChar(255)
+  kind             String        @default("webchat") @db.VarChar(20)
+  status           domain_status @default(PENDING)
+  expected_type    String        @default("CNAME") @db.VarChar(20)
+  expected_value   String        @db.VarChar(255)
+  last_check_error String?       @db.VarChar(500)
+  last_checked_at  DateTime?     @db.DateTime(0)
+  traefik_file     String?       @db.VarChar(500)
+  ssl_status       String?       @db.VarChar(32)
+  ssl_error        String?       @db.VarChar(2000)
+  ssl_issued_at    DateTime?     @db.DateTime(0)
+  ssl_attempted_at DateTime?     @db.DateTime(0)
+  ads_txt          String?       @db.Text
+  created_at       DateTime      @default(now()) @db.DateTime(0)
+  updated_at       DateTime      @updatedAt @db.DateTime(0)
+  organizations    organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_webchat_domains_organization_id")
+
+  @@unique([domain], map: "uk_webchat_domains_domain")
+  @@unique([organization_id, domain], map: "uk_webchat_domains_org_domain")
+  @@index([organization_id, status], map: "idx_webchat_domains_org_status")
+}
+
+model posts {
+  id              String      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String      @db.Char(36)
+  internal_name   String      @db.VarChar(255)
+  post_type       post_type   @default(SINGLE_VIDEO) 
+  default_title   String?     @db.VarChar(255)
+  default_caption String?     @db.Text
+  tags            Json?       
+  status          post_status @default(ACTIVE)
+  created_at      DateTime    @default(now()) @db.DateTime(0)
+  updated_at      DateTime    @updatedAt @db.DateTime(0)
+
+  organizations   organizations           @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_posts_org_id")
+  media           post_media[]
+  schedules       social_post_schedules[]
+
+  @@index([organization_id, status], map: "idx_posts_org_status")
+}
+
+model post_media {
+  id               String     @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  post_id          String     @db.Char(36)
+  sort_order       Int        @default(0) @db.SmallInt
+  media_type       media_type  
+  mime_type        String     @db.VarChar(100) 
+  file_size_bytes  Int          
+  original_name    String     @db.VarChar(255) 
+  storage_key      String     @db.VarChar(500) 
+  storage_provider String     @default("LOCAL") @db.VarChar(50) 
+  width            Int?
+  height           Int?
+  duration_sec     Int?
+  thumbnail_key    String?    @db.VarChar(500)
+  created_at       DateTime   @default(now()) @db.DateTime(0)
+  updated_at       DateTime   @updatedAt @db.DateTime(0)
+
+  post             posts      @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_post_media_post_id")
+
+  @@index([post_id, sort_order], map: "idx_post_media_post_order")
+}
+
+model social_post_schedules {
+  id                String                 @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String                 @db.Char(36)
+  post_id           String                 @db.Char(36)
+  social_account_id String?                @db.Char(36)
+  social_network    social_network
+  status            social_schedule_status @default(SCHEDULED)
+  ai_content        Boolean                @default(false)
+  scheduled_at      DateTime               @db.DateTime(0)
+  platform_payload  Json?
+  post_snapshot     Json
+  tokens_unit_cost  Int                    @default(0)
+  tokens_cost       Int                    @default(0)
+  error_message     String?                @db.VarChar(255)
+  created_at        DateTime               @default(now()) @db.DateTime(0)
+  updated_at        DateTime               @updatedAt @db.DateTime(0)
+
+  organizations     organizations          @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_org_id")
+  post              posts                  @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_post_id")
+  social_account    social_accounts?       @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedules_social_account_id")
+  runs              social_post_schedule_runs[]
+
+  @@index([organization_id, status, scheduled_at], map: "idx_social_post_schedules_org_status_scheduled")
+  @@index([organization_id, social_network, status], map: "idx_social_post_schedules_org_network_status")
+  @@index([organization_id, social_account_id], map: "idx_social_post_schedules_org_account")
+  @@index([post_id], map: "idx_social_post_schedules_post_id")
+}
+
+model social_post_schedule_runs {
+  id                String                     @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String                     @db.Char(36)
+  schedule_id       String?                    @db.Char(36)
+  post_id           String                     @db.Char(36)
+  social_account_id String?                    @db.Char(36)
+  social_network    social_network
+  status            social_schedule_run_status @default(PROCESSING)
+  ai_content        Boolean                    @default(false)
+  run_at            DateTime                   @db.DateTime(0)
+  sent_at           DateTime?                  @db.DateTime(0)
+  external_post_id  String?                    @db.VarChar(255)
+  platform_payload  Json?
+  post_snapshot     Json
+  tokens_unit_cost  Int                        @default(0)
+  tokens_cost       Int                        @default(0)
+  error_message     String?                    @db.VarChar(255)
+  created_at        DateTime                   @default(now()) @db.DateTime(0)
+
+  organizations     organizations              @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedule_runs_org_id")
+  schedule          social_post_schedules?     @relation(fields: [schedule_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_schedule_id")
+  social_account    social_accounts?           @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_social_account_id")
+
+  @@index([organization_id, run_at], map: "idx_social_post_schedule_runs_org_run_at")
+  @@index([organization_id, social_network, status], map: "idx_social_post_schedule_runs_org_network_status")
+  @@index([organization_id, social_account_id], map: "idx_social_post_schedule_runs_org_account")
+  @@index([schedule_id, run_at], map: "idx_social_post_schedule_runs_schedule_run_at")
+}
+
+model social_accounts {
+  id                      String                @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id         String                @db.Char(36)
+  social_network          social_network
+  provider_user_id        String                @db.VarChar(191)
+  username                String?               @db.VarChar(255)
+  display_name            String?               @db.VarChar(255)
+  profile_image_url       String?               @db.VarChar(1000)
+  status                  social_account_status @default(ACTIVE)
+  is_default              Boolean               @default(false)
+  access_token_encrypted  String?               @db.Text
+  refresh_token_encrypted String?               @db.Text
+  token_expires_at        DateTime?             @db.DateTime(0)
+  scope                   Json?
+  extra                   Json?
+  created_at              DateTime              @default(now()) @db.DateTime(0)
+  updated_at              DateTime              @updatedAt @db.DateTime(0)
+
+  organizations           organizations         @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_accounts_org_id")
+  schedules               social_post_schedules[]
+  schedule_runs           social_post_schedule_runs[]
+
+  @@unique([organization_id, social_network, provider_user_id], map: "uk_social_accounts_org_network_provider")
+  @@index([organization_id, social_network, status], map: "idx_social_accounts_org_network_status")
+  @@index([organization_id, created_at], map: "idx_social_accounts_org_created")
+}
+
+model organization_social_app_credentials {
+  id                      String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id         String         @db.Char(36)
+  social_network          social_network
+  client_key              String         @db.VarChar(255)
+  client_secret_encrypted String         @db.Text
+  created_at              DateTime       @default(now()) @db.DateTime(0)
+  updated_at              DateTime       @updatedAt @db.DateTime(0)
+
+  organizations           organizations  @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_app_credentials_org_id")
+
+  @@unique([organization_id, social_network], map: "uk_social_app_credentials_org_network")
+  @@index([organization_id, created_at], map: "idx_social_app_credentials_org_created")
+}
+
+// ==========================================
+// MÓDULO DE AVATARES IA
+// ==========================================
+
+model avatars {
+  id                    String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id       String        @db.Char(36)
+  
+  name                  String        @db.VarChar(255)
+  is_realistic          Boolean       @default(true)
+  
+  // Customizações do usuário (referências e aparência)
+  default_colors        Json?         // Array de HEX, ex: ["#FF0000", "#000000"]
+  inspiration_image_url String?       @db.VarChar(500) // Foto que ele enviou de inspiração (salva em /uploads)
+  
+  // Resultado Final
+  avatar_image_url      String        @db.VarChar(500) // Imagem final salva em /uploads
+  
+  // Prompts e Personalidade (Para uso nos módulos seguintes de vídeo e áudio)
+  user_prompt           String?       @db.Text
+  system_prompt         String?       @db.Text
+  personality           String?       @db.Text // Traços de personalidade definidos
+  
+  // Dados técnicos da geração (Importantíssimo para garantir consistência visual no futuro)
+  technical_metadata    Json?         // Ex: { "seed": 12345, "model": "dall-e-3", "cfg_scale": 7.5 }
+  
+  status                avatar_status @default(ACTIVE)
+  created_at            DateTime      @default(now()) @db.DateTime(0)
+  updated_at            DateTime      @updatedAt @db.DateTime(0)
+
+  organizations         organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatars_organization_id")
+
+  @@index([organization_id, status], map: "idx_avatars_org_status")
+}
+
+// Histórico de gerações (Necessário para cobrar os Tokens de cada tentativa antes de salvar o final)
+model avatar_generations {
+  id                    String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id       String        @db.Char(36)
+  
+  user_prompt           String?       @db.Text
+  system_prompt         String?       @db.Text
+  is_realistic          Boolean
+  
+  inspiration_image_url String?       @db.VarChar(500)
+  result_image_url      String        @db.VarChar(500) // Temporário ou definitivo em /uploads
+  
+  technical_metadata    Json?
+  
+  // Cobrança
+  tokens_cost           Int           @default(0)
+  
+  created_at            DateTime      @default(now()) @db.DateTime(0)
+
+  organizations         organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatar_generations_org_id")
+
+  @@index([organization_id, created_at], map: "idx_avatar_generations_org_created")
+}
+
+
+// ==========================================
+// ENUMS
+// ==========================================
+
+enum avatar_status {
+  ACTIVE
+  ARCHIVED
+}
+
+enum wallets_status {
+  ACTIVE
+  FROZEN
+}
+
+enum users_role {
+  OWNER
+  ADMIN
+  MEMBER
+  SUPER_ADMIN
+}
+
+enum email_leads_global_status {
+  ACTIVE
+  BOUNCED
+  COMPLAINED
+}
+
+enum email_project_leads_status {
+  SUBSCRIBED
+  UNSUBSCRIBED
+}
+
+enum domain_status {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum schedule_sent_status {
+  PROCESSING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum post_type {
+  SINGLE_IMAGE
+  SINGLE_VIDEO
+  CAROUSEL
+}
+
+enum media_type {
+  IMAGE
+  VIDEO
+}
+
+enum post_status {
+  ACTIVE
+  ARCHIVED
+}
+
+enum social_network {
+  TIKTOK
+  YOUTUBE
+  INSTAGRAM
+}
+
+enum social_account_status {
+  ACTIVE
+  DISCONNECTED
+}
+
+enum social_schedule_status {
+  SCHEDULED
+  PROCESSING
+  SENT
+  FAILED
+  CANCELED
+}
+
+enum social_schedule_run_status {
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+// ============================================================================
+// System Settings (singleton: id sempre = 1)
+// ----------------------------------------------------------------------------
+// Substitui as envs:
+//   - GROQ_API_KEYS (CSV de chaves)
+//   - RESEND_API_KEY
+//   - WEBCHAT_EDGE_IP
+//   - CERTBOT_EMAIL
+// Configurado pelo front em "Conta & Domínios" > "Integrações".
+// ============================================================================
+model system_settings {
+  id                   Int      @id @default(1)
+  groq_api_keys        String?  @db.Text
+  cerebras_api_keys    String?  @db.Text
+  gemini_api_keys      String?  @db.Text
+  mistral_api_keys     String?  @db.Text
+  openrouter_api_keys  String?  @db.Text
+  sambanova_api_keys   String?  @db.Text
+  resend_api_key       String?  @db.VarChar(500)
+  webchat_edge_ip      String?  @db.VarChar(45)
+  certbot_email        String?  @db.VarChar(255)
+  created_at           DateTime @default(now()) @db.DateTime(0)
+  updated_at           DateTime @updatedAt @db.DateTime(0)
+}

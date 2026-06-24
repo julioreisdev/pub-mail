@@ -1,0 +1,1 @@
+import{J as n,K as u}from"./index-Bu6h5f_P.js";const c="/webchats";function h(r={}){const{data:t,error:s,isLoading:a,isValidating:o,mutate:e}=n(c,u,{revalidateOnFocus:!0,shouldRetryOnError:!1,...r});return{webchats:t??null,isLoading:a,isValidating:o,error:s,refresh:()=>e(),mutate:e}}export{h as u};
