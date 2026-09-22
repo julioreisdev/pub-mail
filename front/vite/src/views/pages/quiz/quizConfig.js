@@ -9,6 +9,51 @@ export function uid(prefix = 'id') {
   return `${prefix}_${Date.now().toString(36)}_${_seq.toString(36)}`;
 }
 
+// Blocos de conteúdo que ficam ABAIXO dos botões de resposta (por pergunta).
+// Tipos: text (título/texto), image, divider.
+export function createContentBlock(type) {
+  const id = uid('c');
+  if (type === 'image') return { id, type: 'image', url: '', widthPct: 100, align: 'center', radius: 10 };
+  if (type === 'divider') return { id, type: 'divider', color: '#e5e7eb', thickness: 1 };
+  if (type === 'heading') return { id, type: 'text', text: 'Novo título', size: 20, color: '#0f172a', align: 'center', weight: 700 };
+  return { id, type: 'text', text: 'Novo texto', size: 14, color: '#475569', align: 'center', weight: 400 };
+}
+
+function normalizeContentBlock(b) {
+  if (!b || typeof b !== 'object') return null;
+  const id = b.id || uid('c');
+  const align = ['left', 'center', 'right'].includes(b.align) ? b.align : 'center';
+  if (b.type === 'image') {
+    return { id, type: 'image', url: typeof b.url === 'string' ? b.url : '', widthPct: Number.isFinite(b.widthPct) ? b.widthPct : 100, align, radius: Number.isFinite(b.radius) ? b.radius : 10 };
+  }
+  if (b.type === 'divider') {
+    return { id, type: 'divider', color: typeof b.color === 'string' && b.color ? b.color : '#e5e7eb', thickness: Number.isFinite(b.thickness) ? b.thickness : 1 };
+  }
+  return {
+    id,
+    type: 'text',
+    text: typeof b.text === 'string' ? b.text : '',
+    size: Number.isFinite(b.size) ? b.size : 14,
+    color: typeof b.color === 'string' && b.color ? b.color : '#475569',
+    align,
+    weight: [400, 600, 700].includes(b.weight) ? b.weight : 400
+  };
+}
+
+function normalizeContent(raw) {
+  return (Array.isArray(raw) ? raw : []).map(normalizeContentBlock).filter(Boolean);
+}
+
+// Sanitiza classes CSS informadas pelo usuário: mantém só tokens válidos
+// (letras, números, hífen, underscore) separados por espaço. Vai no class="".
+export function sanitizeCssClasses(value) {
+  return String(value || '')
+    .split(/\s+/)
+    .map((c) => c.replace(/[^a-zA-Z0-9_-]/g, ''))
+    .filter(Boolean)
+    .join(' ');
+}
+
 // ---- Defaults (base de qualquer config; normalize() preenche o que faltar) ----
 export function createDefaultQuizConfig() {
   return {
@@ -70,7 +115,9 @@ export function createDefaultQuizConfig() {
       capturePhone: false,
       phoneLabel: 'Teléfono',
       phonePlaceholder: '+57 300 000 0000',
-      buttonLabel: 'VER MI RESULTADO'
+      buttonLabel: 'VER MI RESULTADO',
+      buttonCssClass: '',
+      buttonBgColor: '' // vazio = usa a cor de botão do tema
     },
     redirect: { url: '' },
     legal: {
@@ -110,15 +157,34 @@ export function normalizeQuizConfig(raw) {
     .map((q) => ({
       id: q.id || uid('q'),
       text: typeof q.text === 'string' ? q.text : '',
+      // Texto descritivo opcional (acima/abaixo da pergunta). Default: não
+      // negrito, centralizado, cor suave — mas tudo personalizável.
+      description: typeof q.description === 'string' ? q.description : '',
+      descriptionPosition: q.descriptionPosition === 'above' ? 'above' : 'below',
+      descriptionColor: typeof q.descriptionColor === 'string' ? q.descriptionColor : '',
+      descriptionSize: Number.isFinite(q.descriptionSize) ? q.descriptionSize : 14,
+      descriptionAlign: ['left', 'center', 'right'].includes(q.descriptionAlign) ? q.descriptionAlign : 'center',
+      descriptionBold: q.descriptionBold === true,
       options: (Array.isArray(q.options) ? q.options : [])
         .filter(Boolean)
         .map((o) => ({
           id: o.id || uid('o'),
           label: typeof o.label === 'string' ? o.label : '',
-          redirect: typeof o.redirect === 'string' ? o.redirect : ''
-        }))
+          redirect: typeof o.redirect === 'string' ? o.redirect : '',
+          cssClass: typeof o.cssClass === 'string' ? o.cssClass : ''
+        })),
+      // Conteúdo livre abaixo dos botões (títulos/texto/imagens/divisor).
+      content: normalizeContent(q.content)
     }));
   if (merged.questions.length === 0) merged.questions = base.questions;
+
+  // Classes CSS + cor de fundo do botão de captação (sempre presentes).
+  if (merged.leadCapture) {
+    merged.leadCapture.buttonCssClass =
+      typeof merged.leadCapture.buttonCssClass === 'string' ? merged.leadCapture.buttonCssClass : '';
+    merged.leadCapture.buttonBgColor =
+      typeof merged.leadCapture.buttonBgColor === 'string' ? merged.leadCapture.buttonBgColor : '';
+  }
 
   merged.legal.pages = (Array.isArray(merged.legal?.pages) ? merged.legal.pages : [])
     .filter(Boolean)

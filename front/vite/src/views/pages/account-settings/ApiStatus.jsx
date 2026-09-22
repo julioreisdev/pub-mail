@@ -12,14 +12,14 @@ import {
     Tooltip,
     Typography
 } from '@mui/material';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import HourglassBottomRoundedIcon from '@mui/icons-material/HourglassBottomRounded';
-import EventBusyRoundedIcon from '@mui/icons-material/EventBusyRounded';
-import BlockRoundedIcon from '@mui/icons-material/BlockRounded';
-import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { CheckCircleRoundedIcon as CheckCircleRoundedIcon } from 'ui-component/icons';
+import { HourglassBottomRoundedIcon as HourglassBottomRoundedIcon } from 'ui-component/icons';
+import { EventBusyRoundedIcon as EventBusyRoundedIcon } from 'ui-component/icons';
+import { BlockRoundedIcon as BlockRoundedIcon } from 'ui-component/icons';
+import { HelpOutlineRoundedIcon as HelpOutlineRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { CheckRoundedIcon as CheckRoundedIcon } from 'ui-component/icons';
 import toast from 'react-hot-toast';
 
 import { get } from '../../../api/api';

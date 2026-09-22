@@ -13,6 +13,7 @@ type QuizLike = {
   email_project_id: string | null;
   lead_email_html?: string | null;
   lead_email_subject?: string | null;
+  lead_email_model?: any;
 };
 
 type LeadLike = {
@@ -150,7 +151,7 @@ export class QuizLeadEmailService {
         project,
         organization: project.organizations,
         schedule: null,
-        template: { subject, body_html: html, body_text: '' },
+        template: { subject, from_name: (quiz.lead_email_model as any)?.from_name?.trim?.() || null, body_html: html, body_text: '' },
         templatesCount: 1,
         resend_api_key: resendApiKey,
       };

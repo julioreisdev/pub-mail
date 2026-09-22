@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
   ParseUUIDPipe,
@@ -62,8 +63,13 @@ export class EmailTemplatesController {
   @ApiOkResponse({ description: 'Lista de templates' })
   @ApiNotFoundResponse({ description: 'Projeto não encontrado' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
-  list(@Req() req: any, @Param('projectId', new ParseUUIDPipe()) projectId: string) {
-    return this.service.list(req.user.organizationId, projectId);
+  list(
+    @Req() req: any,
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Query('recycle') recycle?: string,
+  ) {
+    const isRecycle = recycle === 'true' || recycle === '1';
+    return this.service.list(req.user.organizationId, projectId, isRecycle);
   }
 
   @Patch('templates/:id')

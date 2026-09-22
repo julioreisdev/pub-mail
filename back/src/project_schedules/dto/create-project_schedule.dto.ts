@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsInt, IsISO8601, IsOptional, Max, Min, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsISO8601, IsObject, IsOptional, IsUUID, Max, Min, ValidateIf } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateEmailProjectScheduleDto {
@@ -56,4 +56,54 @@ export class CreateEmailProjectScheduleDto {
   @IsInt()
   @Min(1)
   for_x_days?: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'IDs de templates deste agendamento. Se preenchido, o disparo sorteia um destes e NÃO apaga os templates. Vazio/ausente = usa todos (comportamento atual).',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @IsUUID('all', { each: true })
+  template_ids?: string[];
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Se true, é um agendamento de RECICLAGEM: dispara SÓ para os leads frios (nunca interagiram ou inativos há recycle_days) e nunca apaga templates.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  recycle?: boolean;
+
+  @ApiPropertyOptional({
+    enum: ['never', 'inactive'],
+    description:
+      'Critério de "frio" (quando recycle=true). never = nunca abriu/clicou; inactive = sem interação há recycle_days dias.',
+  })
+  @IsOptional()
+  @IsIn(['never', 'inactive'])
+  recycle_criteria?: 'never' | 'inactive';
+
+  @ApiPropertyOptional({
+    example: 30,
+    minimum: 1,
+    maximum: 3650,
+    description: 'Dias de inatividade (quando recycle=true e criteria=inactive).',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  recycle_days?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Segmentação por regras. Objeto { match: "all"|"any", conditions: [...] }. Null/ausente = todos os leads inscritos.',
+  })
+  @IsOptional()
+  @IsObject()
+  segment?: Record<string, any> | null;
 }

@@ -54,6 +54,11 @@ export class CreateQuizDto {
   @MaxLength(255)
   lead_email_subject?: string | null;
 
+  @ApiPropertyOptional({ description: 'Modelo do builder visual do e-mail do lead (JSON).' })
+  @IsOptional()
+  @IsObject()
+  lead_email_model?: Record<string, any> | null;
+
   @ApiPropertyOptional({ type: 'object', additionalProperties: true })
   @IsOptional()
   @IsObject()

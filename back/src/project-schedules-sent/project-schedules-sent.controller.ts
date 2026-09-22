@@ -95,6 +95,7 @@ export class ProjectSchedulesSentController {
     @Query('to') to?: string,
     @Query('take') take?: string,
     @Query('skip') skip?: string,
+    @Query('recycle') recycle?: string,
   ) {
     return this.service.list(req.user.organizationId, projectId, {
       scheduleId,
@@ -103,7 +104,19 @@ export class ProjectSchedulesSentController {
       to,
       take,
       skip,
+      recycle,
     });
+  }
+
+  // GET /email/projects/:projectId/schedules-sent/:sentId/unopened-count
+  @Get(':projectId/schedules-sent/:sentId/unopened-count')
+  @ApiOperation({ summary: 'Conta inscritos ativos que NÃO abriram este disparo' })
+  unopenedCount(
+    @Req() req: AuthRequest,
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Param('sentId', new ParseUUIDPipe()) sentId: string,
+  ) {
+    return this.service.unopenedCount(req.user.organizationId, projectId, sentId);
   }
 
   // ✅ NOVA ROTA (sem conflito):

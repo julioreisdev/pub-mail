@@ -3,14 +3,15 @@ import { Link as RouterLink, useNavigate } from 'react-router-dom';
 
 import { Box, Container, Stack, Typography, Button, Chip, Link as MuiLink } from '@mui/material';
 
-import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
-import LoginRoundedIcon from '@mui/icons-material/LoginRounded';
-import ChatOutlinedIcon from '@mui/icons-material/ChatOutlined';
-import EmailOutlinedIcon from '@mui/icons-material/EmailOutlined';
-import SchoolOutlinedIcon from '@mui/icons-material/SchoolOutlined';
+import { ArrowForwardRoundedIcon as ArrowForwardRoundedIcon } from 'ui-component/icons';
+import { LoginRoundedIcon as LoginRoundedIcon } from 'ui-component/icons';
+import { ChatOutlinedIcon as ChatOutlinedIcon } from 'ui-component/icons';
+import { EmailOutlinedIcon as EmailOutlinedIcon } from 'ui-component/icons';
+import { SchoolOutlinedIcon as SchoolOutlinedIcon } from 'ui-component/icons';
+
+import Logo from 'ui-component/Logo';
 
 const BRAND_PURPLE = '#377EF0';
-const LOGO_URL = '/favicon.png';
 
 function FeatureLine({ icon, title, description }) {
     return (
@@ -49,7 +50,7 @@ export default function Home() {
             <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}>
                 <Container maxWidth="md" sx={{ py: 1.5 }}>
                     <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
-                        <Box component="img" src={LOGO_URL} alt="Pub Mail" sx={{ height: 32, width: 'auto' }} />
+                        <Logo height={28} />
                         <Stack direction="row" spacing={1} alignItems="center">
                             <Button onClick={goLogin} variant="text" startIcon={<LoginRoundedIcon />} sx={{ textTransform: 'none', fontWeight: 700 }}>
                                 Entrar

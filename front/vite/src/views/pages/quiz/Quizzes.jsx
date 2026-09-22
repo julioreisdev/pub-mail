@@ -20,15 +20,15 @@ import DialogActions from '@mui/material/DialogActions';
 import TextField from '@mui/material/TextField';
 import MenuItem from '@mui/material/MenuItem';
 
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import BrushRoundedIcon from '@mui/icons-material/BrushRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { OpenInNewRoundedIcon as OpenInNewRoundedIcon } from 'ui-component/icons';
+import { BrushRoundedIcon as BrushRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
 
-import CampaignRoundedIcon from '@mui/icons-material/CampaignRounded';
+import { CampaignRoundedIcon as CampaignRoundedIcon } from 'ui-component/icons';
 
 import { useNavigate } from 'react-router-dom';
 import MainCard from 'ui-component/cards/MainCard';
@@ -37,6 +37,8 @@ import useQuizzes from '../../../hooks/useQuizzes';
 import useQuizDomains from '../../../hooks/useQuizDomains';
 import useEmailProjects from '../../../hooks/useEmailProjects';
 import QuizAdsDialog from './QuizAdsDialog';
+import EmailBuilder from '../email/EmailBuilder';
+import { DashboardCustomizeRoundedIcon as DashboardCustomizeRoundedIcon } from 'ui-component/icons';
 
 const getErrorMessage = (err, fallback = 'Falha ao processar a ação') =>
   err?.response?.data?.message || err?.response?.data?.error || err?.message || fallback;
@@ -53,6 +55,7 @@ const quizPublicUrl = (quiz) => (quiz ? `https://${quiz.domain}/quiz/${quiz.slug
 function QuizFormDialog({ open, mode, initial, verifiedDomains, projects, loading, error, onClose, onSubmit }) {
   const [form, setForm] = useState({});
   const [emailTab, setEmailTab] = useState(0);
+  const [builderOpen, setBuilderOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -66,6 +69,7 @@ function QuizFormDialog({ open, mode, initial, verifiedDomains, projects, loadin
         footer_scripts: initial?.footer_scripts || '',
         lead_email_html: initial?.lead_email_html || '',
         lead_email_subject: initial?.lead_email_subject || '',
+        lead_email_model: initial?.lead_email_model || null,
         active: initial?.active !== false
       });
     } else {
@@ -77,6 +81,7 @@ function QuizFormDialog({ open, mode, initial, verifiedDomains, projects, loadin
         footer_scripts: '',
         lead_email_html: '',
         lead_email_subject: '',
+        lead_email_model: null,
         active: true
       });
     }
@@ -142,9 +147,20 @@ function QuizFormDialog({ open, mode, initial, verifiedDomains, projects, loadin
                 <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.25 }}>
                   E-mail imediato ao lead
                 </Typography>
-                <Typography variant="caption" color="text.secondary">
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                   Enviado assim que o lead preenche a captação. Deixe o HTML vazio para não enviar.
                 </Typography>
+
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="secondary"
+                  startIcon={<DashboardCustomizeRoundedIcon fontSize="small" />}
+                  onClick={() => setBuilderOpen(true)}
+                  sx={{ mt: 1, borderRadius: 2, fontWeight: 800 }}
+                >
+                  Abrir construtor visual
+                </Button>
 
                 <TextField
                   label="Assunto do e-mail"
@@ -193,6 +209,18 @@ function QuizFormDialog({ open, mode, initial, verifiedDomains, projects, loadin
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
                   Variáveis: {'{{name}}'}, {'{{email}}'}, {'{{phone}}'} e {'{{unsubscribe_link}}'}.
                 </Typography>
+
+                <EmailBuilder
+                  open={builderOpen}
+                  mode="body"
+                  initialModel={form.lead_email_model || null}
+                  onClose={() => setBuilderOpen(false)}
+                  onSave={({ html, model }) => {
+                    setForm((p) => ({ ...p, lead_email_html: html, lead_email_model: model }));
+                    setBuilderOpen(false);
+                    setEmailTab(1);
+                  }}
+                />
               </Box>
             ) : null}
 
@@ -302,7 +330,8 @@ export default function Quizzes() {
         footer_scripts: form.footer_scripts || null,
         // só faz sentido com projeto vinculado; sem projeto, limpa o e-mail
         lead_email_html: form.email_project_id ? form.lead_email_html || null : null,
-        lead_email_subject: form.email_project_id ? form.lead_email_subject || null : null
+        lead_email_subject: form.email_project_id ? form.lead_email_subject || null : null,
+        lead_email_model: form.email_project_id ? form.lead_email_model || null : null
       };
       if (formMode === 'edit') {
         await patch(`/quizzes/${formData.id}`, payload);
@@ -535,7 +564,7 @@ export default function Quizzes() {
             <Alert
               severity="info"
               action={
-                <Button size="small" color="inherit" onClick={() => navigate('/settings/account-settings?tab=domains&domainTab=quiz')}>
+                <Button size="small" color="inherit" onClick={() => navigate('/settings/domains?sub=quiz')}>
                   Cadastrar domínio
                 </Button>
               }

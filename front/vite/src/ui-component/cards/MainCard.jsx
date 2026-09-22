@@ -28,17 +28,23 @@ export default function MainCard({
   ref,
   ...others
 }) {
-  const defaultShadow = '0 2px 14px 0 rgb(32 40 45 / 8%)';
+  const defaultShadow = '0 6px 24px 0 rgb(16 24 40 / 10%)';
 
   return (
     <Card
       ref={ref}
       {...others}
       sx={(theme) => ({
-        border: border ? '1px solid' : 'none',
+        // Baseline premium: borda sutil + sombra leve (adapta a light/dark).
+        border: '1px solid',
         borderColor: 'divider',
+        boxShadow: '0 1px 2px rgb(16 24 40 / 4%), 0 1px 3px rgb(16 24 40 / 6%)',
+        transition: 'box-shadow .2s ease, border-color .2s ease',
+        ...theme.applyStyles('dark', {
+          boxShadow: '0 1px 2px rgb(0 0 0 / 30%), 0 1px 3px rgb(0 0 0 / 40%)'
+        }),
         ':hover': {
-          boxShadow: boxShadow ? shadow || defaultShadow : 'inherit'
+          boxShadow: boxShadow ? shadow || defaultShadow : undefined
         },
         ...(typeof sx === 'function' ? sx(theme) : sx || {})
       })}

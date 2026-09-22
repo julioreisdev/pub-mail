@@ -15,9 +15,9 @@ import {
     Typography
 } from '@mui/material';
 
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { UploadFileRoundedIcon as UploadFileRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
 
 import { api } from '../../../api/api';
 

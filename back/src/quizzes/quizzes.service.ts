@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { cleanEmailOrNull } from '../common/email.util';
 import { QuizSplitsService } from '../quiz-splits/quiz-splits.service';
 import { QuizAdsService } from './quiz-ads.service';
 import { QuizLeadEmailService } from './quiz-lead-email.service';
@@ -39,9 +40,10 @@ const quizInclude = {
   email_projects: { select: { id: true, name: true, active: true } },
 };
 
+// Sanitiza (conserta ponto duplo etc.) + valida de forma estrita. Fonte única:
+// `common/email.util`. E-mail inválido/insanável -> null (não entra no sistema).
 function normalizeEmail(v?: string | null): string | null {
-  const s = String(v || '').trim().toLowerCase();
-  return s && /\S+@\S+\.\S+/.test(s) ? s.slice(0, 255) : null;
+  return cleanEmailOrNull(v);
 }
 function normalizePhone(v?: string | null): string | null {
   const s = String(v || '').replace(/[^\d+]/g, '');
@@ -146,6 +148,7 @@ export class QuizzesService {
         footer_scripts: dto.footer_scripts ?? null,
         lead_email_html: dto.lead_email_html ?? null,
         lead_email_subject: dto.lead_email_subject ?? null,
+        lead_email_model: (dto.lead_email_model as any) ?? undefined,
         split_id: splitId,
         split_weight:
           typeof dto.split_weight === 'number' ? dto.split_weight : 100,
@@ -231,6 +234,9 @@ export class QuizzesService {
           : {}),
         ...(dto.lead_email_subject !== undefined
           ? { lead_email_subject: dto.lead_email_subject }
+          : {}),
+        ...(dto.lead_email_model !== undefined
+          ? { lead_email_model: (dto.lead_email_model as any) }
           : {}),
         ...(nextSplitId !== undefined ? { split_id: nextSplitId } : {}),
         ...(dto.split_weight !== undefined

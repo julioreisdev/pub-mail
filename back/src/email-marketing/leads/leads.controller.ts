@@ -17,6 +17,7 @@ import { EmailLeadsService } from './leads.service';
 import { CreateEmailLeadDto } from './dto/create-email-lead.dto';
 import { UpdateEmailLeadDto } from './dto/update-email-lead.dto';
 import { PublicSubscribeDto } from './dto/public-subscribe.dto';
+import { BulkTagsDto } from './dto/bulk-tags.dto';
 
 import {
   ApiTags,
@@ -72,6 +73,19 @@ export class EmailLeadsController {
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
   list(@Req() req: any) {
     return this.service.list(req.user.organizationId);
+  }
+
+  @Get('tags')
+  @ApiOperation({ summary: 'Listar tags distintas da organização' })
+  distinctTags(@Req() req: any) {
+    return this.service.distinctTags(req.user.organizationId);
+  }
+
+  @Post('tags/bulk')
+  @ApiOperation({ summary: 'Adicionar tag(s) a vários leads' })
+  @ApiBody({ type: BulkTagsDto })
+  bulkTags(@Req() req: any, @Body() dto: BulkTagsDto) {
+    return this.service.bulkAddTags(req.user.organizationId, dto.lead_ids, dto.add);
   }
 
   @Patch(':id')

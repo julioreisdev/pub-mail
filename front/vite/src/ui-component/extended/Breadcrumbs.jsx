@@ -16,9 +16,9 @@ import navigation from 'menu-items';
 
 // assets
 import { IconChevronRight, IconTallymark1 } from '@tabler/icons-react';
-import AccountTreeTwoToneIcon from '@mui/icons-material/AccountTreeTwoTone';
-import HomeIcon from '@mui/icons-material/Home';
-import HomeTwoToneIcon from '@mui/icons-material/HomeTwoTone';
+import { AccountTreeTwoToneIcon as AccountTreeTwoToneIcon } from 'ui-component/icons';
+import { HomeIcon as HomeIcon } from 'ui-component/icons';
+import { HomeTwoToneIcon as HomeTwoToneIcon } from 'ui-component/icons';
 
 // ==============================|| BREADCRUMBS TITLE ||============================== //
 

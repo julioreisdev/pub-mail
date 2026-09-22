@@ -4,21 +4,21 @@ import { Outlet } from 'react-router-dom';
 // material-ui
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
-import AppBar from '@mui/material/AppBar';
-import Toolbar from '@mui/material/Toolbar';
 import Box from '@mui/material/Box';
+import IconButton from '@mui/material/IconButton';
 
 // project imports
 import Footer from './Footer';
-import Header from './Header';
 import Sidebar from './Sidebar';
 import MainContentStyled from './MainContentStyled';
-import Customization from '../Customization';
 import Loader from 'ui-component/Loader';
 import Breadcrumbs from 'ui-component/extended/Breadcrumbs';
 
 import useConfig from 'hooks/useConfig';
 import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
+
+// assets
+import { IconMenu2 } from '@tabler/icons-react';
 
 // ==============================|| MAIN LAYOUT ||============================== //
 
@@ -40,32 +40,45 @@ export default function MainLayout() {
     downMD && handlerDrawerOpen(false);
   }, [downMD]);
 
-  // horizontal menu-list bar : drawer
-
   if (menuMasterLoading) return <Loader />;
 
   return (
     <Box sx={{ display: 'flex' }}>
-      {/* header */}
-      <AppBar enableColorOnDark position="fixed" color="inherit" elevation={0} sx={{ bgcolor: 'background.default' }}>
-        <Toolbar sx={{ p: 2 }}>
-          <Header />
-        </Toolbar>
-      </AppBar>
-
-      {/* menu / drawer */}
+      {/* menu / drawer (sem header — logout e tema ficam dentro da própria sidebar) */}
       <Sidebar />
 
+      {/* gatilho de menu SÓ no mobile (única forma de abrir o drawer sem header) */}
+      {downMD && (
+        <IconButton
+          onClick={() => handlerDrawerOpen(true)}
+          aria-label="abrir menu"
+          sx={{
+            position: 'fixed',
+            top: 12,
+            left: 12,
+            zIndex: 1200,
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+            border: '1px solid',
+            borderColor: 'divider',
+            boxShadow: 1,
+            '&:hover': { bgcolor: 'background.paper' }
+          }}
+        >
+          <IconMenu2 stroke={1.5} size={20} />
+        </IconButton>
+      )}
+
       {/* main content */}
-      <MainContentStyled {...{ borderRadius, open: drawerOpen }}>
-        <Box sx={{ ...{ px: { xs: 0 } }, minHeight: 'calc(100vh - 128px)', display: 'flex', flexDirection: 'column' }}>
-          {/* breadcrumb */}
+      <MainContentStyled {...{ borderRadius, open: downMD ? false : drawerOpen }}>
+        <Box
+          sx={{ px: { xs: 0 }, pt: { xs: 5, md: 0 }, minHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}
+        >
           <Breadcrumbs />
           <Outlet />
           <Footer />
         </Box>
       </MainContentStyled>
-      <Customization />
     </Box>
   );
 }

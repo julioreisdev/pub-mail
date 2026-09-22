@@ -8,12 +8,14 @@ import { fetcher } from '../api/api';
  * const { sents, isLoading, error, refresh } = useSchedulesSents(projectId);
  */
 export function useSchedulesSents(projectId, options = {}) {
-    const key = projectId ? `/email/projects/${projectId}/schedules-sent` : null;
+    const { recycle, ...swrOptions } = options;
+    const suffix = recycle === true ? '?recycle=true' : recycle === false ? '?recycle=false' : '';
+    const key = projectId ? `/email/projects/${projectId}/schedules-sent${suffix}` : null;
 
     const { data, error, isLoading, isValidating, mutate } = useSWR(key, fetcher, {
         revalidateOnFocus: true,
         shouldRetryOnError: false,
-        ...options
+        ...swrOptions
     });
 
     return {

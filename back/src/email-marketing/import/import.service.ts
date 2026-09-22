@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { cleanEmailOrNull } from '../../common/email.util';
 import * as XLSX from 'xlsx';
 import { Readable } from 'stream';
 import type { Express } from 'express';
@@ -260,7 +261,9 @@ export class EmailImportService {
       row['e-mail'] ??
       row['E-mail'] ??
       row['E-mail Address'];
-    const email = (rawEmail ?? '').toString().trim().toLowerCase();
+    // Sanitiza (conserta ponto duplo etc.) + valida estrito. Linha inválida
+    // vira email=undefined -> contabilizada como invalidRow (não entra).
+    const email = cleanEmailOrNull(rawEmail);
 
     const rawName = row.name ?? row.Name ?? row.NOME ?? row.nome;
     const name = (rawName ?? '').toString().trim() || undefined;
@@ -276,10 +279,8 @@ export class EmailImportService {
       attributes[k] = v;
     }
 
-    const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
     return {
-      email: looksLikeEmail ? email : undefined,
+      email: email ?? undefined,
       name,
       attributes: Object.keys(attributes).length ? attributes : null,
     };

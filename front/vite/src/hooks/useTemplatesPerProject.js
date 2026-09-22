@@ -9,14 +9,16 @@ import { fetcher } from '../api/api';
  * const { templates, isLoading, error, refresh } = useTemplatesPerProject(projectId);
  */
 export function useTemplatesPerProject(projectId, options = {}) {
+    const { recycle, ...swrOptions } = options;
     const isValidId = projectId != null && projectId !== '' && projectId !== 'null' && projectId !== 'undefined';
 
-    const key = isValidId ? `/email/projects/${projectId}/templates` : null;
+    const suffix = recycle === true ? '?recycle=true' : recycle === false ? '?recycle=false' : '';
+    const key = isValidId ? `/email/projects/${projectId}/templates${suffix}` : null;
 
     const { data, error, isLoading, isValidating, mutate } = useSWR(key, fetcher, {
         revalidateOnFocus: true,
         shouldRetryOnError: false,
-        ...options
+        ...swrOptions
     });
 
     return {

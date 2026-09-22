@@ -2,7 +2,7 @@
 import { withAlpha } from 'utils/colorUtils';
 
 // assets
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { InfoOutlinedIcon as InfoOutlinedIcon } from 'ui-component/icons';
 
 // ==============================|| OVERRIDES - ALERT ||============================== //
 

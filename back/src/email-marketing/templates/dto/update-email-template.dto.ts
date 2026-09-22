@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateEmailTemplateDto {
   @ApiPropertyOptional({
@@ -37,4 +37,9 @@ export class UpdateEmailTemplateDto {
   @IsOptional()
   @IsString()
   body_text?: string;
+
+  @ApiPropertyOptional({ description: 'Modelo do builder visual (JSON).' })
+  @IsOptional()
+  @IsObject()
+  builder_model?: Record<string, any> | null;
 }

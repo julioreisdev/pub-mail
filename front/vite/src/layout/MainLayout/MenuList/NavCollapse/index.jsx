@@ -26,7 +26,7 @@ import useMenuCollapse from 'hooks/useMenuCollapse';
 
 // assets
 import { IconChevronDown, IconChevronRight, IconChevronUp } from '@tabler/icons-react';
-import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+import { FiberManualRecordIcon as FiberManualRecordIcon } from 'ui-component/icons';
 
 export default function NavCollapse({ menu, level, parentId }) {
   const theme = useTheme();

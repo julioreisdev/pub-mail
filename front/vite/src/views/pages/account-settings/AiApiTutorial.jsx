@@ -1,5 +1,5 @@
 import { Alert, Box, Chip, Link, Stack, Typography } from '@mui/material';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import { OpenInNewRoundedIcon as OpenInNewRoundedIcon } from 'ui-component/icons';
 
 const PROVIDERS = [
     {

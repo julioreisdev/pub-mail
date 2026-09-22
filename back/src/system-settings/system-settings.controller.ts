@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -15,19 +15,20 @@ import {
 } from './system-settings.service';
 
 type SettingsResponse = {
-  groq_api_keys: string;
+  groq_api_keys_masked: string[];
   groq_api_keys_count: number;
-  cerebras_api_keys: string;
+  cerebras_api_keys_masked: string[];
   cerebras_api_keys_count: number;
-  gemini_api_keys: string;
+  gemini_api_keys_masked: string[];
   gemini_api_keys_count: number;
-  mistral_api_keys: string;
+  mistral_api_keys_masked: string[];
   mistral_api_keys_count: number;
-  openrouter_api_keys: string;
+  openrouter_api_keys_masked: string[];
   openrouter_api_keys_count: number;
-  sambanova_api_keys: string;
+  sambanova_api_keys_masked: string[];
   sambanova_api_keys_count: number;
   resend_api_key: string;
+  resend_webhook_secret: string;
   webchat_edge_ip: string;
   certbot_email: string;
   updated_at: Date;
@@ -72,6 +73,26 @@ export class SystemSettingsController {
     return this.service.getAiKeysStatus();
   }
 
+  @Post('ai-keys')
+  @ApiOperation({ summary: 'Adiciona uma ou mais chaves a um provedor de IA.' })
+  async addAiKeys(
+    @Body('provider') provider: string,
+    @Body('keys') keys: string,
+  ): Promise<SettingsResponse> {
+    const row = await this.service.addAiKeys(provider, keys);
+    return this.toResponse(row);
+  }
+
+  @Delete('ai-keys')
+  @ApiOperation({ summary: 'Remove a chave no índice informado de um provedor de IA.' })
+  async removeAiKey(
+    @Body('provider') provider: string,
+    @Body('index') index: number,
+  ): Promise<SettingsResponse> {
+    const row = await this.service.removeAiKey(provider, Number(index));
+    return this.toResponse(row);
+  }
+
   private toResponse(row: SystemSettingsRow): SettingsResponse {
     const groq = this.service.parseKeys(row.groq_api_keys);
     const cerebras = this.service.parseKeys(row.cerebras_api_keys);
@@ -81,19 +102,21 @@ export class SystemSettingsController {
     const sambanova = this.service.parseKeys(row.sambanova_api_keys);
 
     return {
-      groq_api_keys: row.groq_api_keys || '',
+      // chaves nunca voltam cruas — só mascaradas (segurança).
+      groq_api_keys_masked: groq.map((k) => this.service.maskKey(k)),
       groq_api_keys_count: groq.length,
-      cerebras_api_keys: row.cerebras_api_keys || '',
+      cerebras_api_keys_masked: cerebras.map((k) => this.service.maskKey(k)),
       cerebras_api_keys_count: cerebras.length,
-      gemini_api_keys: row.gemini_api_keys || '',
+      gemini_api_keys_masked: gemini.map((k) => this.service.maskKey(k)),
       gemini_api_keys_count: gemini.length,
-      mistral_api_keys: row.mistral_api_keys || '',
+      mistral_api_keys_masked: mistral.map((k) => this.service.maskKey(k)),
       mistral_api_keys_count: mistral.length,
-      openrouter_api_keys: row.openrouter_api_keys || '',
+      openrouter_api_keys_masked: openrouter.map((k) => this.service.maskKey(k)),
       openrouter_api_keys_count: openrouter.length,
-      sambanova_api_keys: row.sambanova_api_keys || '',
+      sambanova_api_keys_masked: sambanova.map((k) => this.service.maskKey(k)),
       sambanova_api_keys_count: sambanova.length,
       resend_api_key: row.resend_api_key || '',
+      resend_webhook_secret: row.resend_webhook_secret || '',
       webchat_edge_ip: row.webchat_edge_ip || '',
       certbot_email: row.certbot_email || '',
       updated_at: row.updated_at,

@@ -1,5 +1,5 @@
 // assets
-import CalendarTodayTwoTone from '@mui/icons-material/CalendarTodayTwoTone';
+import { CalendarTodayTwoToneIcon as CalendarTodayTwoTone } from 'ui-component/icons';
 
 // ==============================|| OVERRIDES - DATE PICKER ||============================== //
 

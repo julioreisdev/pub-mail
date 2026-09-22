@@ -24,22 +24,26 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import DialogActions from '@mui/material/DialogActions';
 
-import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
-import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import UploadRoundedIcon from '@mui/icons-material/UploadRounded';
-import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
-import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
-import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
+import { ExpandMoreRoundedIcon as ExpandMoreRoundedIcon } from 'ui-component/icons';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { ArrowUpwardRoundedIcon as ArrowUpwardRoundedIcon } from 'ui-component/icons';
+import { ArrowDownwardRoundedIcon as ArrowDownwardRoundedIcon } from 'ui-component/icons';
+import { SaveRoundedIcon as SaveRoundedIcon } from 'ui-component/icons';
+import { UploadRoundedIcon as UploadRoundedIcon } from 'ui-component/icons';
+import { DownloadRoundedIcon as DownloadRoundedIcon } from 'ui-component/icons';
+import { RestartAltRoundedIcon as RestartAltRoundedIcon } from 'ui-component/icons';
+import { ArrowBackRoundedIcon as ArrowBackRoundedIcon } from 'ui-component/icons';
+import { OpenInNewRoundedIcon as OpenInNewRoundedIcon } from 'ui-component/icons';
+import { ImageRoundedIcon as ImageRoundedIcon } from 'ui-component/icons';
+import { TitleRoundedIcon as TitleRoundedIcon } from 'ui-component/icons';
+import { NotesRoundedIcon as NotesRoundedIcon } from 'ui-component/icons';
+import { HorizontalRuleRoundedIcon as HorizontalRuleRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
 
 import { get, patch } from 'api/api';
 import QuizView from './QuizView';
-import { normalizeQuizConfig, buildPresetConfig, QUIZ_PRESETS, uid } from './quizConfig';
+import { normalizeQuizConfig, buildPresetConfig, QUIZ_PRESETS, uid, createContentBlock } from './quizConfig';
 
 // ---- upload -> data URL otimizado (sem backend) ----
 async function fileToDataUrl(file) {
@@ -159,6 +163,67 @@ function Section({ title, defaultExpanded, children }) {
   );
 }
 
+// Editor de um bloco de conteúdo (abaixo dos botões): texto/título, imagem, divisor.
+function ContentBlockEditor({ block: b, index, total, onChange, onRemove, onMove }) {
+  const label = b.type === 'image' ? 'Imagem' : b.type === 'divider' ? 'Divisor' : b.weight >= 700 ? 'Título' : 'Texto';
+  return (
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, p: 0.9, bgcolor: 'action.hover' }}>
+      <Stack direction="row" alignItems="center" spacing={0.25} sx={{ mb: 0.75 }}>
+        <Chip size="small" label={label} sx={{ height: 20, borderRadius: 1 }} />
+        <Box sx={{ flex: 1 }} />
+        <IconButton size="small" disabled={index === 0} onClick={() => onMove(-1)}><ArrowUpwardRoundedIcon sx={{ fontSize: 16 }} /></IconButton>
+        <IconButton size="small" disabled={index === total - 1} onClick={() => onMove(1)}><ArrowDownwardRoundedIcon sx={{ fontSize: 16 }} /></IconButton>
+        <IconButton size="small" color="error" onClick={onRemove}><DeleteRoundedIcon sx={{ fontSize: 16 }} /></IconButton>
+      </Stack>
+
+      {b.type === 'text' ? (
+        <Stack spacing={1}>
+          <TextField size="small" fullWidth multiline minRows={2} label="Texto" value={b.text} onChange={(e) => onChange({ text: e.target.value })} />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
+            <TextField size="small" select label="Alinhar" value={b.align} onChange={(e) => onChange({ align: e.target.value })} sx={{ minWidth: 100 }}>
+              <MenuItem value="left">Esquerda</MenuItem>
+              <MenuItem value="center">Centro</MenuItem>
+              <MenuItem value="right">Direita</MenuItem>
+            </TextField>
+            <TextField size="small" type="number" label="Tamanho" value={b.size} onChange={(e) => onChange({ size: Number(e.target.value) || 14 })} inputProps={{ min: 9, max: 48 }} sx={{ width: 92 }} />
+            <TextField size="small" select label="Peso" value={b.weight} onChange={(e) => onChange({ weight: Number(e.target.value) })} sx={{ minWidth: 96 }}>
+              <MenuItem value={400}>Normal</MenuItem>
+              <MenuItem value={600}>Semi</MenuItem>
+              <MenuItem value={700}>Negrito</MenuItem>
+            </TextField>
+            <ColorField label="Cor" value={b.color} onChange={(v) => onChange({ color: v })} />
+          </Stack>
+        </Stack>
+      ) : null}
+
+      {b.type === 'image' ? (
+        <Stack spacing={1}>
+          <ImageField label="Imagem (upload ou link)" value={b.url} onChange={(v) => onChange({ url: v })} />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
+            <TextField size="small" select label="Alinhar" value={b.align} onChange={(e) => onChange({ align: e.target.value })} sx={{ minWidth: 100 }}>
+              <MenuItem value="left">Esquerda</MenuItem>
+              <MenuItem value="center">Centro</MenuItem>
+              <MenuItem value="right">Direita</MenuItem>
+            </TextField>
+            <Box sx={{ minWidth: 130 }}>
+              <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>Largura: {b.widthPct}%</Typography>
+              <Slider size="small" min={10} max={100} value={b.widthPct} onChange={(_, v) => onChange({ widthPct: v })} />
+            </Box>
+            <TextField size="small" type="number" label="Cantos" value={b.radius} onChange={(e) => onChange({ radius: Number(e.target.value) || 0 })} inputProps={{ min: 0, max: 40 }} sx={{ width: 92 }} />
+          </Stack>
+        </Stack>
+      ) : null}
+
+      {b.type === 'divider' ? (
+        <Stack direction="row" spacing={1} alignItems="center">
+          <ColorField label="Cor" value={b.color} onChange={(v) => onChange({ color: v })} />
+          <TextField size="small" type="number" label="Espessura" value={b.thickness} onChange={(e) => onChange({ thickness: Number(e.target.value) || 1 })} inputProps={{ min: 1, max: 10 }} sx={{ width: 100 }} />
+        </Stack>
+      ) : null}
+    </Box>
+  );
+}
+
 export default function QuizBuilder() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -255,6 +320,9 @@ export default function QuizBuilder() {
       return c;
     });
   const setQuestionText = (qid, text) => mutate((c) => ((c.questions.find((q) => q.id === qid).text = text), c));
+  const setQuestion = (qid, k, v) => mutate((c) => ((c.questions.find((q) => q.id === qid)[k] = v), c));
+  const setOptionClass = (qid, oid, cssClass) =>
+    mutate((c) => ((c.questions.find((q) => q.id === qid).options.find((o) => o.id === oid).cssClass = cssClass), c));
   const addOption = (qid) => mutate((c) => (c.questions.find((q) => q.id === qid).options.push({ id: uid('o'), label: 'Nova opção' }), c));
   const removeOption = (qid, oid) =>
     mutate((c) => {
@@ -266,6 +334,41 @@ export default function QuizBuilder() {
     mutate((c) => ((c.questions.find((q) => q.id === qid).options.find((o) => o.id === oid).label = label), c));
   const setOptionRedirect = (qid, oid, url) =>
     mutate((c) => ((c.questions.find((q) => q.id === qid).options.find((o) => o.id === oid).redirect = url), c));
+
+  // conteúdo abaixo dos botões (por pergunta)
+  const ensureContent = (q) => {
+    if (!Array.isArray(q.content)) q.content = [];
+    return q.content;
+  };
+  const addContent = (qid, type) =>
+    mutate((c) => {
+      const q = c.questions.find((x) => x.id === qid);
+      ensureContent(q).push(createContentBlock(type));
+      return c;
+    });
+  const updateContent = (qid, cid, patch) =>
+    mutate((c) => {
+      const q = c.questions.find((x) => x.id === qid);
+      const b = ensureContent(q).find((x) => x.id === cid);
+      if (b) Object.assign(b, patch);
+      return c;
+    });
+  const removeContent = (qid, cid) =>
+    mutate((c) => {
+      const q = c.questions.find((x) => x.id === qid);
+      q.content = ensureContent(q).filter((x) => x.id !== cid);
+      return c;
+    });
+  const moveContent = (qid, cid, dir) =>
+    mutate((c) => {
+      const q = c.questions.find((x) => x.id === qid);
+      const arr = ensureContent(q);
+      const i = arr.findIndex((x) => x.id === cid);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= arr.length) return c;
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return c;
+    });
 
   // páginas legais
   const addLegal = () => mutate((c) => (c.legal.pages.push({ id: uid('lp'), label: 'Nova página', href: '' }), c));
@@ -515,6 +618,43 @@ export default function QuizBuilder() {
                     </Tooltip>
                   </Stack>
                   <TextField size="small" fullWidth label="Pergunta" value={q.text} onChange={(e) => setQuestionText(q.id, e.target.value)} sx={{ mb: 1 }} />
+
+                  {/* Texto descritivo (acima/abaixo da pergunta) */}
+                  <Box sx={{ border: '1px dashed', borderColor: 'divider', borderRadius: 1.5, p: 0.75, mb: 1 }}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Texto descritivo (opcional)"
+                      value={q.description || ''}
+                      onChange={(e) => setQuestion(q.id, 'description', e.target.value)}
+                      multiline
+                      minRows={2}
+                      placeholder="Texto que descreve a pergunta. Ex.: Escolha a opção que mais combina com você."
+                      sx={{ '& textarea': { fontSize: 13 } }}
+                    />
+                    <Stack spacing={1} sx={{ mt: 1 }}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <TextField size="small" select label="Posição" value={q.descriptionPosition || 'below'} onChange={(e) => setQuestion(q.id, 'descriptionPosition', e.target.value)} fullWidth>
+                          <MenuItem value="above">Acima da pergunta</MenuItem>
+                          <MenuItem value="below">Abaixo da pergunta</MenuItem>
+                        </TextField>
+                        <TextField size="small" select label="Alinhar" value={q.descriptionAlign || 'center'} onChange={(e) => setQuestion(q.id, 'descriptionAlign', e.target.value)} sx={{ minWidth: 120 }}>
+                          <MenuItem value="left">Esquerda</MenuItem>
+                          <MenuItem value="center">Centro</MenuItem>
+                          <MenuItem value="right">Direita</MenuItem>
+                        </TextField>
+                      </Stack>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <ColorField label="Cor" value={q.descriptionColor || ''} onChange={(v) => setQuestion(q.id, 'descriptionColor', v)} />
+                        <TextField size="small" type="number" label="Tamanho" value={q.descriptionSize || 14} onChange={(e) => setQuestion(q.id, 'descriptionSize', Number(e.target.value) || 14)} inputProps={{ min: 9, max: 40 }} sx={{ width: 96 }} />
+                        <Stack direction="row" alignItems="center">
+                          <Switch size="small" checked={q.descriptionBold === true} onChange={(e) => setQuestion(q.id, 'descriptionBold', e.target.checked)} />
+                          <Typography variant="caption">Negrito</Typography>
+                        </Stack>
+                      </Stack>
+                    </Stack>
+                  </Box>
+
                   <Stack spacing={1}>
                     {q.options.map((o) => (
                       <Box key={o.id} sx={{ border: '1px dashed', borderColor: 'divider', borderRadius: 1.5, p: 0.75 }}>
@@ -532,12 +672,46 @@ export default function QuizBuilder() {
                           placeholder="↪ Redirecionar p/ esta resposta (opcional)"
                           sx={{ mt: 0.5, '& input': { fontSize: 12.5 } }}
                         />
+                        <TextField
+                          size="small"
+                          fullWidth
+                          value={o.cssClass || ''}
+                          onChange={(e) => setOptionClass(q.id, o.id, e.target.value)}
+                          placeholder="Classes CSS do botão (separadas por espaço)"
+                          sx={{ mt: 0.5, '& input': { fontSize: 12.5, fontFamily: 'monospace' } }}
+                        />
                       </Box>
                     ))}
                   </Stack>
                   <Button size="small" startIcon={<AddRoundedIcon />} onClick={() => addOption(q.id)} sx={{ mt: 0.75 }}>
                     Botão
                   </Button>
+
+                  {/* Conteúdo abaixo dos botões */}
+                  <Box sx={{ mt: 1.5, pt: 1.25, borderTop: '1px dashed', borderColor: 'divider' }}>
+                    <Typography variant="caption" sx={{ fontWeight: 800, color: 'text.secondary' }}>
+                      Conteúdo abaixo dos botões
+                    </Typography>
+                    <Stack spacing={1} sx={{ mt: 0.75 }}>
+                      {(q.content || []).map((b, ci) => (
+                        <ContentBlockEditor
+                          key={b.id}
+                          block={b}
+                          index={ci}
+                          total={q.content.length}
+                          onChange={(patch) => updateContent(q.id, b.id, patch)}
+                          onRemove={() => removeContent(q.id, b.id)}
+                          onMove={(dir) => moveContent(q.id, b.id, dir)}
+                        />
+                      ))}
+                    </Stack>
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mt: 1, gap: 0.5 }}>
+                      <Button size="small" startIcon={<TitleRoundedIcon fontSize="small" />} onClick={() => addContent(q.id, 'heading')}>Título</Button>
+                      <Button size="small" startIcon={<NotesRoundedIcon fontSize="small" />} onClick={() => addContent(q.id, 'text')}>Texto</Button>
+                      <Button size="small" startIcon={<ImageRoundedIcon fontSize="small" />} onClick={() => addContent(q.id, 'image')}>Imagem</Button>
+                      <Button size="small" startIcon={<HorizontalRuleRoundedIcon fontSize="small" />} onClick={() => addContent(q.id, 'divider')}>Divisor</Button>
+                    </Stack>
+                  </Box>
                 </Box>
               ))}
             </Stack>
@@ -602,6 +776,22 @@ export default function QuizBuilder() {
                   </Stack>
                 ) : null}
                 <TextField size="small" label="Texto do botão final" value={config.leadCapture.buttonLabel} onChange={(e) => setLead('buttonLabel', e.target.value)} />
+                <ColorField
+                  label="Cor de fundo do botão"
+                  value={config.leadCapture.buttonBgColor || ''}
+                  onChange={(v) => setLead('buttonBgColor', v)}
+                />
+                <Typography variant="caption" color="text.secondary" sx={{ mt: -0.5 }}>
+                  Vazio = usa a cor de botão do tema.
+                </Typography>
+                <TextField
+                  size="small"
+                  label="Classes CSS do botão (separadas por espaço)"
+                  value={config.leadCapture.buttonCssClass || ''}
+                  onChange={(e) => setLead('buttonCssClass', e.target.value)}
+                  placeholder="ex.: minha-classe outra-classe"
+                  sx={{ '& input': { fontSize: 12.5, fontFamily: 'monospace' } }}
+                />
                 <Alert severity="info" sx={{ py: 0 }}>
                   O e-mail roteia o lead pro projeto vinculado. Sem projeto/sem e-mail, o lead fica salvo em <b>Leads</b> com a origem deste quiz.
                 </Alert>

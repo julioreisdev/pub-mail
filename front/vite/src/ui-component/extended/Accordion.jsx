@@ -8,7 +8,7 @@ import MuiAccordionSummary from '@mui/material/AccordionSummary';
 import Box from '@mui/material/Box';
 
 // assets
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ExpandMoreIcon as ExpandMoreIcon } from 'ui-component/icons';
 
 // ==============================|| ACCORDION ||============================== //
 

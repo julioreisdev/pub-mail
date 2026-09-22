@@ -21,10 +21,10 @@ import SkeletonPopularCard from 'ui-component/cards/Skeleton/PopularCard';
 import { gridSpacing } from 'store/constant';
 
 // assets
-import ChevronRightOutlinedIcon from '@mui/icons-material/ChevronRightOutlined';
-import MoreHorizOutlinedIcon from '@mui/icons-material/MoreHorizOutlined';
-import KeyboardArrowUpOutlinedIcon from '@mui/icons-material/KeyboardArrowUpOutlined';
-import KeyboardArrowDownOutlinedIcon from '@mui/icons-material/KeyboardArrowDownOutlined';
+import { ChevronRightOutlinedIcon as ChevronRightOutlinedIcon } from 'ui-component/icons';
+import { MoreHorizOutlinedIcon as MoreHorizOutlinedIcon } from 'ui-component/icons';
+import { KeyboardArrowUpOutlinedIcon as KeyboardArrowUpOutlinedIcon } from 'ui-component/icons';
+import { KeyboardArrowDownOutlinedIcon as KeyboardArrowDownOutlinedIcon } from 'ui-component/icons';
 
 export default function PopularCard({ isLoading }) {
   const [anchorEl, setAnchorEl] = React.useState(null);

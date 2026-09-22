@@ -1,8 +1,8 @@
 // assets
-import { IconMailBolt, IconHome } from '@tabler/icons-react';
+import { IconMailBolt, IconHome, IconLayoutDashboard } from '@tabler/icons-react';
 
 // constant
-const icons = { IconMailBolt, IconHome };
+const icons = { IconMailBolt, IconHome, IconLayoutDashboard };
 
 // ==============================|| DASHBOARD MENU ITEMS ||============================== //
 
@@ -10,6 +10,7 @@ const dashboard = {
   id: 'default',
   title: 'Dashboard',
   type: 'group',
+  icon: icons.IconLayoutDashboard,
   children: [
     {
       id: 'dash',

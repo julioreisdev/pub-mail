@@ -19,4 +19,14 @@ export class UpdateScheduleSentDto {
     @IsOptional()
     @IsString()
     error_message?: string;
+
+    @IsOptional()
+    @IsInt()
+    @Min(0)
+    invalid_count?: number;
+
+    @IsOptional()
+    @IsInt()
+    @Min(0)
+    failed_count?: number;
 }

@@ -34,10 +34,25 @@ function asRole(value: any, fallback: users_role): users_role {
 export class AdminService {
   constructor(private prisma: PrismaService) {}
 
+  // ---- Organização OCULTA (conta do desenvolvedor) ----
+  // Org com hidden=true (e seus usuários) é tratada como INEXISTENTE pela API admin para
+  // qualquer um de fora dela: some das listagens e dá 404 em editar/senha/apagar/criar usuário.
+  private async seesHidden(viewerOrgId?: string): Promise<boolean> {
+    if (!viewerOrgId) return false;
+    const o = await this.prisma.organizations.findUnique({ where: { id: viewerOrgId }, select: { hidden: true } });
+    return o?.hidden === true;
+  }
+  private async assertOrgVisible(orgId: string, viewerOrgId: string | undefined, msg: string) {
+    const o = await this.prisma.organizations.findUnique({ where: { id: orgId }, select: { hidden: true } });
+    if (o?.hidden && !(await this.seesHidden(viewerOrgId))) throw new NotFoundException(msg);
+  }
+
   // ===== Organizações =====
 
-  async listOrganizations() {
+  async listOrganizations(viewerOrgId?: string) {
+    const showHidden = await this.seesHidden(viewerOrgId);
     const orgs = await this.prisma.organizations.findMany({
+      where: showHidden ? {} : { hidden: false },
       orderBy: { created_at: 'desc' },
       select: {
         id: true,
@@ -109,7 +124,8 @@ export class AdminService {
     }
   }
 
-  async updateOrganization(id: string, dto: UpdateOrganizationDto) {
+  async updateOrganization(id: string, dto: UpdateOrganizationDto, viewerOrgId?: string) {
+    await this.assertOrgVisible(id, viewerOrgId, 'Organização não encontrada.');
     const org = await this.prisma.organizations.findUnique({ where: { id } });
     if (!org) throw new NotFoundException('Organização não encontrada.');
     const data: any = {};
@@ -133,7 +149,8 @@ export class AdminService {
   // mistos (Cascade + NoAction), desabilitamos FOREIGN_KEY_CHECKS dentro da
   // transação e apagamos cada tabela do tenant. O try/finally garante que o
   // FK check volta a ON mesmo em erro (não vaza estado na conexão do pool).
-  async removeOrganization(id: string) {
+  async removeOrganization(id: string, viewerOrgId?: string) {
+    await this.assertOrgVisible(id, viewerOrgId, 'Organização não encontrada.');
     const org = await this.prisma.organizations.findUnique({ where: { id } });
     if (!org) throw new NotFoundException('Organização não encontrada.');
 
@@ -166,6 +183,22 @@ export class AdminService {
             'DELETE FROM email_schedules_sent_opens WHERE schedule_sent_id IN (SELECT id FROM email_projects_schedules_sent WHERE organization_id = ?)',
             id,
           );
+          await tx.$executeRawUnsafe(
+            'DELETE FROM email_behavior_trigger_fires WHERE trigger_id IN (SELECT id FROM email_behavior_triggers WHERE organization_id = ?)',
+            id,
+          );
+          await tx.$executeRawUnsafe(
+            'DELETE FROM email_behavior_triggers WHERE organization_id = ?',
+            id,
+          );
+          await tx.$executeRawUnsafe(
+            'DELETE FROM email_ab_variants WHERE ab_test_id IN (SELECT id FROM email_ab_tests WHERE organization_id = ?)',
+            id,
+          );
+          await tx.$executeRawUnsafe(
+            'DELETE FROM email_ab_tests WHERE organization_id = ?',
+            id,
+          );
 
           // Diretas (têm organization_id).
           const where = { where: { organization_id: id } };
@@ -189,6 +222,9 @@ export class AdminService {
           await tx.organization_social_app_credentials.deleteMany(where);
           await tx.posts.deleteMany(where);
           await tx.email_projects_schedules_sent.deleteMany(where);
+          await tx.email_flow_enrollments.deleteMany(where);
+          await tx.email_flow_steps.deleteMany({ where: { flow: { organization_id: id } } });
+          await tx.email_flows.deleteMany(where);
           await tx.email_projects.deleteMany(where);
           await tx.email_leads.deleteMany(where);
           await tx.organization_domains.deleteMany(where);
@@ -209,8 +245,10 @@ export class AdminService {
 
   // ===== Usuários =====
 
-  async listUsers() {
+  async listUsers(viewerOrgId?: string) {
+    const showHidden = await this.seesHidden(viewerOrgId);
     return this.prisma.users.findMany({
+      where: showHidden ? {} : { organizations: { hidden: false } },
       orderBy: { name: 'asc' },
       select: {
         ...userSelect,
@@ -219,7 +257,8 @@ export class AdminService {
     });
   }
 
-  async createUser(dto: CreateAdminUserDto) {
+  async createUser(dto: CreateAdminUserDto, viewerOrgId?: string) {
+    if (dto.organization_id) await this.assertOrgVisible(String(dto.organization_id), viewerOrgId, 'Organização não encontrada.');
     const email = String(dto.email || '').toLowerCase().trim();
     if (!email) throw new BadRequestException('E-mail é obrigatório.');
     if (!dto.organization_id) {
@@ -258,9 +297,10 @@ export class AdminService {
     }
   }
 
-  async updateUser(id: string, dto: UpdateAdminUserDto) {
+  async updateUser(id: string, dto: UpdateAdminUserDto, viewerOrgId?: string) {
     const user = await this.prisma.users.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuário não encontrado.');
+    await this.assertOrgVisible(user.organization_id, viewerOrgId, 'Usuário não encontrado.');
     const data: any = {};
     if (dto.name !== undefined) data.name = String(dto.name).trim();
     if (dto.role !== undefined) data.role = asRole(dto.role, user.role);
@@ -268,12 +308,13 @@ export class AdminService {
     return this.prisma.users.update({ where: { id }, data, select: userSelect });
   }
 
-  async changePassword(id: string, password: string) {
+  async changePassword(id: string, password: string, viewerOrgId?: string) {
     if (!password || String(password).length < 6) {
       throw new BadRequestException('Senha deve ter ao menos 6 caracteres.');
     }
     const user = await this.prisma.users.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuário não encontrado.');
+    await this.assertOrgVisible(user.organization_id, viewerOrgId, 'Usuário não encontrado.');
     const password_hash = await bcrypt.hash(String(password), 12);
     // Invalida sessões existentes ao trocar a senha.
     await this.prisma.users.update({
@@ -284,9 +325,10 @@ export class AdminService {
   }
 
   // Hard-delete do usuário (nenhuma tabela referencia users.id por FK).
-  async removeUser(id: string, currentUserId: string) {
+  async removeUser(id: string, currentUserId: string, viewerOrgId?: string) {
     const user = await this.prisma.users.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Usuário não encontrado.');
+    await this.assertOrgVisible(user.organization_id, viewerOrgId, 'Usuário não encontrado.');
     if (id === currentUserId) {
       throw new BadRequestException('Você não pode remover a si mesmo.');
     }

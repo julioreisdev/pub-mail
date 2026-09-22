@@ -9,22 +9,34 @@ export default function OutlinedInput(theme, borderRadius, outlinedFilled) {
           borderRadius: `${borderRadius}px`,
 
           '& .MuiOutlinedInput-notchedOutline': {
-            borderColor: theme.vars.palette.grey[400]
+            borderColor: theme.vars.palette.divider
           },
-
-          '&:hover $notchedOutline': {
+          '&:hover .MuiOutlinedInput-notchedOutline': {
             borderColor: theme.vars.palette.primary.light
           },
-
+          '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+            borderColor: theme.vars.palette.primary.main,
+            borderWidth: 1
+          },
           '&.MuiInputBase-multiline': {
             padding: 1
           }
         },
         input: {
           fontWeight: 500,
-          background: outlinedFilled ? theme.vars.palette.grey[50] : 'transparent',
-          padding: '15.5px 14px',
+          background: 'transparent',
+          padding: '14px 14px',
           borderRadius: `${borderRadius}px`,
+
+          // Neutraliza o fundo azul do autofill do Chrome (usa a superfície do tema)
+          // e mantém o texto legível em light/dark — some o "campo azul" e o "olho descolado".
+          '&:-webkit-autofill, &:-webkit-autofill:hover, &:-webkit-autofill:focus, &:-webkit-autofill:active': {
+            WebkitBoxShadow: `0 0 0 1000px ${theme.vars.palette.background.paper} inset`,
+            WebkitTextFillColor: theme.vars.palette.text.primary,
+            caretColor: theme.vars.palette.text.primary,
+            borderRadius: 'inherit',
+            transition: 'background-color 9999s ease-in-out 0s'
+          },
 
           '&.MuiInputBase-inputSizeSmall': {
             padding: '10px 14px',

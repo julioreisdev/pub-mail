@@ -22,23 +22,28 @@ import {
     MenuItem
 } from '@mui/material';
 
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import MarkEmailReadRoundedIcon from '@mui/icons-material/MarkEmailReadRounded';
-import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
-import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
-import TodayRoundedIcon from '@mui/icons-material/TodayRounded';
-import EventRoundedIcon from '@mui/icons-material/EventRounded';
-import AutorenewRoundedIcon from '@mui/icons-material/AutorenewRounded';
-import AccessTimeRoundedIcon from '@mui/icons-material/AccessTimeRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import SubjectRoundedIcon from '@mui/icons-material/SubjectRounded';
-import TextSnippetRoundedIcon from '@mui/icons-material/TextSnippetRounded';
-import CodeRoundedIcon from '@mui/icons-material/CodeRounded';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { MarkEmailReadRoundedIcon as MarkEmailReadRoundedIcon } from 'ui-component/icons';
+import { ErrorOutlineRoundedIcon as ErrorOutlineRoundedIcon } from 'ui-component/icons';
+import { ScheduleRoundedIcon as ScheduleRoundedIcon } from 'ui-component/icons';
+import { TodayRoundedIcon as TodayRoundedIcon } from 'ui-component/icons';
+import { EventRoundedIcon as EventRoundedIcon } from 'ui-component/icons';
+import { AutorenewRoundedIcon as AutorenewRoundedIcon } from 'ui-component/icons';
+import { AccessTimeRoundedIcon as AccessTimeRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { SubjectRoundedIcon as SubjectRoundedIcon } from 'ui-component/icons';
+import { TextSnippetRoundedIcon as TextSnippetRoundedIcon } from 'ui-component/icons';
+import { CodeRoundedIcon as CodeRoundedIcon } from 'ui-component/icons';
+import { ForwardToInboxRoundedIcon as ForwardToInboxRoundedIcon } from 'ui-component/icons';
+import CircularProgress from '@mui/material/CircularProgress';
+import TextField from '@mui/material/TextField';
 
+import toast from 'react-hot-toast';
+import { get, post } from '../../../api/api';
 import useSchedulesSents from '../../../hooks/useSchedulesSents';
 import { DispatchNowButton } from './DispatchNowButton';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import { PlayArrowIcon as PlayArrowIcon } from 'ui-component/icons';
 import OpenRateMini from './OpenRateMini';
 
 const monoFont = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
@@ -202,7 +207,7 @@ function getScheduleChip(sentItem) {
     return { label: 'Intervalo', icon: <AutorenewRoundedIcon sx={{ fontSize: 16 }} />, color: 'default' };
 }
 
-function SentCard({ sentItem, onOpenBody, onCopy, disableActions }) {
+function SentCard({ sentItem, onOpenBody, onCopy, onResend, disableActions }) {
     const statusSent = sentItem?.status;
 
     const statusMeta =
@@ -224,7 +229,11 @@ function SentCard({ sentItem, onOpenBody, onCopy, disableActions }) {
     const when = (() => {
         const type = getScheduleType(sentItem);
         const day = type === 'Dia específico' ? formatIsoDateOnlyFromString(sentItem?.schedule_date) : null;
-        const hour = scheduleTime !== null ? `${pad2(scheduleTime)}:00` : null;
+        // schedule_time é minuto-do-dia (0..1439) → HH:MM
+        const hour =
+            scheduleTime !== null
+                ? `${pad2(Math.floor(scheduleTime / 60))}:${pad2(scheduleTime % 60)}`
+                : null;
 
         if (type === 'Diário' && hour) return `Diário • ${hour}`;
         if (type === 'Dia específico' && day && hour) return `Dia específico • ${day} • ${hour}`;
@@ -286,6 +295,13 @@ function SentCard({ sentItem, onOpenBody, onCopy, disableActions }) {
             <Typography variant="body2" sx={{ fontWeight: 900, mt: 0.35 }}>
                 {when}
             </Typography>
+            {(Number(sentItem?.delivered_count) > 0 || Number(sentItem?.bounced_count) > 0 || Number(sentItem?.complained_count) > 0) ? (
+                <Stack direction="row" spacing={0.5} sx={{ mt: 0.6, flexWrap: 'wrap', gap: 0.5 }}>
+                    {Number(sentItem?.delivered_count) > 0 ? <Chip size="small" color="success" variant="outlined" label={`${sentItem.delivered_count} entregues`} sx={{ borderRadius: 1.5, height: 22 }} /> : null}
+                    {Number(sentItem?.bounced_count) > 0 ? <Chip size="small" color="warning" variant="outlined" label={`${sentItem.bounced_count} bounce${sentItem.bounced_count === 1 ? '' : 's'}`} sx={{ borderRadius: 1.5, height: 22 }} /> : null}
+                    {Number(sentItem?.complained_count) > 0 ? <Chip size="small" color="error" variant="outlined" label={`${sentItem.complained_count} spam`} sx={{ borderRadius: 1.5, height: 22 }} /> : null}
+                </Stack>
+            ) : null}
             <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap' }}>
                 <Stack direction="row" spacing={0.5} alignItems="center">
                     <AccessTimeRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
@@ -373,12 +389,106 @@ function SentCard({ sentItem, onOpenBody, onCopy, disableActions }) {
                             </IconButton>
                         </span>
                     </Tooltip>
+
+                    {sentItem?.sent && hasHtml ? (
+                        <Tooltip title="Reenviar para quem não abriu">
+                            <span>
+                                <IconButton
+                                    size="small"
+                                    color="secondary"
+                                    disabled={disableActions}
+                                    onClick={() => onResend?.(sentItem)}
+                                    sx={{ borderRadius: 2 }}
+                                >
+                                    <ForwardToInboxRoundedIcon fontSize="small" />
+                                </IconButton>
+                            </span>
+                        </Tooltip>
+                    ) : null}
                 </Stack>
             </Box>
             <Typography color="primary" variant="caption" sx={{ fontWeight: 900, display: 'block' }}>
                 Cliques em CTAs: {sentItem?.click_cta_count || 0}
             </Typography>
         </Box>
+    );
+}
+
+// Dialog de reenvio para não-abridores.
+function ResendDialog({ projectId, sentItem, onClose, onDone }) {
+    const open = Boolean(sentItem);
+    const [subject, setSubject] = useState('');
+    const [info, setInfo] = useState(null); // { count, total }
+    const [loading, setLoading] = useState(false);
+    const [sending, setSending] = useState(false);
+
+    useEffect(() => {
+        if (!sentItem) return;
+        setSubject(sentItem.subject || '');
+        setInfo(null);
+        setLoading(true);
+        get(`/email/projects/${projectId}/schedules-sent/${sentItem.id}/unopened-count`)
+            .then((d) => setInfo(d))
+            .catch(() => setInfo(null))
+            .finally(() => setLoading(false));
+    }, [sentItem, projectId]);
+
+    const handleSend = async () => {
+        if (!sentItem) return;
+        setSending(true);
+        try {
+            const r = await post(`/email/projects/${projectId}/schedules-sent/${sentItem.id}/resend-unopened`, { subject });
+            toast.success(r?.sent > 0 ? `Reenviado para ${r.sent} lead(s)! 🎉` : (r?.message || 'Ninguém para reenviar.'));
+            onDone?.();
+            onClose();
+        } catch (e) {
+            toast.error(getErrorMessage(e, 'Falha ao reenviar.'));
+        } finally {
+            setSending(false);
+        }
+    };
+
+    const count = info?.count ?? 0;
+    return (
+        <Dialog open={open} onClose={sending ? undefined : onClose} fullWidth maxWidth="xs">
+            <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <ForwardToInboxRoundedIcon color="secondary" />
+                <Typography variant="h6" sx={{ fontWeight: 900, flex: 1 }}>Reenviar para não-abridores</Typography>
+                <IconButton onClick={onClose} disabled={sending} size="small"><CloseRoundedIcon fontSize="small" /></IconButton>
+            </DialogTitle>
+            <DialogContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                    Reenvia este e-mail só para os inscritos ativos que ainda não abriram. Dica: mude o assunto para aumentar a abertura.
+                </Typography>
+
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.25, borderRadius: 2, bgcolor: 'action.hover', mb: 1.5 }}>
+                    {loading ? <CircularProgress size={16} /> : (
+                        <Typography variant="body1" sx={{ fontWeight: 800 }}>
+                            {count} de {info?.total ?? 0} leads ainda não abriram
+                        </Typography>
+                    )}
+                </Box>
+
+                <TextField
+                    fullWidth size="small" label="Assunto do reenvio"
+                    value={subject} onChange={(e) => setSubject(e.target.value)}
+                    placeholder="Novo assunto (ou mantenha o original)"
+                    helperText="Sugestão: algo como “Você viu isto? 👀”."
+                />
+            </DialogContent>
+            <DialogActions sx={{ p: 2 }}>
+                <Button variant="outlined" onClick={onClose} disabled={sending} sx={{ borderRadius: 2 }}>Cancelar</Button>
+                <Button
+                    variant="contained" color="secondary"
+                    disabled={sending || loading || count === 0 || !subject.trim()}
+                    startIcon={sending ? <CircularProgress size={16} color="inherit" /> : <ForwardToInboxRoundedIcon fontSize="small" />}
+                    onClick={handleSend}
+                    sx={{ borderRadius: 2, fontWeight: 900 }}
+                >
+                    {sending ? 'Reenviando…' : `Reenviar${count ? ` (${count})` : ''}`}
+                </Button>
+            </DialogActions>
+        </Dialog>
     );
 }
 
@@ -394,7 +504,9 @@ function SentCard({ sentItem, onOpenBody, onCopy, disableActions }) {
  */
 export default function Sents({ projectSelected }) {
     const projectId = projectSelected?.id || null;
-    const { sents, isLoading, error, refresh } = useSchedulesSents(projectId);
+    // Envios de reciclagem têm sua própria aba (Leads → Automações → Reciclagem).
+    const { sents, isLoading, error, refresh } = useSchedulesSents(projectId, { recycle: false });
+    const [resendTarget, setResendTarget] = useState(null);
 
     const list = useMemo(() => {
         if (!sents) return [];
@@ -612,7 +724,7 @@ export default function Sents({ projectSelected }) {
                                     maxWidth: { xs: '100%', sm: 'calc(50% - 10px)', lg: 'calc(33.333% - 10px)' }
                                 }}
                             >
-                                <SentCard sentItem={s} onOpenBody={handleOpenBody} onCopy={handleCopy} disableActions={isLoading} />
+                                <SentCard sentItem={s} onOpenBody={handleOpenBody} onCopy={handleCopy} onResend={setResendTarget} disableActions={isLoading} />
                             </Box>
                         ))}
                     </Box>
@@ -633,6 +745,13 @@ export default function Sents({ projectSelected }) {
             />
 
             <Snackbar open={snack.open} autoHideDuration={2200} onClose={() => setSnack((s) => ({ ...s, open: false }))} message={snack.msg} />
+
+            <ResendDialog
+                projectId={projectId}
+                sentItem={resendTarget}
+                onClose={() => setResendTarget(null)}
+                onDone={() => refresh()}
+            />
         </>
     );
 }

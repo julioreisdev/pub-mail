@@ -15,8 +15,8 @@ import AnimateButton from 'ui-component/extended/AnimateButton';
 import CustomFormControl from 'ui-component/extended/Form/CustomFormControl';
 
 // assets
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { VisibilityIcon as Visibility } from 'ui-component/icons';
+import { VisibilityOffIcon as VisibilityOff } from 'ui-component/icons';
 
 import { post } from '../../../api/api';
 
@@ -127,10 +127,11 @@ export default function AuthLogin() {
                 onClick={handleClickShowPassword}
                 onMouseDown={handleMouseDownPassword}
                 edge="end"
-                size="large"
+                size="small"
+                sx={{ color: 'text.secondary', mr: 0.25 }}
                 disabled={isSubmitting}
               >
-                {showPassword ? <Visibility /> : <VisibilityOff />}
+                {showPassword ? <Visibility fontSize="small" /> : <VisibilityOff fontSize="small" />}
               </IconButton>
             </InputAdornment>
           }

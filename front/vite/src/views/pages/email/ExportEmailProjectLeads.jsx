@@ -1,7 +1,7 @@
 // src/views/email-marketing/components/ExportEmailProjectLeads.jsx
 import { useState } from 'react';
 import { Button, CircularProgress } from '@mui/material';
-import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import { DownloadRoundedIcon as DownloadRoundedIcon } from 'ui-component/icons';
 import toast from 'react-hot-toast';
 
 import { get } from '../../../api/api';

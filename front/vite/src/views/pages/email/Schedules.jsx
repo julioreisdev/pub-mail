@@ -18,27 +18,48 @@ import {
     CircularProgress,
     Skeleton,
     InputAdornment,
-    TextField
+    TextField,
+    FormControl,
+    InputLabel,
+    Select,
+    MenuItem,
+    Checkbox,
+    ListItemText,
+    OutlinedInput
 } from '@mui/material';
 
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
-import TodayRoundedIcon from '@mui/icons-material/TodayRounded';
-import EventRoundedIcon from '@mui/icons-material/EventRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import AutorenewRoundedIcon from '@mui/icons-material/AutorenewRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { GroupsRoundedIcon as GroupsRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { SaveRoundedIcon as SaveRoundedIcon } from 'ui-component/icons';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { ScheduleRoundedIcon as ScheduleRoundedIcon } from 'ui-component/icons';
+import { TodayRoundedIcon as TodayRoundedIcon } from 'ui-component/icons';
+import { EventRoundedIcon as EventRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { AutorenewRoundedIcon as AutorenewRoundedIcon } from 'ui-component/icons';
 
 import useSchedules from '../../../hooks/useSchedules';
+import useTemplatesPerProject from '../../../hooks/useTemplatesPerProject';
 import { post, patch, remove } from '../../../api/api';
+import SegmentBuilder from './SegmentBuilder';
 
 const getErrorMessage = (err, fallback = 'Ocorreu um erro') =>
     err?.response?.data?.message || err?.response?.data?.error || err?.message || fallback;
 
 const hourOptions = Array.from({ length: 24 }).map((_, h) => h);
+
+// `time` é minuto-do-dia (0..1439). Helpers de conversão p/ o input HH:MM.
+const minToHHMM = (m) => {
+    const n = Number.isFinite(Number(m)) ? Math.max(0, Math.min(1439, Number(m))) : 0;
+    return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+};
+const hhmmToMin = (s) => {
+    const [h, mm] = String(s || '').split(':').map((x) => parseInt(x, 10));
+    if (!Number.isFinite(h) || !Number.isFinite(mm)) return 0;
+    return Math.max(0, Math.min(1439, h * 60 + mm));
+};
 
 /**
  * HTML <input type="date"> retorna "YYYY-MM-DD"
@@ -144,21 +165,30 @@ function ConfirmDialog({ open, title, description, loading, onClose, onConfirm }
  * - specific day: "Dias específicos"  => payload: { daily: false, time, date: ISO, for_x_days: null }
  * - interval: "A cada X dias"         => payload: { time, for_x_days }  (sem date)
  */
-function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClose, onSubmit }) {
+function UpsertDialog({ open, mode, scheduleType, loading, error, initial, templates = [], projectId, onClose, onSubmit }) {
     // scheduleType: 'daily' | 'specific' | 'interval'
-    const [time, setTime] = useState(10);
+    const [time, setTime] = useState(600); // minuto-do-dia (10:00)
     const [date, setDate] = useState('');
     const [forXDays, setForXDays] = useState(7);
+    const [templateIds, setTemplateIds] = useState([]);
+    const [segment, setSegment] = useState(null);
 
     useEffect(() => {
         if (!open) return;
 
-        setTime(Number.isFinite(initial?.time) ? Number(initial.time) : 10);
+        setTime(Number.isFinite(initial?.time) ? Number(initial.time) : 600);
         setDate(formatDateForInput(initial?.date) || '');
 
         const fx = Number(initial?.for_x_days);
         setForXDays(Number.isFinite(fx) && fx > 0 ? fx : 7);
-    }, [open, initial]);
+
+        const ids = Array.isArray(initial?.template_ids) ? initial.template_ids : [];
+        // só mantém ids que ainda existem no projeto
+        const validIds = ids.filter((id) => templates.some((t) => t.id === id));
+        setTemplateIds(validIds);
+        // segment é semeado direto no SegmentBuilder (via key/value); ele emite
+        // o estado inicial no mount, atualizando `segment` aqui.
+    }, [open, initial, templates]);
 
     const canSubmit = useMemo(() => {
         if (!Number.isFinite(Number(time))) return false;
@@ -180,7 +210,9 @@ function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClo
                 time: Number(time),
                 for_x_days: Number(forXDays),
                 daily: false,
-                date: null
+                date: null,
+                template_ids: templateIds,
+                segment: segment || null
             };
             onSubmit(payload);
             return;
@@ -192,7 +224,9 @@ function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClo
             daily: Boolean(dailyMode),
             time: Number(time),
             date: dailyMode ? null : toISODateTime(date),
-            for_x_days: null
+            for_x_days: null,
+            template_ids: templateIds,
+            segment: segment || null
         };
 
         onSubmit(payload);
@@ -245,13 +279,15 @@ function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClo
 
                         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                             <TextField
-                                label="Hora (0-23)"
-                                select
-                                SelectProps={{ native: true }}
-                                value={time}
-                                onChange={(e) => setTime(Number(e.target.value))}
+                                label="Horário"
+                                type="time"
+                                value={minToHHMM(time)}
+                                onChange={(e) => setTime(hhmmToMin(e.target.value))}
                                 onKeyDown={onKeyDownSubmit}
                                 fullWidth
+                                InputLabelProps={{ shrink: true }}
+                                inputProps={{ step: 60 }}
+                                helperText="Horário de Brasília. Aceita minutos (ex.: 11:30)."
                                 InputProps={{
                                     startAdornment: (
                                         <InputAdornment position="start">
@@ -259,13 +295,7 @@ function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClo
                                         </InputAdornment>
                                     )
                                 }}
-                            >
-                                {hourOptions.map((h) => (
-                                    <option key={h} value={h}>
-                                        {String(h).padStart(2, '0')}:00
-                                    </option>
-                                ))}
-                            </TextField>
+                            />
 
                             {scheduleType === 'specific' ? (
                                 <TextField
@@ -305,6 +335,53 @@ function UpsertDialog({ open, mode, scheduleType, loading, error, initial, onClo
                                 />
                             ) : null}
                         </Stack>
+
+                        <FormControl fullWidth size="small">
+                            <InputLabel id="tpl-select-label">Templates deste agendamento (opcional)</InputLabel>
+                            <Select
+                                labelId="tpl-select-label"
+                                multiple
+                                value={templateIds}
+                                onChange={(e) => setTemplateIds(typeof e.target.value === 'string' ? e.target.value.split(',') : e.target.value)}
+                                input={<OutlinedInput label="Templates deste agendamento (opcional)" />}
+                                renderValue={(selected) =>
+                                    selected.length === 0 ? (
+                                        <em>Todos (comportamento padrão)</em>
+                                    ) : (
+                                        <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                                            {selected.map((id) => {
+                                                const t = templates.find((x) => x.id === id);
+                                                return <Chip key={id} size="small" label={t?.name || 'template'} sx={{ borderRadius: 1.5 }} />;
+                                            })}
+                                        </Stack>
+                                    )
+                                }
+                                MenuProps={{ PaperProps: { style: { maxHeight: 320 } } }}
+                            >
+                                {templates.length === 0 ? (
+                                    <MenuItem disabled value="">
+                                        <em>Nenhum template neste projeto</em>
+                                    </MenuItem>
+                                ) : (
+                                    templates.map((t) => (
+                                        <MenuItem key={t.id} value={t.id}>
+                                            <Checkbox checked={templateIds.indexOf(t.id) > -1} size="small" />
+                                            <ListItemText primary={t.name} secondary={t.subject} />
+                                        </MenuItem>
+                                    ))
+                                )}
+                            </Select>
+                            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                                Se escolher, o disparo sorteia um destes e <b>não apaga</b> os templates. Vazio = usa todos (comportamento atual).
+                            </Typography>
+                        </FormControl>
+
+                        <SegmentBuilder
+                            key={`${open ? 'o' : 'c'}-${initial?.id || 'new'}`}
+                            value={initial?.segment && typeof initial.segment === 'object' ? initial.segment : null}
+                            projectId={projectId}
+                            onChange={setSegment}
+                        />
                     </Stack>
                 </DialogContent>
 
@@ -361,9 +438,9 @@ function ScheduleCard({ schedule, onEdit, onDelete, disableActions }) {
 
     let when = '';
     if (isInterval) {
-        when = `Às ${String(schedule?.time ?? 0).padStart(2, '0')}:00 • A cada ${schedule?.for_x_days} dias`;
+        when = `Às ${minToHHMM(schedule?.time)} • A cada ${schedule?.for_x_days} dias`;
     } else {
-        when = `Às ${String(schedule?.time ?? 0).padStart(2, '0')}:00 ${schedule?.daily ? 'Todo dia' : `em ${schedule?.date?.split('T')[0]?.split('-').reverse().join('/')}`
+        when = `Às ${minToHHMM(schedule?.time)} ${schedule?.daily ? 'Todo dia' : `em ${schedule?.date?.split('T')[0]?.split('-').reverse().join('/')}`
             }`;
     }
 
@@ -383,9 +460,21 @@ function ScheduleCard({ schedule, onEdit, onDelete, disableActions }) {
                 {badge}
 
                 <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="subtitle1" sx={{ fontWeight: 900, lineHeight: 1.1 }}>
-                        {when}
-                    </Typography>
+                    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 900, lineHeight: 1.1 }}>
+                            {when}
+                        </Typography>
+                        {Array.isArray(schedule?.segment?.conditions) && schedule.segment.conditions.length ? (
+                            <Chip
+                                size="small"
+                                color="secondary"
+                                variant="outlined"
+                                icon={<GroupsRoundedIcon sx={{ fontSize: 14 }} />}
+                                label={`Segmento · ${schedule.segment.conditions.length} ${schedule.segment.conditions.length === 1 ? 'regra' : 'regras'}`}
+                                sx={{ borderRadius: 1.5, height: 22 }}
+                            />
+                        ) : null}
+                    </Stack>
 
                     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 0.25 }}>
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -428,6 +517,13 @@ export default function Schedules({ projectSelected }) {
     const projectId = projectSelected?.id || null;
 
     const { schedules, isLoading, error, refresh, mutate } = useSchedules(projectId);
+    const { templates } = useTemplatesPerProject(projectId);
+
+    const templateList = useMemo(() => {
+        if (Array.isArray(templates)) return templates;
+        if (Array.isArray(templates?.items)) return templates.items;
+        return [];
+    }, [templates]);
 
     const list = useMemo(() => {
         if (!schedules) return [];
@@ -708,6 +804,8 @@ export default function Schedules({ projectSelected }) {
                 loading={actionLoading}
                 error={actionError}
                 initial={editingSchedule}
+                templates={templateList}
+                projectId={projectId}
                 onClose={closeUpsert}
                 onSubmit={submitUpsert}
             />

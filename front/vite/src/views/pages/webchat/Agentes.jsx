@@ -18,10 +18,10 @@ import {
   Tooltip,
   Typography
 } from '@mui/material';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 import useAgentes from '../../../hooks/useAgentes';

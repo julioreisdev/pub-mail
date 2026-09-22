@@ -4,6 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { getUnopeners } from '../email-marketing/resend/unopeners.util';
 
 @Injectable()
 export class ProjectSchedulesSentService {
@@ -18,6 +19,7 @@ export class ProjectSchedulesSentService {
     schedule_daily: true,
     schedule_time: true,
     schedule_date: true,
+    recycle: true,
 
     run_at: true,
 
@@ -32,6 +34,9 @@ export class ProjectSchedulesSentService {
     sent_for_leads: true,
     open_count: true,
     click_cta_count: true,
+    delivered_count: true,
+    bounced_count: true,
+    complained_count: true,
 
     created_at: true,
 
@@ -101,6 +106,7 @@ export class ProjectSchedulesSentService {
 
       // ✅ novo
       scheduleId?: string;
+      recycle?: string;
     },
   ) {
     await this.assertProjectFromOrg(organizationId, projectId);
@@ -108,6 +114,7 @@ export class ProjectSchedulesSentService {
     const from = this.parseDateOrThrow(query?.from);
     const to = this.parseDateOrThrow(query?.to);
     const sentFilter = this.parseBooleanOrThrow(query?.sent);
+    const recycleFilter = this.parseBooleanOrThrow(query?.recycle);
     const { take, skip } = this.parsePaginationOrThrow(
       query?.take,
       query?.skip,
@@ -124,6 +131,7 @@ export class ProjectSchedulesSentService {
 
         ...(query?.scheduleId ? { schedule_id: query.scheduleId } : {}),
 
+        ...(recycleFilter !== undefined ? { recycle: recycleFilter } : {}),
         ...(sentFilter !== undefined ? { sent: sentFilter } : {}),
         ...(Object.keys(runAtFilter).length ? { run_at: runAtFilter } : {}),
       },
@@ -132,6 +140,18 @@ export class ProjectSchedulesSentService {
       skip,
       select: this.sentSelect,
     });
+  }
+
+  // Quantos inscritos ativos NÃO abriram este disparo (para o reenvio).
+  async unopenedCount(organizationId: string, projectId: string, sentId: string) {
+    await this.assertProjectFromOrg(organizationId, projectId);
+    const { nonOpeners, totalActive } = await getUnopeners(
+      this.prisma,
+      organizationId,
+      projectId,
+      sentId,
+    );
+    return { count: nonOpeners.length, total: totalActive };
   }
 
   async getOne(organizationId: string, projectId: string, sentId: string) {

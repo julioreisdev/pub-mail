@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
   ParseUUIDPipe,
@@ -16,6 +17,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ProjectSchedulesService } from './project_schedules.service';
 import { CreateEmailProjectScheduleDto } from './dto/create-project_schedule.dto';
 import { UpdateEmailProjectScheduleDto } from './dto/update-project_schedule.dto';
+import { DispatchNowDto } from './dto/dispatch-now.dto';
 
 import {
   ApiTags,
@@ -68,15 +70,61 @@ export class ProjectSchedulesController {
   async dispatchNow(
     @Req() req: any,
     @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Body() dto: DispatchNowDto,
   ) {
     try {
-      // Chama a função passando apenas o ID do projeto
-      const result =
-        await this.emailSchedulesRunner.executeManualDispatch(projectId);
+      // template_id opcional: específico OU aleatório (ausente/null)
+      const result = await this.emailSchedulesRunner.executeManualDispatch(
+        projectId,
+        dto?.template_id ?? null,
+      );
       return result;
     } catch (error: any) {
       throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
     }
+  }
+
+  // -------------------------
+  // REENVIO PARA NÃO-ABRIDORES
+  // POST /email/projects/:projectId/schedules-sent/:sentId/resend-unopened
+  // -------------------------
+  @Post(':projectId/schedules-sent/:sentId/resend-unopened')
+  @ApiOperation({ summary: 'Reenvia um disparo só para quem não abriu' })
+  async resendUnopened(
+    @Req() req: any,
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Param('sentId', new ParseUUIDPipe()) sentId: string,
+    @Body() body: { subject?: string },
+  ) {
+    try {
+      return await this.emailSchedulesRunner.resendToUnopeners(
+        req.user.organizationId,
+        projectId,
+        sentId,
+        body?.subject ?? null,
+      );
+    } catch (error: any) {
+      throw new HttpException(error.message, HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  // -------------------------
+  // PREVIEW SEGMENTO (conta leads que casam)
+  // POST /email/projects/:projectId/segment-preview
+  // -------------------------
+  @Post(':projectId/segment-preview')
+  @ApiOperation({ summary: 'Conta quantos leads casam com um segmento' })
+  @ApiParam({ name: 'projectId', type: String, format: 'uuid' })
+  segmentPreview(
+    @Req() req: any,
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Body() body: { segment?: any },
+  ) {
+    return this.service.previewSegment(
+      req.user.organizationId,
+      projectId,
+      body?.segment ?? null,
+    );
   }
 
   // -------------------------
@@ -216,8 +264,10 @@ export class ProjectSchedulesController {
   list(
     @Req() req: any,
     @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Query('recycle') recycle?: string,
   ) {
-    return this.service.list(req.user.organizationId, projectId);
+    const isRecycle = recycle === 'true' || recycle === '1';
+    return this.service.list(req.user.organizationId, projectId, isRecycle);
   }
 
   // -------------------------

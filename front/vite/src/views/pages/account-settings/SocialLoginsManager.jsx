@@ -17,11 +17,11 @@ import {
     Tooltip,
     Typography
 } from '@mui/material';
-import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import SyncRoundedIcon from '@mui/icons-material/SyncRounded';
-import YouTubeIcon from '@mui/icons-material/YouTube';
-import InstagramIcon from '@mui/icons-material/Instagram';
+import { DeleteOutlineRoundedIcon as DeleteOutlineRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { SyncRoundedIcon as SyncRoundedIcon } from 'ui-component/icons';
+import { YouTubeIcon as YouTubeIcon } from 'ui-component/icons';
+import { InstagramIcon as InstagramIcon } from 'ui-component/icons';
 import { IconBrandTiktokFilled } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 

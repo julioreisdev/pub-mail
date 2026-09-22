@@ -23,14 +23,21 @@ export type ScheduleAfterRunEffect =
 // (independente da TZ do processo) pra "17h" significar 17h BRT.
 const SCHEDULE_TZ = 'America/Sao_Paulo';
 
-// Extrai hora (0..23) e a chave de data YYYY-MM-DD no fuso SCHEDULE_TZ.
-function tzParts(date: Date): { dateKey: string; hour: number } {
+// Extrai hora (0..23), minuto (0..59), minuto-do-dia (0..1439) e a chave de
+// data YYYY-MM-DD no fuso SCHEDULE_TZ.
+function tzParts(date: Date): {
+  dateKey: string;
+  hour: number;
+  minute: number;
+  minuteOfDay: number;
+} {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: SCHEDULE_TZ,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
   });
   const map: Record<string, string> = {};
@@ -39,7 +46,14 @@ function tzParts(date: Date): { dateKey: string; hour: number } {
   }
   let hour = parseInt(map.hour, 10);
   if (!Number.isFinite(hour) || hour === 24) hour = 0; // '24' => 00
-  return { dateKey: `${map.year}-${map.month}-${map.day}`, hour };
+  let minute = parseInt(map.minute, 10);
+  if (!Number.isFinite(minute)) minute = 0;
+  return {
+    dateKey: `${map.year}-${map.month}-${map.day}`,
+    hour,
+    minute,
+    minuteOfDay: hour * 60 + minute,
+  };
 }
 
 // Converte YYYY-MM-DD em "dias absolutos" para diferença de dias estável.
@@ -87,16 +101,17 @@ export class EmailSchedule {
 
   /**
    * Decide se deve rodar nesse instante.
-   * Mantém o comportamento legado: comparação por HORA (topo da hora).
+   * Comparação por MINUTO-DO-DIA em Brasília (suporta horários "quebrados",
+   * ex.: 11:30). O cron tica a cada minuto.
    */
   decide(now: Date): ScheduleRunDecision {
-    // hora "agora" no fuso de Brasília (não na TZ do servidor, que é UTC).
-    const hourNow = tzParts(now).hour;
+    // minuto-do-dia "agora" no fuso de Brasília (não na TZ do servidor).
+    const minNow = tzParts(now).minuteOfDay;
 
-    if (this.isInterval()) return this.decideInterval(now, hourNow);
-    if (this.props.daily) return this.decideDaily(hourNow);
+    if (this.isInterval()) return this.decideInterval(now, minNow);
+    if (this.props.daily) return this.decideDaily(minNow);
 
-    return this.decideOneOff(now, hourNow);
+    return this.decideOneOff(now, minNow);
   }
 
   afterSuccessfulRun(now: Date): ScheduleAfterRunEffect {
@@ -121,25 +136,25 @@ export class EmailSchedule {
     return typeof this.props.forXDays === 'number' && this.props.forXDays > 0;
   }
 
-  private decideDaily(hourNow: number): ScheduleRunDecision {
-    const hourOfSchedule = this.hourFromLegacyTime(this.props.time);
-    if (hourOfSchedule === null) {
+  private decideDaily(minNow: number): ScheduleRunDecision {
+    const minOfSchedule = this.minuteOfDayFromTime(this.props.time);
+    if (minOfSchedule === null) {
       return { shouldRun: false, reason: 'daily schedule has no/invalid time' };
     }
 
-    const ok = hourOfSchedule === hourNow;
+    const ok = minOfSchedule === minNow;
     return {
       shouldRun: ok,
-      reason: ok ? 'daily: hour match' : 'daily: hour mismatch',
+      reason: ok ? 'daily: time match' : 'daily: time mismatch',
     };
   }
 
-  private decideOneOff(now: Date, hourNow: number): ScheduleRunDecision {
+  private decideOneOff(now: Date, minNow: number): ScheduleRunDecision {
     if (!this.props.date)
       return { shouldRun: false, reason: 'one-off schedule has no date' };
 
-    const hourOfSchedule = this.hourFromLegacyTime(this.props.time);
-    if (hourOfSchedule === null) {
+    const minOfSchedule = this.minuteOfDayFromTime(this.props.time);
+    if (minOfSchedule === null) {
       return {
         shouldRun: false,
         reason: 'one-off schedule has no/invalid time',
@@ -151,22 +166,22 @@ export class EmailSchedule {
     const todayDateOnly = tzParts(now).dateKey;
     const scheduleDateOnly = this.localDateOnlyKey(this.props.date, true);
 
-    const ok = scheduleDateOnly === todayDateOnly && hourOfSchedule === hourNow;
+    const ok = scheduleDateOnly === todayDateOnly && minOfSchedule === minNow;
     return {
       shouldRun: ok,
-      reason: ok ? 'one-off: date+hour match' : 'one-off: date/hour mismatch',
+      reason: ok ? 'one-off: date+time match' : 'one-off: date/time mismatch',
     };
   }
 
-  private decideInterval(now: Date, hourNow: number): ScheduleRunDecision {
+  private decideInterval(now: Date, minNow: number): ScheduleRunDecision {
     // invariantes garantem daily=false, date=null, time!=null
-    const hourOfSchedule = this.hourFromLegacyTime(this.props.time);
-    if (hourOfSchedule === null) {
+    const minOfSchedule = this.minuteOfDayFromTime(this.props.time);
+    if (minOfSchedule === null) {
       return { shouldRun: false, reason: 'interval: time is required/invalid' };
     }
 
-    if (hourOfSchedule !== hourNow)
-      return { shouldRun: false, reason: 'interval: hour mismatch' };
+    if (minOfSchedule !== minNow)
+      return { shouldRun: false, reason: 'interval: time mismatch' };
 
     // primeira execução
     if (!this.props.lastRun)
@@ -191,29 +206,23 @@ export class EmailSchedule {
   }
 
   /**
-   * Converte o valor salvo em `time` para "hora do dia" (0..23).
-   *
-   * Aceita:
-   * - hora direta: 0..23
-   * - minutos do dia: 0..1439
+   * Converte o valor salvo em `time` para MINUTO-DO-DIA (0..1439).
+   * `time` é sempre minuto-do-dia (o front manda hora*60+minuto; a migration
+   * converteu os valores legados de hora para minuto-do-dia).
    *
    * Corrige:
    * - 1440 (24:00) => 0 (00:00)
    */
-  private hourFromLegacyTime(time: number | null): number | null {
+  private minuteOfDayFromTime(time: number | null): number | null {
     if (time === null || time === undefined) return null;
     if (!Number.isFinite(time)) return null;
 
-    // frontend manda só a hora (0..23)
-    if (time >= 0 && time <= 23) return Math.trunc(time);
-
-    // ✅ correção do bug: 24:00 (1440) deve ser 00:00 (0)
+    // ✅ 24:00 (1440) deve ser 00:00 (0)
     if (time === 1440) return 0;
 
-    // minutos do dia válidos: 0..1439
     if (time < 0 || time > 1439) return null;
 
-    return Math.floor(time / 60);
+    return Math.trunc(time);
   }
 
   // Helper: chave YYYY-MM-DD
@@ -239,8 +248,8 @@ export class EmailSchedule {
       if (this.props.time === null)
         throw new Error('Invalid interval schedule: time is required');
 
-      // garante que o time é interpretável (evita hour mismatch eterno por time inválido)
-      if (this.hourFromLegacyTime(this.props.time) === null) {
+      // garante que o time é interpretável (evita mismatch eterno por time inválido)
+      if (this.minuteOfDayFromTime(this.props.time) === null) {
         throw new Error('Invalid interval schedule: time is invalid');
       }
     }

@@ -16,7 +16,7 @@ import {
     TextField,
     InputAdornment
 } from '@mui/material';
-import SearchIcon from '@mui/icons-material/Search';
+import { SearchIcon as SearchIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 

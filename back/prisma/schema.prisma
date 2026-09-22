@@ -26,6 +26,7 @@ model organizations {
   name                                String                                @db.VarChar(255)
   document_id                         String?                               @unique(map: "document_id") @db.VarChar(20)
   status                              Boolean                               @default(true)
+  hidden                              Boolean                               @default(false) // org oculta (dev): invisível na API admin
   stripe_customer_id                  String?                               @db.VarChar(255)
   created_at                          DateTime                              @default(now()) @db.DateTime(0)
   updated_at                          DateTime                              @updatedAt @db.DateTime(0)
@@ -48,6 +49,8 @@ model organizations {
   quiz_splits                         quiz_splits[]
   quiz_leads                          quiz_leads[]
   quiz_ads                            quiz_ads[]
+  email_flows                         email_flows[]
+  email_flow_enrollments              email_flow_enrollments[]
   posts                               posts[]
   social_accounts                     social_accounts[]
   social_app_credentials              organization_social_app_credentials[]
@@ -57,6 +60,7 @@ model organizations {
   // Novas relações do Módulo de Avatares
   avatars                             avatars[]
   avatar_generations                  avatar_generations[]
+  telegram_bots                       telegram_bots[]
 }
 
 model transactions {
@@ -111,20 +115,80 @@ model email_projects {
   templates       email_templates[]
   webchats        webchats[]
   quizzes         quizzes[]
+  email_flows     email_flows[]
 
   @@index([organization_id], map: "idx_email_projects_org")
 }
 
+model email_flows {
+  id              String                   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                   @db.Char(36)
+  project_id      String                   @unique(map: "uk_email_flows_project") @db.Char(36)
+  active          Boolean                  @default(false)
+  activated_at    DateTime?                @db.DateTime(0)
+  created_at      DateTime                 @default(now()) @db.DateTime(0)
+  updated_at      DateTime                 @updatedAt @db.DateTime(0)
+  organizations   organizations            @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_email_flows_org")
+  projects        email_projects           @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_flows_project")
+  steps           email_flow_steps[]
+  enrollments     email_flow_enrollments[]
+
+  @@index([organization_id], map: "idx_email_flows_org")
+}
+
+model email_flow_steps {
+  id            String      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  flow_id       String      @db.Char(36)
+  position      Int         @default(0)
+  delay_value   Int         @default(0)
+  delay_unit    String      @default("minutes") @db.VarChar(10)
+  subject       String      @default("") @db.VarChar(255)
+  body_html     String?     @db.LongText
+  builder_model Json?
+  // Condição p/ enviar este passo: { type: 'always'|'opened'|'clicked', on_fail: 'skip'|'stop' }
+  condition     Json?
+  created_at    DateTime    @default(now()) @db.DateTime(0)
+  updated_at    DateTime    @updatedAt @db.DateTime(0)
+  flow          email_flows @relation(fields: [flow_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_flow_steps_flow")
+
+  @@index([flow_id, position], map: "idx_email_flow_steps_flow")
+}
+
+model email_flow_enrollments {
+  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String        @db.Char(36)
+  flow_id         String        @db.Char(36)
+  project_id      String        @db.Char(36)
+  lead_id         String        @db.Char(36)
+  email           String?       @db.VarChar(255)
+  next_step       Int           @default(0)
+  next_send_at    DateTime      @db.DateTime(0)
+  status          String        @default("active") @db.VarChar(20)
+  // sent row do último passo efetivamente enviado (p/ avaliar condição do próximo)
+  last_sent_id    String?       @db.Char(36)
+  created_at      DateTime      @default(now()) @db.DateTime(0)
+  updated_at      DateTime      @updatedAt @db.DateTime(0)
+  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_flow_enroll_org")
+  flow            email_flows   @relation(fields: [flow_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_flow_enroll_flow")
+
+  @@unique([flow_id, lead_id], map: "uk_flow_enroll_flow_lead")
+  @@index([status, next_send_at], map: "idx_flow_enroll_due")
+  @@index([organization_id], map: "idx_flow_enroll_org")
+}
+
 model email_templates {
-  id         String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  project_id String         @db.Char(36)
-  name       String         @db.VarChar(255)
-  subject    String         @db.VarChar(255)
-  body_html  String?        @db.LongText
-  body_text  String?        @db.LongText
+  id            String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  project_id    String         @db.Char(36)
+  name          String         @db.VarChar(255)
+  subject       String         @db.VarChar(255)
+  body_html     String?        @db.LongText
+  body_text     String?        @db.LongText
+  builder_model Json?
+  recycle       Boolean        @default(false)
   projects   email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_templates_project_id")
 
   @@index([project_id], map: "idx_email_templates_project")
+  @@index([project_id, recycle], map: "idx_email_templates_project_recycle")
 }
 
 model email_leads {
@@ -133,6 +197,7 @@ model email_leads {
   email           String                    @db.VarChar(255)
   name            String?                   @db.VarChar(255)
   attributes      Json?
+  tags            Json?
   global_status   email_leads_global_status @default(ACTIVE)
   organizations   organizations             @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_email_leads_organization_id")
   project_links   email_project_leads[]
@@ -165,6 +230,14 @@ model email_projects_schedules {
   time       Int?           @db.SmallInt
   for_x_days Int?           @db.SmallInt
   last_run   DateTime?      @db.DateTime(0)
+  template_ids Json?
+
+  recycle          Boolean  @default(false)
+  recycle_criteria String?  @db.VarChar(16)
+  recycle_days     Int?     @db.SmallInt
+
+  // Segmentação por regras/condições (JSON: { match, conditions[] }). Null = todos.
+  segment          Json?
 
   created_at DateTime       @default(now()) @db.DateTime(0)
   updated_at DateTime       @updatedAt @db.DateTime(0)
@@ -192,29 +265,43 @@ model email_projects_schedules_sent {
   schedule_time   Int?
   schedule_date   DateTime?
   schedule_daily  Boolean
+  recycle         Boolean  @default(false)
 
   run_at          DateTime @db.DateTime(0)
   sent            Boolean  @default(false)
   status          schedule_sent_status @default(PROCESSING)
 
   subject         String?  @db.VarChar(255)
+  from_name       String?  @db.VarChar(120)
   body_html       String?  @db.LongText
   body_text       String?  @db.LongText
 
   total_leads     Int      @default(0)
   sent_for_leads  Int      @default(0)
-  
+
+  delivered_count  Int     @default(0)
+  bounced_count    Int     @default(0)
+  complained_count Int     @default(0)
+
+  // quando o disparo veio de um passo do fluxo inicial (métricas por passo)
+  flow_step_id     String?  @db.Char(36)
+
   error_message   String?  @db.VarChar(255)
 
   created_at       DateTime @default(now()) @db.DateTime(0)
   tokens_unit_cost Int      @default(0)
   tokens_cost      Int      @default(0)
 
+  // click_cta_count = cliques TOTAIS; click_unique_count = cliques ÚNICOS (por lead)
+  click_unique_count Int    @default(0)
+
   opens           email_schedules_sent_opens[]
+  clicks          email_schedules_sent_clicks[]
 
   @@unique([project_id, schedule_id, run_at], map: "uk_project_schedule_run_at")
   @@index([organization_id, project_id, run_at], map: "idx_sent_org_project_runat")
   @@index([organization_id, sent], map: "idx_sent_org_sent")
+  @@index([flow_step_id], map: "idx_sent_flow_step")
 }
 
 model email_schedules_sent_opens {
@@ -227,6 +314,20 @@ model email_schedules_sent_opens {
 
   @@unique([schedule_sent_id, email], map: "uk_schedule_sent_email_open")
   @@index([schedule_sent_id], map: "idx_opens_schedule_sent")
+}
+
+// Cliques ÚNICOS por (disparo, lead) — espelho de opens. Destrava taxa/qtd de
+// clique por lead nos segmentos e CTOR real.
+model email_schedules_sent_clicks {
+  id               String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  schedule_sent_id String   @db.Char(36)
+  email            String   @db.VarChar(255)
+  created_at       DateTime @default(now()) @db.DateTime(0)
+
+  sent_campaign    email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
+
+  @@unique([schedule_sent_id, email], map: "uk_schedule_sent_email_click")
+  @@index([schedule_sent_id], map: "idx_clicks_schedule_sent")
 }
 
 model organization_domains {
@@ -322,6 +423,7 @@ model quizzes {
   footer_scripts     String?       @db.Text
   lead_email_html    String?       @db.LongText
   lead_email_subject String?       @db.VarChar(255)
+  lead_email_model   Json?
   split_id         String?         @db.Char(36)
   split_weight     Int             @default(100)
   created_at       DateTime        @default(now()) @db.DateTime(0)
@@ -807,8 +909,465 @@ model system_settings {
   openrouter_api_keys  String?  @db.Text
   sambanova_api_keys   String?  @db.Text
   resend_api_key       String?  @db.VarChar(500)
+  resend_webhook_secret String? @db.VarChar(255)
   webchat_edge_ip      String?  @db.VarChar(45)
   certbot_email        String?  @db.VarChar(255)
   created_at           DateTime @default(now()) @db.DateTime(0)
   updated_at           DateTime @updatedAt @db.DateTime(0)
+}
+
+// Idempotência dos webhooks do Resend (svix-id). Se já existe, ignora reentrega.
+model email_webhook_events {
+  id         String   @id @db.VarChar(255)
+  created_at DateTime @default(now()) @db.DateTime(0)
+}
+
+// Teste A/B: envia variantes p/ uma % da base; depois da janela, o vencedor
+// (por abertura/clique) vai p/ o restante. FK/cascade no banco.
+model email_ab_tests {
+  id                String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  project_id        String   @db.Char(36)
+  name              String   @db.VarChar(255)
+  status            String   @default("testing") @db.VarChar(16) // testing|completed|canceled
+  test_percent      Int      @default(30)
+  winner_metric     String   @default("open") @db.VarChar(10) // open|click
+  decision_at       DateTime @db.DateTime(0)
+  test_emails       Json? // e-mails usados no teste (excluídos do envio final)
+  winner_variant_id String?  @db.Char(36)
+  winner_sent_id    String?  @db.Char(36)
+  error_message     String?  @db.VarChar(255)
+  created_at        DateTime @default(now()) @db.DateTime(0)
+  updated_at        DateTime @updatedAt @db.DateTime(0)
+
+  variants          email_ab_variants[]
+
+  @@index([status, decision_at], map: "idx_ab_tests_due")
+  @@index([project_id], map: "idx_ab_tests_project")
+  @@index([organization_id], map: "idx_ab_tests_org")
+}
+
+model email_ab_variants {
+  id               String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  ab_test_id       String   @db.Char(36)
+  label            String   @db.VarChar(8) // A, B, C, D
+  subject          String   @db.VarChar(255)
+  body_html        String?  @db.LongText
+  builder_model    Json?
+  test_sent_id     String?  @db.Char(36) // disparo do teste (fonte das métricas)
+  recipients_count Int      @default(0)
+  created_at       DateTime @default(now()) @db.DateTime(0)
+
+  test             email_ab_tests @relation(fields: [ab_test_id], references: [id], onDelete: Cascade)
+
+  @@index([ab_test_id], map: "idx_ab_variants_test")
+}
+
+// Gatilhos por comportamento: quando um lead ABRE ou CLICA num e-mail do projeto,
+// executa uma ação (adicionar tag ou enviar template). FK/cascade no banco.
+model email_behavior_triggers {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  project_id      String   @db.Char(36)
+  event           String   @db.VarChar(16) // OPEN | CLICK
+  action          String   @db.VarChar(24) // ADD_TAG | SEND_TEMPLATE
+  tags            Json? // para ADD_TAG
+  template_id     String?  @db.Char(36) // para SEND_TEMPLATE
+  // Frequência: { type:'once'|'unlimited'|'cooldown', value?, unit?:'minutes'|'hours'|'days' }
+  frequency       Json?
+  active          Boolean  @default(true)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([project_id, event, active], map: "idx_email_behavior_triggers_lookup")
+  @@index([organization_id], map: "idx_email_behavior_triggers_org")
+}
+
+// Registro de disparos por (gatilho, lead) — controla frequência (once/cooldown).
+model email_behavior_trigger_fires {
+  trigger_id    String    @db.Char(36)
+  lead_id       String    @db.Char(36)
+  created_at    DateTime  @default(now()) @db.DateTime(0)
+  fired_count   Int       @default(1)
+  last_fired_at DateTime? @db.DateTime(0)
+
+  @@id([trigger_id, lead_id])
+}
+
+// ===================== MÓDULO TELEGRAM =====================
+// Bots cadastrados por organização (credencial = token; nome = apelido no Pub Mail).
+// Base do módulo: Grupos/Links/Broadcasts/DMs vão referenciar telegram_bots.
+model telegram_bots {
+  id              String               @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String               @db.Char(36)
+  name            String               @db.VarChar(255) // apelido escolhido no Pub Mail
+  token           String               @db.VarChar(255) // credencial do bot (BotFather)
+  tg_bot_id       BigInt?              @db.BigInt // id numérico do bot no Telegram (getMe)
+  username        String?              @db.VarChar(255) // @username do bot
+  first_name      String?              @db.VarChar(255) // nome real do bot no Telegram
+  test_chat_id    BigInt?              @db.BigInt // chat privado que falou com o bot (p/ msg de teste)
+  status          telegram_bots_status @default(ACTIVE)
+  webhook_set     Boolean              @default(false)
+  webhook_secret  String?              @db.VarChar(64)
+  last_error      String?              @db.Text
+  last_checked_at DateTime?            @db.DateTime(0)
+  flood_until     DateTime?            @db.DateTime(3) // até quando o Telegram está barrando envios (429 flood-wait)
+  created_at      DateTime             @default(now()) @db.DateTime(0)
+  updated_at      DateTime             @updatedAt @db.DateTime(0)
+
+  organizations organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_telegram_bots_org")
+
+  @@unique([organization_id, tg_bot_id], map: "uk_tgbot_org_botid")
+  @@index([organization_id], map: "idx_telegram_bots_org")
+}
+
+enum telegram_bots_status {
+  ACTIVE
+  BANNED
+  ERROR
+}
+
+// Contato (lead) que conversou com um bot em DM.
+model telegram_contacts {
+  id                String                  @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String                  @db.Char(36)
+  bot_id            String                  @db.Char(36)
+  tg_user_id        BigInt                  @db.BigInt
+  first_name        String?                 @db.VarChar(255)
+  last_name         String?                 @db.VarChar(255)
+  username          String?                 @db.VarChar(255)
+  tags              Json?
+  attributes        Json?
+  last_message_text String?                 @db.Text
+  last_message_at   DateTime?               @db.DateTime(0)
+  last_message_dir  telegram_msg_direction?
+  created_at        DateTime                @default(now()) @db.DateTime(0)
+  updated_at        DateTime                @updatedAt @db.DateTime(0)
+
+  @@unique([bot_id, tg_user_id], map: "uk_tgcontact_bot_user")
+  @@index([organization_id], map: "idx_tgcontact_org")
+  @@index([bot_id, last_message_at], map: "idx_tgcontact_bot_last")
+}
+
+// Grupo onde o bot está (auto-descoberto pelo webhook).
+model telegram_groups {
+  id                String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String    @db.Char(36)
+  bot_id            String    @db.Char(36)
+  tg_chat_id        BigInt    @db.BigInt
+  title             String?   @db.VarChar(255)
+  username          String?   @db.VarChar(255)
+  type              String?   @db.VarChar(32)
+  last_message_text String?   @db.Text
+  last_message_at   DateTime? @db.DateTime(0)
+  created_at        DateTime  @default(now()) @db.DateTime(0)
+  updated_at        DateTime  @updatedAt @db.DateTime(0)
+
+  @@unique([bot_id, tg_chat_id], map: "uk_tggroup_bot_chat")
+  @@index([organization_id], map: "idx_tggroup_org")
+}
+
+model telegram_rotators {
+  id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String    @db.Char(36)
+  bot_id             String    @db.Char(36)
+  group_id           String?   @db.Char(36)
+  target_kind        String    @default("group") @db.VarChar(16)
+  dm_cursor          Int       @default(0)
+  name               String    @db.VarChar(255)
+  active             Boolean   @default(false)
+  interval_seconds   Int       @default(15)
+  mode               String    @default("sequential") @db.VarChar(16)
+  messages           Json?
+  name_pool          Json?
+  current_index      Int       @default(0)
+  current_message_id BigInt?   @db.BigInt
+  last_rotated_at    DateTime? @db.DateTime(3)
+  created_at         DateTime  @default(now()) @db.DateTime(0)
+  updated_at         DateTime  @updatedAt @db.DateTime(0)
+
+  @@unique([group_id], map: "uk_tgrotator_group")
+  @@index([organization_id], map: "idx_tgrotator_org")
+  @@index([active], map: "idx_tgrotator_active")
+}
+
+model telegram_payment_settings {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  provider        String   @default("mercadopago") @db.VarChar(32)
+  access_token    String?  @db.Text
+  pix_key         String?  @db.VarChar(255)
+  webhook_secret  String?  @db.VarChar(64)
+  checkout_config Json?
+  active          Boolean  @default(true)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id], map: "uk_tgpaysettings_org")
+}
+
+model telegram_plans {
+  id               String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String   @db.Char(36)
+  bot_id           String   @db.Char(36)
+  name             String   @db.VarChar(255)
+  description      String?  @db.Text
+  price_cents      Int      @default(0)
+  duration_days    Int      @default(0)
+  deliver_group_id String?  @db.Char(36)
+  deliver_message  String?  @db.Text
+  deliver_media    Json?
+  active           Boolean  @default(true)
+  position         Int      @default(0)
+  created_at       DateTime @default(now()) @db.DateTime(0)
+  updated_at       DateTime @updatedAt @db.DateTime(0)
+
+  @@index([bot_id], map: "idx_tgplan_bot")
+  @@index([organization_id], map: "idx_tgplan_org")
+}
+
+model telegram_subscriptions {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  bot_id          String    @db.Char(36)
+  plan_id         String?   @db.Char(36)
+  tg_user_id      BigInt    @db.BigInt
+  contact_id      String?   @db.Char(36)
+  group_id        String?   @db.Char(36)
+  status          String    @default("ACTIVE") @db.VarChar(16)
+  access_until    DateTime? @db.DateTime(3)
+  last_payment_id String?   @db.Char(36)
+  reminded_at     DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id], map: "idx_tgsub_org")
+  @@index([status, access_until], map: "idx_tgsub_status_until")
+  @@index([bot_id, tg_user_id], map: "idx_tgsub_bot_user")
+}
+
+model telegram_payments {
+  id                  String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String    @db.Char(36)
+  bot_id              String    @db.Char(36)
+  plan_id             String?   @db.Char(36)
+  tg_user_id          BigInt    @db.BigInt
+  contact_id          String?   @db.Char(36)
+  provider            String    @db.VarChar(32)
+  provider_charge_id  String?   @db.VarChar(255)
+  amount_cents        Int       @default(0)
+  status              String    @default("PENDING") @db.VarChar(16)
+  pix_code            String?   @db.Text
+  tg_message_id       BigInt?   @db.BigInt
+  tg_message_is_photo Boolean   @default(false)
+  nudge_message_id    BigInt?   @db.BigInt
+  invite_link         String?   @db.VarChar(512)
+  delivered           Boolean   @default(false)
+  paid_at             DateTime? @db.DateTime(3)
+  delivered_at        DateTime? @db.DateTime(3)
+  expires_at          DateTime? @db.DateTime(3)
+  created_at          DateTime  @default(now()) @db.DateTime(0)
+  updated_at          DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id], map: "idx_tgpay_org")
+  @@index([status], map: "idx_tgpay_status")
+  @@index([provider_charge_id], map: "idx_tgpay_charge")
+  @@index([bot_id], map: "idx_tgpay_bot")
+}
+
+// Mensagens in/out (DM e grupo).
+model telegram_messages {
+  id              String                 @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                 @db.Char(36)
+  bot_id          String                 @db.Char(36)
+  chat_kind       telegram_chat_kind
+  contact_id      String?                @db.Char(36)
+  group_id        String?                @db.Char(36)
+  tg_chat_id      BigInt                 @db.BigInt
+  direction       telegram_msg_direction
+  tg_message_id   BigInt?                @db.BigInt
+  text            String?                @db.Text
+  media_type      String?                @db.VarChar(32)
+  media_file_id   String?                @db.VarChar(255)
+  from_name       String?                @db.VarChar(255)
+  created_at      DateTime               @default(now()) @db.DateTime(3)
+
+  @@index([contact_id, created_at], map: "idx_tgmsg_contact")
+  @@index([group_id, created_at], map: "idx_tgmsg_group")
+  @@index([organization_id], map: "idx_tgmsg_org")
+}
+
+enum telegram_msg_direction {
+  IN
+  OUT
+}
+
+enum telegram_chat_kind {
+  CONTACT
+  GROUP
+}
+
+// Fluxo inicial do bot (1 por bot). O grafo (nós/arestas do reactflow) vive em `definition`.
+model telegram_flows {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  bot_id          String   @db.Char(36)
+  name            String?  @db.VarChar(255)
+  active          Boolean  @default(false)
+  definition      Json?
+  start_node_id   String?  @db.VarChar(64)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@unique([bot_id], map: "uk_tgflow_bot")
+  @@index([organization_id], map: "idx_tgflow_org")
+}
+
+// Runtime: posição de cada usuário no fluxo inicial do bot.
+model telegram_flow_enrollments {
+  id                  String                        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String                        @db.Char(36)
+  bot_id              String                        @db.Char(36)
+  contact_id          String?                       @db.Char(36)
+  tg_user_id          BigInt                        @db.BigInt
+  current_node_id     String?                       @db.VarChar(64)
+  status              telegram_flow_enroll_status   @default(ACTIVE)
+  context             Json?
+  last_interaction_at DateTime?                     @db.DateTime(0)
+  started_at          DateTime?                     @db.DateTime(0)
+  created_at          DateTime                      @default(now()) @db.DateTime(0)
+  updated_at          DateTime                      @updatedAt @db.DateTime(0)
+
+  @@unique([bot_id, tg_user_id], map: "uk_tgflowenr_bot_user")
+  @@index([organization_id], map: "idx_tgflowenr_org")
+}
+
+enum telegram_flow_enroll_status {
+  ACTIVE
+  COMPLETED
+  STOPPED
+}
+
+// ===================== BROADCASTS =====================
+model telegram_broadcasts {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(255)
+  bot_ids         Json?
+  targets         Json?
+  times           Json?
+  mode            String   @default("sequential") @db.VarChar(16)
+  delete_used     Boolean  @default(false)
+  active          Boolean  @default(false)
+  last_copy_index Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([organization_id], map: "idx_tgbc_org")
+}
+
+model telegram_broadcast_copies {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  broadcast_id    String   @db.Char(36)
+  position        Int      @default(0)
+  messages        Json?
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([broadcast_id, position], map: "idx_tgbccopy_bc")
+}
+
+model telegram_broadcast_runs {
+  id              String                     @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                     @db.Char(36)
+  broadcast_id    String                     @db.Char(36)
+  copy_id         String?                    @db.Char(36)
+  messages        Json?
+  run_at          DateTime                   @db.DateTime(0)
+  status          telegram_bc_run_status     @default(QUEUED)
+  total           Int                        @default(0)
+  sent            Int                        @default(0)
+  failed          Int                        @default(0)
+  blocked         Int                        @default(0)
+  created_at      DateTime                   @default(now()) @db.DateTime(0)
+  updated_at      DateTime                   @updatedAt @db.DateTime(0)
+
+  @@unique([broadcast_id, run_at], map: "uk_tgbcrun")
+  @@index([organization_id], map: "idx_tgbcrun_org")
+}
+
+model telegram_broadcast_sends {
+  id              String                   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                   @db.Char(36)
+  broadcast_id    String                   @db.Char(36)
+  run_id          String                   @db.Char(36)
+  bot_id          String                   @db.Char(36)
+  target_kind     telegram_bc_target_kind
+  tg_chat_id      BigInt                   @db.BigInt
+  contact_id      String?                  @db.Char(36)
+  group_id        String?                  @db.Char(36)
+  status          telegram_bc_send_status  @default(PENDING)
+  attempts        Int                      @default(0)
+  last_error      String?                  @db.Text
+  created_at      DateTime                 @default(now()) @db.DateTime(3)
+  sent_at         DateTime?                @db.DateTime(0)
+
+  @@index([status, bot_id, id], map: "idx_tgbcsend_queue")
+  @@index([run_id], map: "idx_tgbcsend_run")
+}
+
+enum telegram_bc_run_status {
+  QUEUED
+  SENDING
+  DONE
+  CANCELED
+}
+
+enum telegram_bc_target_kind {
+  CONTACT
+  GROUP
+  CHANNEL
+}
+
+enum telegram_bc_send_status {
+  PENDING
+  DONE
+  FAILED
+  BLOCKED
+}
+
+// Automações do bot (drip/nudge temporizado após /start).
+model telegram_automations {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  bot_id          String   @db.Char(36)
+  name            String?  @db.VarChar(255)
+  active          Boolean  @default(false)
+  trigger_type    String   @default("ON_START") @db.VarChar(32)
+  steps           Json?
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([organization_id], map: "idx_tgautom_org")
+  @@index([bot_id], map: "idx_tgautom_bot")
+}
+
+model telegram_automation_enrollments {
+  id              String                      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                      @db.Char(36)
+  bot_id          String                      @db.Char(36)
+  automation_id   String                      @db.Char(36)
+  contact_id      String?                     @db.Char(36)
+  tg_user_id      BigInt                      @db.BigInt
+  next_step       Int                         @default(0)
+  next_send_at    DateTime?                   @db.DateTime(0)
+  status          telegram_flow_enroll_status @default(ACTIVE)
+  enrolled_at     DateTime?                   @db.DateTime(0)
+  created_at      DateTime                    @default(now()) @db.DateTime(0)
+  updated_at      DateTime                    @updatedAt @db.DateTime(0)
+
+  @@unique([automation_id, tg_user_id], map: "uk_tgautomenr")
+  @@index([status, next_send_at], map: "idx_tgautomenr_due")
+  @@index([organization_id], map: "idx_tgautomenr_org")
 }

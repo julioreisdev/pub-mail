@@ -18,6 +18,8 @@ export class EmailTemplatesService {
     subject: true,
     body_html: true,
     body_text: true,
+    builder_model: true,
+    recycle: true,
   };
 
   /**
@@ -80,12 +82,14 @@ export class EmailTemplatesService {
         subject: dto.subject.trim(),
         body_html: processedHtml,
         body_text: hasText ? dto.body_text!.trim() : '',
+        builder_model: (dto.builder_model as any) ?? undefined,
+        recycle: Boolean(dto.recycle),
       },
       select: this.templateSelect,
     });
   }
 
-  async list(organizationId: string, projectId: string) {
+  async list(organizationId: string, projectId: string, recycle = false) {
     const project = await this.prisma.email_projects.findFirst({
       where: { id: projectId, organization_id: organizationId },
       select: { id: true },
@@ -93,7 +97,7 @@ export class EmailTemplatesService {
     if (!project) throw new NotFoundException('Project not found');
 
     return this.prisma.email_templates.findMany({
-      where: { project_id: projectId },
+      where: { project_id: projectId, recycle: Boolean(recycle) },
       orderBy: { name: 'asc' },
       select: this.templateSelect,
     });
@@ -153,6 +157,7 @@ export class EmailTemplatesService {
         ...(dto.subject !== undefined ? { subject: dto.subject.trim() } : {}),
         ...(nextHtml !== undefined ? { body_html: nextHtml } : {}),
         ...(nextText !== undefined ? { body_text: nextText } : {}),
+        ...(dto.builder_model !== undefined ? { builder_model: (dto.builder_model as any) } : {}),
       },
       select: this.templateSelect,
     });

@@ -12,7 +12,9 @@ export const ConfigContext = createContext(undefined);
 // ==============================|| CONFIG PROVIDER ||============================== //
 
 export function ConfigProvider({ children }) {
-  const { state, setState, setField, resetState } = useLocalStorage('berry-config-vite-js', config);
+  // chave versionada: ao mudar defaults (fonte Ubuntu, borderRadius) força re-seed
+  // pra quem já tinha o config antigo (Roboto) salvo no localStorage.
+  const { state, setState, setField, resetState } = useLocalStorage('pubmail-config-v2', config);
 
   const memoizedValue = useMemo(() => ({ state, setState, setField, resetState }), [state, setField, setState, resetState]);
 

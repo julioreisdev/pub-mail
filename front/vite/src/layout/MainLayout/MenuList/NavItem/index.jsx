@@ -19,7 +19,7 @@ import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
 import useConfig from 'hooks/useConfig';
 
 // assets
-import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
+import { FiberManualRecordIcon as FiberManualRecordIcon } from 'ui-component/icons';
 
 export default function NavItem({ item, level, isParents = false, setSelectedID }) {
   const theme = useTheme();
@@ -79,7 +79,8 @@ export default function NavItem({ item, level, isParents = false, setSelectedID 
         sx={{
           zIndex: 1201,
           borderRadius: `${borderRadius}px`,
-          mb: 0.5,
+          mb: 0.25,
+          ...(drawerOpen && level === 1 && { py: 0.5 }),
           ...(drawerOpen && level !== 1 && { ml: `${level * 18}px` }),
           ...(!drawerOpen && { pl: 1.25 }),
           ...((!drawerOpen || level !== 1) && {

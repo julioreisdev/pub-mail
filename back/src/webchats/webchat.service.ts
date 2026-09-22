@@ -8,6 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { cleanEmailOrNull } from '../common/email.util';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
 import {
   buildBaseSlugFromWebchatName,
@@ -1408,13 +1409,10 @@ export class WebchatsService {
     };
   }
 
+  // Sanitiza (conserta ponto duplo etc.) + valida estrito via common/email.util.
+  // Inválido/insanável -> '' (não roteia pro email marketing).
   private normalizeEmail(value: unknown) {
-    const email = String(value ?? '')
-      .trim()
-      .toLowerCase();
-    if (!email) return '';
-    const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    return isValid ? email : '';
+    return cleanEmailOrNull(value as any) ?? '';
   }
 
   private normalizeLeadName(value: unknown) {

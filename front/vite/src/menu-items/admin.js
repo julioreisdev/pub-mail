@@ -11,6 +11,7 @@ const admin = {
   title: 'Administração',
   type: 'group',
   requiredRole: 'SUPER_ADMIN',
+  icon: icons.IconUserShield,
   children: [
     {
       id: 'admin-users',

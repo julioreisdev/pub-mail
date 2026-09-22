@@ -29,19 +29,19 @@ import {
     Tooltip,
     Typography
 } from '@mui/material';
-import CalendarMonthOutlinedIcon from '@mui/icons-material/CalendarMonthOutlined';
-import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
-import OndemandVideoOutlinedIcon from '@mui/icons-material/OndemandVideoOutlined';
-import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
-import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
-import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
-import AutorenewRoundedIcon from '@mui/icons-material/AutorenewRounded';
-import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
-import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import YouTubeIcon from '@mui/icons-material/YouTube';
-import InstagramIcon from '@mui/icons-material/Instagram';
+import { CalendarMonthOutlinedIcon as CalendarMonthOutlinedIcon } from 'ui-component/icons';
+import { ImageOutlinedIcon as ImageOutlinedIcon } from 'ui-component/icons';
+import { OndemandVideoOutlinedIcon as OndemandVideoOutlinedIcon } from 'ui-component/icons';
+import { ScheduleRoundedIcon as ScheduleRoundedIcon } from 'ui-component/icons';
+import { HistoryRoundedIcon as HistoryRoundedIcon } from 'ui-component/icons';
+import { ErrorOutlineRoundedIcon as ErrorOutlineRoundedIcon } from 'ui-component/icons';
+import { CheckCircleRoundedIcon as CheckCircleRoundedIcon } from 'ui-component/icons';
+import { AutorenewRoundedIcon as AutorenewRoundedIcon } from 'ui-component/icons';
+import { DeleteOutlineRoundedIcon as DeleteOutlineRoundedIcon } from 'ui-component/icons';
+import { RocketLaunchRoundedIcon as RocketLaunchRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { YouTubeIcon as YouTubeIcon } from 'ui-component/icons';
+import { InstagramIcon as InstagramIcon } from 'ui-component/icons';
 import { IconBrandTiktokFilled } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 

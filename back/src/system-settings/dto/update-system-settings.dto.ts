@@ -63,6 +63,17 @@ export class UpdateSystemSettingsDto {
 
   @ApiPropertyOptional({
     description:
+      'Segredo de assinatura do webhook do Resend (Svix, começa com whsec_). Valida os eventos de entrega/bounce. String vazia limpa o campo.',
+    example: 'whsec_xxxxxxxxxxxx',
+    maxLength: 255,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  resend_webhook_secret?: string;
+
+  @ApiPropertyOptional({
+    description:
       'IPv4 público do edge para o qual os domínios de webchat devem apontar (registro A). String vazia limpa o campo.',
     example: '203.0.113.10',
     maxLength: 45,

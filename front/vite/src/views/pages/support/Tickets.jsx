@@ -1,7 +1,7 @@
 // src/views/pages/tickets/TicketWhatsappRequest.jsx
 import { useMemo, useState } from 'react';
 import { Box, Stack, Typography, TextField, Button, Divider, Chip, Alert } from '@mui/material';
-import WhatsAppIcon from '@mui/icons-material/WhatsApp';
+import { WhatsAppIcon as WhatsAppIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 

@@ -30,8 +30,8 @@ export class AdminController {
 
   // ===== Organizações =====
   @Get('organizations')
-  listOrganizations() {
-    return this.admin.listOrganizations();
+  listOrganizations(@Req() req: any) {
+    return this.admin.listOrganizations(req?.user?.organizationId);
   }
 
   @Post('organizations')
@@ -40,38 +40,38 @@ export class AdminController {
   }
 
   @Patch('organizations/:id')
-  updateOrganization(@Param('id') id: string, @Body() dto: UpdateOrganizationDto) {
-    return this.admin.updateOrganization(id, dto);
+  updateOrganization(@Param('id') id: string, @Body() dto: UpdateOrganizationDto, @Req() req: any) {
+    return this.admin.updateOrganization(id, dto, req?.user?.organizationId);
   }
 
   @Delete('organizations/:id')
-  removeOrganization(@Param('id') id: string) {
-    return this.admin.removeOrganization(id);
+  removeOrganization(@Param('id') id: string, @Req() req: any) {
+    return this.admin.removeOrganization(id, req?.user?.organizationId);
   }
 
   // ===== Usuários =====
   @Get('users')
-  listUsers() {
-    return this.admin.listUsers();
+  listUsers(@Req() req: any) {
+    return this.admin.listUsers(req?.user?.organizationId);
   }
 
   @Post('users')
-  createUser(@Body() dto: CreateAdminUserDto) {
-    return this.admin.createUser(dto);
+  createUser(@Body() dto: CreateAdminUserDto, @Req() req: any) {
+    return this.admin.createUser(dto, req?.user?.organizationId);
   }
 
   @Patch('users/:id')
-  updateUser(@Param('id') id: string, @Body() dto: UpdateAdminUserDto) {
-    return this.admin.updateUser(id, dto);
+  updateUser(@Param('id') id: string, @Body() dto: UpdateAdminUserDto, @Req() req: any) {
+    return this.admin.updateUser(id, dto, req?.user?.organizationId);
   }
 
   @Patch('users/:id/password')
-  changePassword(@Param('id') id: string, @Body() dto: ChangePasswordDto) {
-    return this.admin.changePassword(id, dto.password);
+  changePassword(@Param('id') id: string, @Body() dto: ChangePasswordDto, @Req() req: any) {
+    return this.admin.changePassword(id, dto.password, req?.user?.organizationId);
   }
 
   @Delete('users/:id')
   removeUser(@Param('id') id: string, @Req() req: any) {
-    return this.admin.removeUser(id, req?.user?.userId);
+    return this.admin.removeUser(id, req?.user?.userId, req?.user?.organizationId);
   }
 }

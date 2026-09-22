@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -7,6 +8,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSystemSettingsDto } from './dto/update-system-settings.dto';
 
 const SINGLETON_ID = 1;
+
+// provedor de IA -> coluna de chaves
+const AI_COLUMNS: Record<string, string> = {
+  groq: 'groq_api_keys',
+  cerebras: 'cerebras_api_keys',
+  gemini: 'gemini_api_keys',
+  mistral: 'mistral_api_keys',
+  openrouter: 'openrouter_api_keys',
+  sambanova: 'sambanova_api_keys',
+};
 
 export type SystemSettingsRow = {
   id: number;
@@ -17,6 +28,7 @@ export type SystemSettingsRow = {
   openrouter_api_keys: string | null;
   sambanova_api_keys: string | null;
   resend_api_key: string | null;
+  resend_webhook_secret: string | null;
   webchat_edge_ip: string | null;
   certbot_email: string | null;
   created_at: Date;
@@ -63,6 +75,7 @@ export class SystemSettingsService {
       openrouter_api_keys: setIfDefined(dto.openrouter_api_keys),
       sambanova_api_keys: setIfDefined(dto.sambanova_api_keys),
       resend_api_key: setIfDefined(dto.resend_api_key),
+      resend_webhook_secret: setIfDefined(dto.resend_webhook_secret),
       webchat_edge_ip: setIfDefined(dto.webchat_edge_ip),
       certbot_email: setIfDefined(dto.certbot_email),
     };
@@ -118,6 +131,12 @@ export class SystemSettingsService {
       );
     }
     return value;
+  }
+
+  async getResendWebhookSecret(): Promise<string | null> {
+    const settings = await this.get();
+    const value = String(settings.resend_webhook_secret || '').trim();
+    return value || null;
   }
 
   async getWebchatEdgeIpOrFail(): Promise<string> {
@@ -206,6 +225,52 @@ export class SystemSettingsService {
       .split(/[,\n]/)
       .map((k) => k.trim())
       .filter((k) => k.length > 0);
+  }
+
+  // Mascara uma chave para exibição segura (ex.: "gsk_...XF7f").
+  maskKey(k: string): string {
+    const s = String(k || '');
+    if (s.length <= 8) return `${s.slice(0, 2)}••••`;
+    return `${s.slice(0, 4)}••••${s.slice(-4)}`;
+  }
+
+  maskedKeys(raw: string | null | undefined): string[] {
+    return this.parseKeys(raw).map((k) => this.maskKey(k));
+  }
+
+  // Adiciona uma ou mais chaves (CSV/linha) a um provedor, sem duplicar.
+  async addAiKeys(provider: string, keysCsv: string): Promise<SystemSettingsRow> {
+    const col = AI_COLUMNS[provider];
+    if (!col) throw new BadRequestException('Provedor inválido.');
+    const incoming = this.parseKeys(keysCsv);
+    if (incoming.length === 0) throw new BadRequestException('Informe ao menos uma chave.');
+    const settings = await this.get();
+    const set = new Set(this.parseKeys((settings as any)[col]));
+    for (const k of incoming) set.add(k);
+    const merged = [...set].join(',');
+    const updated = await this.prisma.system_settings.update({
+      where: { id: SINGLETON_ID },
+      data: { [col]: merged || null },
+    });
+    return updated as SystemSettingsRow;
+  }
+
+  // Remove a chave no índice informado de um provedor.
+  async removeAiKey(provider: string, index: number): Promise<SystemSettingsRow> {
+    const col = AI_COLUMNS[provider];
+    if (!col) throw new BadRequestException('Provedor inválido.');
+    const settings = await this.get();
+    const list = this.parseKeys((settings as any)[col]);
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+      throw new BadRequestException('Índice inválido.');
+    }
+    list.splice(index, 1);
+    const merged = list.join(',');
+    const updated = await this.prisma.system_settings.update({
+      where: { id: SINGLETON_ID },
+      data: { [col]: merged || null },
+    });
+    return updated as SystemSettingsRow;
   }
 
   private normalizeNullableString(value: string | undefined | null): string | null {

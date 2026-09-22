@@ -172,7 +172,7 @@ function PostMediaPreview({ post }) {
                 sx={{
                     width: '100%',
                     height: CARD_MEDIA_HEIGHT,
-                    bgcolor: alpha(theme.palette.grey[500], 0.08),
+                    bgcolor: 'action.hover',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -354,7 +354,7 @@ function InstagramLikeCard({ post, onEdit, onDelete, onOpenMediaMenu }) {
                             width: 34,
                             height: 34,
                             borderRadius: '50%',
-                            background: `linear-gradient(135deg, ${theme.palette.primary.main}, ${theme.palette.secondary.main})`,
+                            background: `linear-gradient(135deg, ${theme.vars.palette.primary.main}, ${theme.vars.palette.secondary.main})`,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
@@ -1056,7 +1056,7 @@ export default function Posts() {
                         borderRadius: 4,
                         border: '1px solid',
                         borderColor: 'divider',
-                        background: `linear-gradient(180deg, ${alpha(theme.palette.primary.main, 0.04)} 0%, ${theme.palette.background.paper} 100%)`
+                        background: `linear-gradient(180deg, rgba(${theme.vars.palette.primary.mainChannel} / 0.04) 0%, ${theme.vars.palette.background.paper} 100%)`
                     }}
                 >
                     <Box sx={{ p: { xs: 2, md: 3 } }}>
@@ -1100,9 +1100,9 @@ export default function Posts() {
                                         sx={{
                                             p: 2,
                                             borderRadius: 3,
-                                            bgcolor: alpha(theme.palette.primary.main, 0.08),
+                                            bgcolor: `rgba(${theme.vars.palette.primary.mainChannel} / 0.08)`,
                                             border: '1px solid',
-                                            borderColor: alpha(theme.palette.primary.main, 0.14)
+                                            borderColor: `rgba(${theme.vars.palette.primary.mainChannel} / 0.14)`
                                         }}
                                     >
                                         <Typography variant="body2" color="text.secondary">
@@ -1119,9 +1119,9 @@ export default function Posts() {
                                         sx={{
                                             p: 2,
                                             borderRadius: 3,
-                                            bgcolor: alpha(theme.palette.info.main, 0.08),
+                                            bgcolor: `rgba(${theme.vars.palette.info.mainChannel} / 0.08)`,
                                             border: '1px solid',
-                                            borderColor: alpha(theme.palette.info.main, 0.14)
+                                            borderColor: `rgba(${theme.vars.palette.info.mainChannel} / 0.14)`
                                         }}
                                     >
                                         <Typography variant="body2" color="text.secondary">
@@ -1138,9 +1138,9 @@ export default function Posts() {
                                         sx={{
                                             p: 2,
                                             borderRadius: 3,
-                                            bgcolor: alpha(theme.palette.success.main, 0.08),
+                                            bgcolor: `rgba(${theme.vars.palette.success.mainChannel} / 0.08)`,
                                             border: '1px solid',
-                                            borderColor: alpha(theme.palette.success.main, 0.14)
+                                            borderColor: `rgba(${theme.vars.palette.success.mainChannel} / 0.14)`
                                         }}
                                     >
                                         <Typography variant="body2" color="text.secondary">
@@ -1157,9 +1157,9 @@ export default function Posts() {
                                         sx={{
                                             p: 2,
                                             borderRadius: 3,
-                                            bgcolor: alpha(theme.palette.warning.main, 0.08),
+                                            bgcolor: `rgba(${theme.vars.palette.warning.mainChannel} / 0.08)`,
                                             border: '1px solid',
-                                            borderColor: alpha(theme.palette.warning.main, 0.14)
+                                            borderColor: `rgba(${theme.vars.palette.warning.mainChannel} / 0.14)`
                                         }}
                                     >
                                         <Typography variant="body2" color="text.secondary">
@@ -1211,7 +1211,7 @@ export default function Posts() {
                                         borderRadius: 4,
                                         border: '1px dashed',
                                         borderColor: 'divider',
-                                        bgcolor: alpha(theme.palette.grey[500], 0.03)
+                                        bgcolor: 'action.hover'
                                     }}
                                 >
                                     <PhotoLibrary sx={{ fontSize: 44, color: 'text.secondary', mb: 1 }} />

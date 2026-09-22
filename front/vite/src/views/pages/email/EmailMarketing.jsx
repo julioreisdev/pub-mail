@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Switch } from '@mui/material';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
 
 import {
   Box,
@@ -30,26 +30,26 @@ import {
   MenuItem
 } from '@mui/material';
 
-import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import WorkspacesRoundedIcon from '@mui/icons-material/WorkspacesRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import DataObjectRoundedIcon from '@mui/icons-material/DataObjectRounded';
+import { SearchRoundedIcon as SearchRoundedIcon } from 'ui-component/icons';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { WorkspacesRoundedIcon as WorkspacesRoundedIcon } from 'ui-component/icons';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { SaveRoundedIcon as SaveRoundedIcon } from 'ui-component/icons';
+import { DataObjectRoundedIcon as DataObjectRoundedIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 import useEmailProjects from '../../../hooks/useEmailProjects';
 import useDomains from '../../../hooks/useDomains';
 
-import { post, patch, remove } from '../../../api/api';
+import { get, post, patch, remove } from '../../../api/api';
 import Templates from './Templates';
 import WebhookLeadsForm from './WebhookLeadsForm';
 import useCountLeads from '../../../hooks/useCountLeads';
 
-import FileUploadRoundedIcon from '@mui/icons-material/FileUploadRounded';
+import { FileUploadRoundedIcon as FileUploadRoundedIcon } from 'ui-component/icons';
 import ImportLeads from './ImportLeads';
 import Schedules from './Schedules';
 import Sents from './Sents';
@@ -238,6 +238,13 @@ function ProjectFormDialog({ open, mode, initialProject, loading, error, verifie
   const [replyToTouched, setReplyToTouched] = useState(false);
   const [fromEmailTouched, setFromEmailTouched] = useState(false);
 
+  // Bloqueio de leads frios nos agendamentos
+  const [coldBlockEnabled, setColdBlockEnabled] = useState(false);
+  const [coldBlockDays, setColdBlockDays] = useState(30);
+  const [flowInteractedOnly, setFlowInteractedOnly] = useState(false);
+  const [coldCount, setColdCount] = useState(null);
+  const [coldCounting, setColdCounting] = useState(false);
+
   const domainsEmpty = (verifiedDomains || []).length === 0;
 
   const parseSettings = (text) => {
@@ -327,6 +334,11 @@ function ProjectFormDialog({ open, mode, initialProject, loading, error, verifie
     setNiche(baseSettings?.niche ?? 'ecommerce');
     setUnsubscribeMessage(baseSettings?.unsubscribe_message ?? 'Desinscrição concluída com sucesso!');
 
+    const cb = baseSettings?.cold_block;
+    setColdBlockEnabled(Boolean(cb?.enabled));
+    setColdBlockDays(Math.max(1, Math.floor(Number(cb?.days) || 30)));
+    setFlowInteractedOnly(Boolean(baseSettings?.flow_interacted_only?.enabled));
+
     const orgName = baseSettings?.organization?.name || defaultSettingsObject?.organization?.name || '';
     const defaultFromName = baseSettings?.sender?.fromName || defaultSettingsObject?.sender?.fromName || orgName || 'Equipe';
     setFromName(defaultFromName);
@@ -364,6 +376,29 @@ function ProjectFormDialog({ open, mode, initialProject, loading, error, verifie
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unsubscribeMessage, open]);
+
+  // Contagem ao vivo de leads frios no período (só faz sentido em projeto existente)
+  useEffect(() => {
+    if (!open || !coldBlockEnabled || !initialProject?.id) {
+      setColdCount(null);
+      return;
+    }
+    let alive = true;
+    setColdCounting(true);
+    const t = setTimeout(async () => {
+      try {
+        const days = Math.max(1, Math.floor(Number(coldBlockDays) || 30));
+        const data = await get(`/email/projects/${initialProject.id}/cold-count?criteria=inactive&days=${days}`);
+        if (alive) setColdCount(Number(data?.count || 0));
+      } catch {
+        if (alive) setColdCount(null);
+      } finally {
+        if (alive) setColdCounting(false);
+      }
+    }, 350);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, coldBlockEnabled, coldBlockDays, initialProject?.id]);
 
   useEffect(() => {
     if (!open) return;
@@ -484,6 +519,8 @@ function ProjectFormDialog({ open, mode, initialProject, loading, error, verifie
       ...parsed,
       niche: niche || parsed?.niche || 'ecommerce',
       unsubscribe_message: unsubscribeMessage || parsed?.unsubscribe_message || 'Desinscrição concluída com sucesso!',
+      cold_block: { enabled: Boolean(coldBlockEnabled), days: Math.max(1, Math.floor(Number(coldBlockDays) || 30)) },
+      flow_interacted_only: { enabled: Boolean(flowInteractedOnly) },
       sender: {
         ...(parsed?.sender || {}),
         domain: domainName,
@@ -593,6 +630,62 @@ function ProjectFormDialog({ open, mode, initialProject, loading, error, verifie
                 fullWidth
               />
             </Stack>
+
+            <Divider />
+
+            {/* Bloqueio de leads frios */}
+            <Box sx={{ p: 2, borderRadius: 2.5, border: '1px solid', borderColor: coldBlockEnabled ? 'secondary.main' : 'divider', bgcolor: 'background.default' }}>
+              <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>Bloquear leads frios nos agendamentos</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Não incluir nos disparos agendados os leads que não abriram nem clicaram há um tempo. Protege a reputação do domínio.
+                  </Typography>
+                </Box>
+                <Switch checked={coldBlockEnabled} onChange={(e) => setColdBlockEnabled(e.target.checked)} color="secondary" />
+              </Stack>
+              {coldBlockEnabled ? (
+                <>
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1.5 }}>
+                    <Typography variant="body2">Excluir quem está inativo há mais de</Typography>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={coldBlockDays}
+                      onChange={(e) => setColdBlockDays(Math.max(1, Number(e.target.value) || 1))}
+                      inputProps={{ min: 1, style: { width: 64, textAlign: 'center' } }}
+                    />
+                    <Typography variant="body2">dias</Typography>
+                  </Stack>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1.25, p: 1, borderRadius: 2, bgcolor: 'action.hover' }}>
+                    {coldCounting ? (
+                      <CircularProgress size={14} />
+                    ) : (
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {!initialProject?.id
+                          ? 'Salve o projeto para ver a quantidade de leads frios.'
+                          : coldCount == null
+                            ? '—'
+                            : `${coldCount} lead${coldCount === 1 ? '' : 's'} frio${coldCount === 1 ? '' : 's'} hoje seriam excluídos dos disparos.`}
+                      </Typography>
+                    )}
+                  </Box>
+                </>
+              ) : null}
+            </Box>
+
+            {/* Apenas quem interagiu no fluxo inicial */}
+            <Box sx={{ p: 2, borderRadius: 2.5, border: '1px solid', borderColor: flowInteractedOnly ? 'secondary.main' : 'divider', bgcolor: 'background.default' }}>
+              <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+                <Box>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>Apenas leads que interagiram no fluxo inicial</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Nos disparos agendados, incluir só quem abriu ou clicou em algum e-mail do fluxo inicial. Foca nos leads mais engajados.
+                  </Typography>
+                </Box>
+                <Switch checked={flowInteractedOnly} onChange={(e) => setFlowInteractedOnly(e.target.checked)} color="secondary" />
+              </Stack>
+            </Box>
 
             <Divider />
 
@@ -982,7 +1075,7 @@ export default function EmailMarketing() {
             justifyContent: 'space-between',
             gap: 1.5,
             flexDirection: { xs: 'column', sm: 'row' },
-            background: (theme) => `linear-gradient(180deg, ${theme.palette.background.paper} 0%, ${theme.palette.background.default} 100%)`
+            background: (theme) => `linear-gradient(180deg, ${theme.vars.palette.background.paper} 0%, ${theme.vars.palette.background.default} 100%)`
           }}
         >
           <Box>
@@ -1016,7 +1109,7 @@ export default function EmailMarketing() {
             <Button
               onClick={openCreate}
               variant="contained"
-              color="secondary"
+              color="primary"
               size="small"
               startIcon={<AddRoundedIcon />}
               sx={{ borderRadius: 2 }}
@@ -1087,7 +1180,7 @@ export default function EmailMarketing() {
                   '&::-webkit-scrollbar': { width: 8 },
                   '&::-webkit-scrollbar-thumb': {
                     borderRadius: 8,
-                    backgroundColor: (theme) => theme.palette.action.hover
+                    backgroundColor: (theme) => theme.vars.palette.action.hover
                   }
                 }}
               >
@@ -1110,8 +1203,8 @@ export default function EmailMarketing() {
                           <Avatar
                             sx={{
                               borderRadius: 2,
-                              bgcolor: (theme) => theme.palette.action.hover,
-                              color: (theme) => theme.palette.secondary.main
+                              bgcolor: (theme) => theme.vars.palette.action.hover,
+                              color: (theme) => theme.vars.palette.secondary.main
                             }}
                           >
                             <WorkspacesRoundedIcon fontSize="small" />
@@ -1260,7 +1353,7 @@ export default function EmailMarketing() {
         onConfirm={handleDelete}
       />
 
-      <WebhookLeadsForm open={webhookModalOpen} onClose={closeWebhookModal} projectSelected={projectForWebhook} />
+      <WebhookLeadsForm open={webhookModalOpen} onClose={closeWebhookModal} projectSelected={projectForWebhook} onSaved={() => mutate()} />
 
       <ImportLeads open={importLeadsOpen} onClose={closeImportLeads} projectSelected={projectForImport} onImported={handleImportedLeads} />
     </Box>

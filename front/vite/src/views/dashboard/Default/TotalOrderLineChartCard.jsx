@@ -19,8 +19,8 @@ import MainCard from 'ui-component/cards/MainCard';
 import SkeletonTotalOrderCard from 'ui-component/cards/Skeleton/EarningCard';
 
 // assets
-import LocalMallOutlinedIcon from '@mui/icons-material/LocalMallOutlined';
-import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import { LocalMallOutlinedIcon as LocalMallOutlinedIcon } from 'ui-component/icons';
+import { ArrowDownwardIcon as ArrowDownwardIcon } from 'ui-component/icons';
 
 // data
 const monthlyData = [{ data: [45, 66, 41, 89, 25, 44, 9, 54] }];

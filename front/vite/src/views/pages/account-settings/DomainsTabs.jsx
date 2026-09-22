@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Box, Tab, Tabs } from '@mui/material';
-import EmailRoundedIcon from '@mui/icons-material/EmailRounded';
-import DomainRoundedIcon from '@mui/icons-material/DomainRounded';
-import QuizRoundedIcon from '@mui/icons-material/QuizRounded';
+import { EmailRoundedIcon as EmailRoundedIcon } from 'ui-component/icons';
+import { DomainRoundedIcon as DomainRoundedIcon } from 'ui-component/icons';
+import { QuizRoundedIcon as QuizRoundedIcon } from 'ui-component/icons';
 import Domains from './Domains';
 import DomainsWebchat from './DomainsWebchat';
 import DomainsQuiz from './DomainsQuiz';

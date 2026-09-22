@@ -25,23 +25,27 @@ import {
     Tab
 } from '@mui/material';
 
-import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import SubjectRoundedIcon from '@mui/icons-material/SubjectRounded';
-import DataObjectRoundedIcon from '@mui/icons-material/DataObjectRounded';
-import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import CodeIcon from '@mui/icons-material/Code';
-import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import RemoveRedEyeIcon from '@mui/icons-material/RemoveRedEye';
-import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import { SearchRoundedIcon as SearchRoundedIcon } from 'ui-component/icons';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { ExpandMoreRoundedIcon as ExpandMoreRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { SaveRoundedIcon as SaveRoundedIcon } from 'ui-component/icons';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { SubjectRoundedIcon as SubjectRoundedIcon } from 'ui-component/icons';
+import { DataObjectRoundedIcon as DataObjectRoundedIcon } from 'ui-component/icons';
+import { HelpOutlineRoundedIcon as HelpOutlineRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { CodeIcon as CodeIcon } from 'ui-component/icons';
+import { AutoAwesomeIcon as AutoAwesomeIcon } from 'ui-component/icons';
+import { RemoveRedEyeIcon as RemoveRedEyeIcon } from 'ui-component/icons';
+import { HelpOutlineIcon as HelpOutlineIcon } from 'ui-component/icons';
 
+import { DashboardCustomizeRoundedIcon as DashboardCustomizeRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
 import useTemplatesPerProject from '../../../hooks/useTemplatesPerProject';
+import EmailBuilder from './EmailBuilder';
+import ImportTemplatesButton from './ImportTemplatesButton';
 import { post, patch, remove } from '../../../api/api';
 
 const safeLower = (v) => (v ?? '').toString().toLowerCase();
@@ -831,6 +835,54 @@ function TemplateAccordion({ template, expanded, onToggle, onSave, onAskDelete, 
     );
 }
 
+// Linha para templates criados no CONSTRUTOR: em vez do accordion de HTML,
+// mostra um botão "Editar" que reabre o construtor.
+function TemplateBuilderRow({ template, onEdit, onAskDelete, disableActions }) {
+    return (
+        <Box
+            sx={{
+                borderRadius: 2.5,
+                border: '1px solid',
+                borderColor: 'secondary.200',
+                bgcolor: 'background.paper',
+                px: 2,
+                py: 1.25,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.25
+            }}
+        >
+            <Chip size="small" icon={<DashboardCustomizeRoundedIcon sx={{ fontSize: 16 }} />} label="Construtor" color="secondary" sx={{ borderRadius: 2, fontWeight: 800 }} />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {template?.name || '-'}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={template?.subject || ''}>
+                    {template?.subject || '—'}
+                </Typography>
+            </Box>
+            <Button
+                size="small"
+                variant="contained"
+                color="secondary"
+                startIcon={<EditRoundedIcon fontSize="small" />}
+                onClick={() => onEdit(template)}
+                disabled={disableActions}
+                sx={{ borderRadius: 2, fontWeight: 800 }}
+            >
+                Editar
+            </Button>
+            <Tooltip title="Apagar">
+                <span>
+                    <IconButton size="small" color="error" onClick={() => onAskDelete(template)} disabled={disableActions} sx={{ borderRadius: 2 }}>
+                        <DeleteRoundedIcon fontSize="small" />
+                    </IconButton>
+                </span>
+            </Tooltip>
+        </Box>
+    );
+}
+
 /**
  * Props:
  * - projectSelected: objeto do projeto (precisa ter id)
@@ -841,7 +893,8 @@ function TemplateAccordion({ template, expanded, onToggle, onSave, onAskDelete, 
 export default function Templates({ projectSelected }) {
     const projectId = projectSelected?.id || null;
 
-    const { templates, isLoading, error, refresh, mutate } = useTemplatesPerProject(projectId);
+    // Templates de reciclagem têm sua própria área (Automações → Reciclagem).
+    const { templates, isLoading, error, refresh, mutate } = useTemplatesPerProject(projectId, { recycle: false });
 
     const list = useMemo(() => {
         if (!templates) return [];
@@ -857,6 +910,8 @@ export default function Templates({ projectSelected }) {
     const [actionError, setActionError] = useState('');
 
     const [createOpen, setCreateOpen] = useState(false);
+    const [builderOpen, setBuilderOpen] = useState(false);
+    const [builderTarget, setBuilderTarget] = useState(null); // null=criar, template=editar
 
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [pendingDelete, setPendingDelete] = useState(null);
@@ -866,9 +921,31 @@ export default function Templates({ projectSelected }) {
         setExpandedId(false);
         setActionError('');
         setCreateOpen(false);
+        setBuilderOpen(false);
         setConfirmOpen(false);
         setPendingDelete(null);
     }, [projectId]);
+
+    const handleBuilderSave = async ({ name, subject, html, model }) => {
+        if (!basePath) return;
+        setActionLoading(true);
+        setActionError('');
+        try {
+            const payload = { name, subject, body_html: html, builder_model: model };
+            if (builderTarget?.id) {
+                await patch(`/email/templates/${builderTarget.id}`, payload);
+            } else {
+                await post(basePath, payload);
+            }
+            await mutate();
+            setBuilderOpen(false);
+            setBuilderTarget(null);
+        } catch (e) {
+            setActionError(getErrorMessage(e, 'Falha ao salvar template'));
+        } finally {
+            setActionLoading(false);
+        }
+    };
 
     const filtered = useMemo(() => {
         const q = safeLower(filter).trim();
@@ -995,14 +1072,28 @@ export default function Templates({ projectSelected }) {
 
                     <Button
                         onClick={() => setCreateOpen(true)}
+                        variant="outlined"
+                        color="secondary"
+                        startIcon={<AddRoundedIcon />}
+                        sx={{ borderRadius: 2, fontWeight: 800 }}
+                        disabled={actionLoading}
+                    >
+                        Template
+                    </Button>
+
+                    <Button
+                        onClick={() => { setActionError(''); setBuilderTarget(null); setBuilderOpen(true); }}
                         variant="contained"
                         color="secondary"
                         startIcon={<AddRoundedIcon />}
-                        sx={{ borderRadius: 2 }}
+                        endIcon={<DashboardCustomizeRoundedIcon fontSize="small" />}
+                        sx={{ borderRadius: 2, fontWeight: 800 }}
                         disabled={actionLoading}
                     >
-                        Novo template
+                        Construtor
                     </Button>
+
+                    <ImportTemplatesButton projectId={projectId} recycle={false} onImported={() => mutate()} />
                 </Stack>
             </Stack>
 
@@ -1065,18 +1156,28 @@ export default function Templates({ projectSelected }) {
                 </Box>
             ) : (
                 <Stack spacing={1}>
-                    {filtered.map((t) => (
-                        <TemplateAccordion
-                            key={t.id}
-                            template={t}
-                            expanded={expandedId === t.id}
-                            onToggle={() => setExpandedId((prev) => (prev === t.id ? false : t.id))}
-                            onSave={handleSave}
-                            onAskDelete={handleAskDelete}
-                            saving={actionLoading && expandedId === t.id}
-                            disableActions={actionLoading}
-                        />
-                    ))}
+                    {filtered.map((t) =>
+                        t.builder_model ? (
+                            <TemplateBuilderRow
+                                key={t.id}
+                                template={t}
+                                onEdit={(tpl) => { setActionError(''); setBuilderTarget(tpl); setBuilderOpen(true); }}
+                                onAskDelete={handleAskDelete}
+                                disableActions={actionLoading}
+                            />
+                        ) : (
+                            <TemplateAccordion
+                                key={t.id}
+                                template={t}
+                                expanded={expandedId === t.id}
+                                onToggle={() => setExpandedId((prev) => (prev === t.id ? false : t.id))}
+                                onSave={handleSave}
+                                onAskDelete={handleAskDelete}
+                                saving={actionLoading && expandedId === t.id}
+                                disableActions={actionLoading}
+                            />
+                        )
+                    )}
                 </Stack>
             )}
 
@@ -1086,6 +1187,18 @@ export default function Templates({ projectSelected }) {
                 error={actionError}
                 onClose={() => (actionLoading ? null : setCreateOpen(false))}
                 onSubmit={handleCreate}
+            />
+
+            <EmailBuilder
+                open={builderOpen}
+                mode="template"
+                initialModel={builderTarget?.builder_model || null}
+                initialName={builderTarget?.name || ''}
+                initialSubject={builderTarget?.subject || ''}
+                saving={actionLoading}
+                error={builderOpen ? actionError : ''}
+                onClose={() => { if (!actionLoading) { setBuilderOpen(false); setBuilderTarget(null); } }}
+                onSave={handleBuilderSave}
             />
 
             <ConfirmDialog

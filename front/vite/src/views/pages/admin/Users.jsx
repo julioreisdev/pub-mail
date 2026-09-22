@@ -25,11 +25,11 @@ import TableCell from '@mui/material/TableCell';
 import TableContainer from '@mui/material/TableContainer';
 import Paper from '@mui/material/Paper';
 
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import KeyRoundedIcon from '@mui/icons-material/KeyRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { KeyRoundedIcon as KeyRoundedIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 import { get, post, patch, remove } from 'api/api';

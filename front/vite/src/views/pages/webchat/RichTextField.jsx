@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Box, IconButton, Popover, Stack, Tooltip, Typography } from '@mui/material';
-import FormatBoldIcon from '@mui/icons-material/FormatBold';
-import FormatItalicIcon from '@mui/icons-material/FormatItalic';
-import FormatUnderlinedIcon from '@mui/icons-material/FormatUnderlined';
-import EmojiEmotionsRoundedIcon from '@mui/icons-material/EmojiEmotionsRounded';
+import { FormatBoldIcon as FormatBoldIcon } from 'ui-component/icons';
+import { FormatItalicIcon as FormatItalicIcon } from 'ui-component/icons';
+import { FormatUnderlinedIcon as FormatUnderlinedIcon } from 'ui-component/icons';
+import { EmojiEmotionsRoundedIcon as EmojiEmotionsRoundedIcon } from 'ui-component/icons';
 
 // Tags permitidas no HTML emitido. Tudo que não estiver aqui é "desempacotado"
 // pelo sanitizer (filhos preservados, tag removida).

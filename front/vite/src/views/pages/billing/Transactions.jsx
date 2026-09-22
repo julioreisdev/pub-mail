@@ -21,10 +21,10 @@ import {
 } from '@mui/material';
 
 // Icons
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import ReceiptLongRoundedIcon from '@mui/icons-material/ReceiptLongRounded';
-import NorthEastRoundedIcon from '@mui/icons-material/NorthEastRounded';
-import SouthWestRoundedIcon from '@mui/icons-material/SouthWestRounded';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { ReceiptLongRoundedIcon as ReceiptLongRoundedIcon } from 'ui-component/icons';
+import { NorthEastRoundedIcon as NorthEastRoundedIcon } from 'ui-component/icons';
+import { SouthWestRoundedIcon as SouthWestRoundedIcon } from 'ui-component/icons';
 import useTransactions from '../../../hooks/useTransactions';
 
 // Helpers
@@ -112,7 +112,7 @@ export default function TransactionsListCard({
             elevation={0}
             sx={{
                 borderRadius: 3,
-                border: (theme) => `1px solid ${theme.palette.divider}`,
+                border: (theme) => `1px solid ${theme.vars.palette.divider}`,
                 overflow: 'hidden'
             }}
         >
@@ -123,7 +123,7 @@ export default function TransactionsListCard({
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    background: (theme) => `linear-gradient(180deg, ${theme.palette.background.paper} 0%, ${theme.palette.background.default} 100%)`
+                    background: (theme) => `linear-gradient(180deg, ${theme.vars.palette.background.paper} 0%, ${theme.vars.palette.background.default} 100%)`
                 }}
             >
                 <Box>
@@ -143,7 +143,7 @@ export default function TransactionsListCard({
                             size="small"
                             sx={{
                                 borderRadius: 2,
-                                border: (theme) => `1px solid ${theme.palette.divider}`,
+                                border: (theme) => `1px solid ${theme.vars.palette.divider}`,
                                 bgcolor: 'background.paper'
                             }}
                         >
@@ -163,7 +163,7 @@ export default function TransactionsListCard({
                         sx={{
                             p: 3,
                             borderRadius: 3,
-                            border: (theme) => `1px dashed ${theme.palette.divider}`,
+                            border: (theme) => `1px dashed ${theme.vars.palette.divider}`,
                             textAlign: 'center'
                         }}
                     >
@@ -183,7 +183,7 @@ export default function TransactionsListCard({
                             '&::-webkit-scrollbar': { width: 8 },
                             '&::-webkit-scrollbar-thumb': {
                                 borderRadius: 8,
-                                backgroundColor: (theme) => theme.palette.action.hover
+                                backgroundColor: (theme) => theme.vars.palette.action.hover
                             }
                         }}
                     >
@@ -198,7 +198,7 @@ export default function TransactionsListCard({
                                         disableGutters
                                         sx={{
                                             borderRadius: 2.5,
-                                            border: (theme) => `1px solid ${theme.palette.divider}`,
+                                            border: (theme) => `1px solid ${theme.vars.palette.divider}`,
                                             bgcolor: 'background.paper',
                                             transition: 'transform 120ms ease, box-shadow 120ms ease',
                                             '&:hover': {
@@ -230,7 +230,7 @@ export default function TransactionsListCard({
                                             <Avatar
                                                 sx={{
                                                     borderRadius: 2,
-                                                    bgcolor: (theme) => theme.palette.action.hover,
+                                                    bgcolor: (theme) => theme.vars.palette.action.hover,
                                                     color: 'text.primary'
                                                 }}
                                             >

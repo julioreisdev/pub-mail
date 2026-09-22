@@ -23,10 +23,10 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
-import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { ArrowUpwardRoundedIcon as ArrowUpwardRoundedIcon } from 'ui-component/icons';
+import { ArrowDownwardRoundedIcon as ArrowDownwardRoundedIcon } from 'ui-component/icons';
 
 import {
   DEFAULT_FUNIL,

@@ -24,13 +24,13 @@ import {
     alpha,
     useTheme
 } from '@mui/material';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import AutoFixHighRoundedIcon from '@mui/icons-material/AutoFixHighRounded';
-import ImageIcon from '@mui/icons-material/Image';
-import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded'; // <-- Ícone novo importado
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { AutoFixHighRoundedIcon as AutoFixHighRoundedIcon } from 'ui-component/icons';
+import { ImageIcon as ImageIcon } from 'ui-component/icons';
+import { DownloadRoundedIcon as DownloadRoundedIcon } from 'ui-component/icons'; // <-- Ícone novo importado
 
 // Ajuste os caminhos conforme o seu projeto
 import MainCard from 'ui-component/cards/MainCard';
@@ -202,7 +202,7 @@ function AvatarFormDialog({ open, mode, initialData, loading, error, onClose, on
             <DialogTitle sx={{ pb: 1.5 }}>{isEdit ? 'Editar Avatar' : 'Criar Novo Avatar'}</DialogTitle>
             <Divider />
 
-            <DialogContent sx={{ p: 3, bgcolor: theme.palette.mode === 'dark' ? 'background.default' : 'grey.50' }}>
+            <DialogContent sx={{ p: 3, bgcolor: 'background.default' }}>
                 <Box
                     sx={{
                         display: 'flex',
@@ -310,7 +310,7 @@ function AvatarFormDialog({ open, mode, initialData, loading, error, onClose, on
                                             flexDirection: 'column',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            bgcolor: alpha(theme.palette.background.paper, 0.7),
+                                            bgcolor: `rgba(${theme.vars.palette.background.paperChannel} / 0.7)`,
                                             zIndex: 10,
                                             backdropFilter: 'blur(4px)'
                                         }}

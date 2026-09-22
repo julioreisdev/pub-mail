@@ -32,6 +32,11 @@ import { AdminModule } from 'src/admin/admin.module';
 import { WebchatSplitsModule } from 'src/webchat-splits/webchat-splits.module';
 import { QuizSplitsModule } from 'src/quiz-splits/quiz-splits.module';
 import { QuizzesModule } from 'src/quizzes/quizzes.module';
+import { TriggersModule } from 'src/email-marketing/triggers/triggers.module';
+import { EmailAnalyticsModule } from 'src/email-marketing/analytics/analytics.module';
+import { EmailAbModule } from 'src/email-marketing/ab/ab.module';
+import { DashboardModule } from 'src/dashboard/dashboard.module';
+import { TelegramModule } from 'src/telegram/telegram.module';
 
 @Module({
   imports: [
@@ -67,6 +72,11 @@ import { QuizzesModule } from 'src/quizzes/quizzes.module';
     WebchatSplitsModule,
     QuizSplitsModule,
     QuizzesModule,
+    TriggersModule,
+    EmailAnalyticsModule,
+    EmailAbModule,
+    DashboardModule,
+    TelegramModule,
   ],
   controllers: [],
   providers: [],

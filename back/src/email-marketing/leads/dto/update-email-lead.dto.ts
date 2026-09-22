@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateEmailLeadDto {
   @ApiPropertyOptional({
@@ -24,4 +24,15 @@ export class UpdateEmailLeadDto {
   })
   @IsOptional()
   attributes?: any; // JSON
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['vip', 'quente'],
+    description: 'Tags (rótulos) do lead.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  tags?: string[];
 }

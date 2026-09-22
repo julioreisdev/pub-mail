@@ -25,6 +25,8 @@ function createCustomShadow(palette, baseColor) {
 }
 
 export default function CustomShadows(palette, mode) {
-  const baseColor = palette.grey[900];
+  // No dark, grey[900] é quase branco (grey invertido) — usar preto puro como
+  // base das sombras pra elas ficarem escuras/naturais em vez de "brilharem".
+  const baseColor = mode === 'dark' ? '#000000' : palette.grey[900];
   return createCustomShadow(palette, baseColor);
 }

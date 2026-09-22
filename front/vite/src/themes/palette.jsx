@@ -4,7 +4,7 @@ import { extendPaletteWithChannels } from 'utils/colorUtils';
 // assets
 import defaultColor from './theme/default';
 
-// ==============================|| DEFAULT THEME - PALETTE ||============================== //
+// ==============================|| DEFAULT THEME - PALETTE (light + dark) ||============================== //
 
 export function buildPalette(presetColor) {
   let colors;
@@ -14,6 +14,7 @@ export function buildPalette(presetColor) {
       colors = defaultColor;
   }
 
+  // ---------------------------------------------------------------- LIGHT
   const lightColors = {
     primary: {
       light: colors.primaryLight,
@@ -54,6 +55,8 @@ export function buildPalette(presetColor) {
     grey: {
       50: colors.grey50,
       100: colors.grey100,
+      200: colors.grey200,
+      300: colors.grey300,
       500: colors.grey500,
       600: colors.grey600,
       700: colors.grey700,
@@ -75,21 +78,99 @@ export function buildPalette(presetColor) {
     },
     divider: colors.grey200,
     background: {
+      // page levemente cinza + cards brancos = profundidade (não mais "tudo branco")
       paper: colors.paper,
-      default: colors.paper
+      default: colors.grey50
     }
   };
 
-  const commonColor = { common: { black: colors.darkPaper, white: '#fff' } };
+  // ---------------------------------------------------------------- DARK
+  const darkColors = {
+    mode: 'dark',
+    primary: {
+      light: colors.darkPrimaryLight,
+      main: colors.darkPrimaryMain,
+      dark: colors.darkPrimaryDark,
+      200: colors.darkPrimary200,
+      800: colors.darkPrimary800
+    },
+    secondary: {
+      light: colors.darkSecondaryLight,
+      main: colors.darkSecondaryMain,
+      dark: colors.darkSecondaryDark,
+      200: colors.darkSecondary200,
+      800: colors.darkSecondary800
+    },
+    error: {
+      light: colors.darkErrorLight,
+      main: colors.errorMain,
+      dark: colors.errorDark
+    },
+    orange: {
+      light: colors.darkOrangeLight,
+      main: colors.orangeMain,
+      dark: colors.orangeDark
+    },
+    warning: {
+      light: colors.darkWarningLight,
+      main: colors.warningMain,
+      dark: colors.warningDark,
+      contrastText: '#1a1a1a'
+    },
+    success: {
+      light: colors.darkSuccessLight,
+      200: colors.success200,
+      main: colors.successMain,
+      dark: colors.successDark
+    },
+    // grey invertido p/ o dark (900 = quase branco, 100/200 = superfícies/bordas escuras)
+    grey: {
+      50: colors.darkGrey50,
+      100: colors.darkGrey100,
+      200: colors.darkGrey200,
+      300: colors.darkGrey300,
+      400: '#5b6b86',
+      500: colors.darkGrey500,
+      600: colors.darkGrey600,
+      700: colors.darkGrey700,
+      800: '#e6ecf4',
+      900: colors.darkGrey900
+    },
+    dark: {
+      light: colors.darkTextPrimary,
+      main: colors.darkLevel1,
+      dark: colors.darkLevel2,
+      800: colors.darkBackground,
+      900: colors.darkPaper
+    },
+    text: {
+      primary: colors.darkTextPrimary,
+      secondary: colors.darkTextSecondary,
+      disabled: colors.darkTextDisabled,
+      dark: colors.darkTextTitle,
+      hint: colors.darkGrey100,
+      heading: colors.darkTextTitle
+    },
+    divider: colors.darkDivider,
+    background: {
+      paper: colors.darkPaper,
+      default: colors.darkBackground
+    }
+  };
 
-  const extendedLight = extendPaletteWithChannels(lightColors);
-  const extendedCommon = extendPaletteWithChannels(commonColor);
+  const lightCommon = { common: { black: '#0b1120', white: '#ffffff' } };
+  const darkCommon = { common: { black: '#000000', white: '#ffffff' } };
 
   return {
     light: {
       mode: 'light',
-      ...extendedCommon,
-      ...extendedLight
+      ...extendPaletteWithChannels(lightCommon),
+      ...extendPaletteWithChannels(lightColors)
+    },
+    dark: {
+      mode: 'dark',
+      ...extendPaletteWithChannels(darkCommon),
+      ...extendPaletteWithChannels(darkColors)
     }
   };
 }

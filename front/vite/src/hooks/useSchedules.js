@@ -8,12 +8,15 @@ import { fetcher } from '../api/api';
  * const { schedules, isLoading, error, refresh } = useSchedules(projectId);
  */
 export function useSchedules(projectId, options = {}) {
-    const key = projectId ? `/email/projects/${projectId}/schedules` : null;
+    const { recycle, ...swrOptions } = options;
+    const key = projectId
+        ? `/email/projects/${projectId}/schedules${recycle ? '?recycle=true' : ''}`
+        : null;
 
     const { data, error, isLoading, isValidating, mutate } = useSWR(key, fetcher, {
         revalidateOnFocus: true,
         shouldRetryOnError: false,
-        ...options
+        ...swrOptions
     });
 
     return {

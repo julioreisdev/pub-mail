@@ -14,7 +14,16 @@ async function bootstrap() {
   // estourar heap. 10mb cobre todos os casos legítimos.
   const bodyLimit = process.env.HTTP_BODY_LIMIT || '10mb';
 
-  app.use(json({ limit: bodyLimit }));
+  // Guarda o corpo bruto (rawBody) — necessário para verificar a assinatura
+  // Svix dos webhooks do Resend (a assinatura é sobre os bytes exatos).
+  app.use(
+    json({
+      limit: bodyLimit,
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
 
   app.enableCors({
@@ -27,8 +36,12 @@ async function bootstrap() {
   // Arquivos Estáticos (Uploads públicos)
   // -----------------------
   // CORRIGIDO: process.cwd() força o NestJS a olhar para a raiz absoluta do projeto
+  // Nomes de arquivo são UUID (imutáveis) → cache longo p/ carregar instantâneo
+  // nas próximas aberturas do e-mail (proxies como o do Gmail respeitam isso).
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',
+    maxAge: '365d',
+    immutable: true,
   });
 
   // -----------------------

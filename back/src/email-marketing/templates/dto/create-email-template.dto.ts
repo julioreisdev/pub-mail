@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateEmailTemplateDto {
   @ApiProperty({
@@ -37,4 +37,19 @@ export class CreateEmailTemplateDto {
   @IsOptional()
   @IsString()
   body_text?: string;
+
+  @ApiPropertyOptional({
+    description: 'Modelo do builder visual (JSON). Presente => template feito no construtor.',
+  })
+  @IsOptional()
+  @IsObject()
+  builder_model?: Record<string, any> | null;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: 'true => template exclusivo de reciclagem (não aparece nos templates normais do projeto).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  recycle?: boolean;
 }

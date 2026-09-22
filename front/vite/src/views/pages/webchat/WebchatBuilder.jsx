@@ -23,16 +23,16 @@ import {
   Tooltip,
   Typography
 } from '@mui/material';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
-import AccountTreeRoundedIcon from '@mui/icons-material/AccountTreeRounded';
-import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
-import SaveRoundedIcon from '@mui/icons-material/SaveRounded';
-import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
-import UploadFileRoundedIcon from '@mui/icons-material/UploadFileRounded';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
-import ArrowDownwardRoundedIcon from '@mui/icons-material/ArrowDownwardRounded';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
+import { AccountTreeRoundedIcon as AccountTreeRoundedIcon } from 'ui-component/icons';
+import { ArrowBackRoundedIcon as ArrowBackRoundedIcon } from 'ui-component/icons';
+import { SaveRoundedIcon as SaveRoundedIcon } from 'ui-component/icons';
+import { DownloadRoundedIcon as DownloadRoundedIcon } from 'ui-component/icons';
+import { UploadFileRoundedIcon as UploadFileRoundedIcon } from 'ui-component/icons';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { ArrowUpwardRoundedIcon as ArrowUpwardRoundedIcon } from 'ui-component/icons';
+import { ArrowDownwardRoundedIcon as ArrowDownwardRoundedIcon } from 'ui-component/icons';
 import MainCard from 'ui-component/cards/MainCard';
 import { get, patch } from '../../../api/api';
 import { WEBCHAT_PRESETS } from './webchatPresets';

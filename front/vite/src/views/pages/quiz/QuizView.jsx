@@ -1,6 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { normalizeQuizConfig } from './quizConfig';
+import { normalizeQuizConfig, sanitizeCssClasses } from './quizConfig';
 import { mountQuizAds } from './quizAds';
+
+function cx(...parts) {
+  return parts.filter(Boolean).join(' ').trim();
+}
+
+// Navega via CLIQUE DE ÂNCORA REAL (não window.location.href) — igual ao webchat:
+// scripts de anúncio/GTM que interceptam cliques de link conseguem rodar antes
+// de sair da página.
+function navigateTo(url) {
+  const dest = String(url || '').trim();
+  if (!dest || typeof document === 'undefined') return;
+  try {
+    const a = document.createElement('a');
+    a.href = dest;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.parentNode && a.parentNode.removeChild(a), 0);
+  } catch {
+    window.location.href = dest;
+  }
+}
+
+// Empurra evento pro dataLayer do GTM (rastreio robusto por Evento Personalizado,
+// sem depender de clique/classe no DOM). Best-effort, nunca lança.
+function pushDataLayer(obj) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dataLayer = window.dataLayer || [];
+    window.dataLayer.push(obj);
+  } catch {
+    /* noop */
+  }
+}
 
 // Renderizador único do quiz. Usado pela página pública (mode="live") e pelo
 // preview do builder (mode="preview"). Toda a aparência vem do config.
@@ -44,6 +78,40 @@ function animName(type) {
 
 function htmlHasContent(s) {
   return Boolean(String(s || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim());
+}
+
+// Renderiza um bloco de conteúdo (abaixo dos botões): texto/título, imagem, divisor.
+function renderContentBlock(b, theme) {
+  if (!b) return null;
+  if (b.type === 'image') {
+    if (!b.url) return null;
+    return (
+      <div key={b.id} style={{ textAlign: b.align || 'center', lineHeight: 0 }}>
+        <img src={b.url} alt="" style={{ width: `${b.widthPct || 100}%`, maxWidth: '100%', borderRadius: b.radius ?? 10, display: 'inline-block', objectFit: 'cover' }} />
+      </div>
+    );
+  }
+  if (b.type === 'divider') {
+    return <div key={b.id} style={{ borderTop: `${b.thickness || 1}px solid ${b.color || '#e5e7eb'}` }} />;
+  }
+  if (!htmlHasContent(b.text)) return null;
+  return (
+    <p
+      key={b.id}
+      style={{
+        margin: 0,
+        fontFamily: theme.font,
+        fontSize: b.size || 14,
+        color: b.color || theme.textColor,
+        textAlign: b.align || 'center',
+        fontWeight: b.weight || 400,
+        lineHeight: 1.5,
+        whiteSpace: 'pre-wrap'
+      }}
+    >
+      {b.text}
+    </p>
+  );
 }
 
 export default function QuizView({ config: rawConfig, mode = 'live', ads = null, onLeadSubmit, onRedirect, resetKey = 0 }) {
@@ -106,9 +174,10 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
       bump();
       return;
     }
+    pushDataLayer({ event: 'quiz_complete', quiz_redirect_url: url || null });
     if (url) {
       if (onRedirect) onRedirect(url);
-      else window.location.href = url;
+      else navigateTo(url);
     } else {
       setDoneMsg('¡Gracias por responder!');
       setPhase('done');
@@ -128,6 +197,9 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
   const handleAnswer = (q, opt) => {
     setAnswers((prev) => ({ ...prev, [q.id]: opt.label }));
     if (String(opt.redirect || '').trim()) redirectRef.current = opt.redirect.trim();
+    if (!isPreview) {
+      pushDataLayer({ event: 'quiz_answer', quiz_step: stepIndex + 1, quiz_question: q.text || '', quiz_answer: opt.label || '' });
+    }
     if (stepIndex < config.questions.length - 1) {
       setStepIndex((i) => i + 1);
       bump();
@@ -158,6 +230,13 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
           answers
         });
       }
+      // Evento de CONVERSÃO — o especialista cria um trigger de Evento
+      // Personalizado "quiz_lead" no GTM (não depende de clique/classe no DOM).
+      pushDataLayer({
+        event: 'quiz_lead',
+        quiz_has_email: Boolean(lc.captureEmail && lead.email),
+        quiz_has_phone: Boolean(lc.capturePhone && lead.phone)
+      });
       goRedirect();
     } catch (err) {
       setLeadError(err?.response?.data?.message || err?.message || 'No se pudo guardar. Inténtalo de nuevo.');
@@ -203,6 +282,9 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
     }
     return { ...base, background: theme.buttonBackground, color: theme.buttonTextColor };
   })();
+
+  // Cor de fundo específica do botão de captação (vazio = usa a cor do tema).
+  const captureBg = String(config.leadCapture?.buttonBgColor || '').trim();
 
   const inputStyle = {
     width: '100%',
@@ -302,28 +384,72 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
           {/* Conteúdo animado por etapa */}
           <div key={animKey} style={animStyle}>
             {phase === 'questions' && currentQuestion ? (
-              <>
-                {htmlHasContent(currentQuestion.text) ? (
+              (() => {
+                const hasDesc = htmlHasContent(currentQuestion.description);
+                const descAbove = currentQuestion.descriptionPosition === 'above';
+                const descBlock = hasDesc ? (
                   <p
                     style={{
-                      margin: '0 0 14px',
-                      textAlign: 'center',
-                      color: theme.questionColor,
-                      fontWeight: 700,
-                      fontSize: 16
+                      margin: descAbove ? '0 0 8px' : '0 0 14px',
+                      textAlign: currentQuestion.descriptionAlign || 'center',
+                      color: currentQuestion.descriptionColor || theme.mutedColor,
+                      fontWeight: currentQuestion.descriptionBold ? 700 : 400,
+                      fontSize: currentQuestion.descriptionSize || 14,
+                      lineHeight: 1.45,
+                      whiteSpace: 'pre-wrap'
                     }}
                   >
-                    {currentQuestion.text}
+                    {currentQuestion.description}
                   </p>
-                ) : null}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {currentQuestion.options.map((opt) => (
-                    <button key={opt.id} type="button" className="qz-btn" style={buttonStyle} onClick={() => handleAnswer(currentQuestion, opt)}>
-                      {opt.label || '—'}
-                    </button>
-                  ))}
-                </div>
-              </>
+                ) : null;
+                return (
+                  <>
+                    {descAbove ? descBlock : null}
+                    {htmlHasContent(currentQuestion.text) ? (
+                      <p
+                        style={{
+                          margin: hasDesc && !descAbove ? '0 0 8px' : '0 0 14px',
+                          textAlign: 'center',
+                          color: theme.questionColor,
+                          fontWeight: 700,
+                          fontSize: 16
+                        }}
+                      >
+                        {currentQuestion.text}
+                      </p>
+                    ) : null}
+                    {!descAbove ? descBlock : null}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {currentQuestion.options.map((opt) => (
+                        // Âncora real (não <button>) pra scripts de anúncio/GTM
+                        // reconhecerem o clique como link — igual ao webchat. O
+                        // href leva o destino (se houver) só pro GTM ler; a
+                        // navegação segue controlada pelo JS (redirect no fim).
+                        <a
+                          key={opt.id}
+                          role="button"
+                          href={String(opt.redirect || '').trim() || '#'}
+                          className={cx('qz-btn', sanitizeCssClasses(opt.cssClass))}
+                          style={{ ...buttonStyle, textDecoration: 'none' }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            handleAnswer(currentQuestion, opt);
+                          }}
+                        >
+                          {opt.label || '—'}
+                        </a>
+                      ))}
+                    </div>
+
+                    {/* Conteúdo livre abaixo dos botões */}
+                    {Array.isArray(currentQuestion.content) && currentQuestion.content.length ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
+                        {currentQuestion.content.map((b) => renderContentBlock(b, theme))}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()
             ) : null}
 
             {phase === 'lead' ? (
@@ -377,9 +503,28 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
                   </div>
                 ) : null}
                 {leadError ? <div style={{ color: '#dc2626', fontSize: 13, textAlign: 'center' }}>{leadError}</div> : null}
-                <button type="submit" className="qz-btn" disabled={submitting} style={{ ...buttonStyle, opacity: submitting ? 0.7 : 1, marginTop: 2 }}>
+                {/* Âncora real (rastreável por anúncio/GTM). O clique dispara a
+                    captação; o botão submit escondito preserva o "Enter envia". */}
+                <a
+                  role="button"
+                  href="#"
+                  className={cx('qz-btn', sanitizeCssClasses(config.leadCapture.buttonCssClass))}
+                  aria-disabled={submitting ? 'true' : 'false'}
+                  style={{
+                    ...buttonStyle,
+                    ...(captureBg ? { background: captureBg } : {}),
+                    textDecoration: 'none',
+                    opacity: submitting ? 0.7 : 1,
+                    marginTop: 2
+                  }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (!submitting) submitLead(e);
+                  }}
+                >
                   {submitting ? 'Enviando…' : config.leadCapture.buttonLabel}
-                </button>
+                </a>
+                <button type="submit" aria-hidden="true" tabIndex={-1} style={{ position: 'absolute', width: 1, height: 1, padding: 0, border: 0, opacity: 0, pointerEvents: 'none' }} />
               </form>
             ) : null}
 

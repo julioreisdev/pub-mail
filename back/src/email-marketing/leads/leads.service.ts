@@ -3,7 +3,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from 'generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { cleanEmailOrNull } from '../../common/email.util';
 import { CreateEmailLeadDto } from './dto/create-email-lead.dto';
 import { UpdateEmailLeadDto } from './dto/update-email-lead.dto';
 import { PublicSubscribeDto } from './dto/public-subscribe.dto';
@@ -22,8 +24,26 @@ export class EmailLeadsService {
     email: true,
     name: true,
     attributes: true,
+    tags: true,
     global_status: true,
   };
+
+  // Normaliza tags: trim, remove vazias/duplicadas, limita tamanho.
+  private normalizeTags(raw: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of raw) {
+      const tag = String(t ?? '').trim().slice(0, 40);
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(tag);
+      if (out.length >= 50) break;
+    }
+    return out;
+  }
 
   /**
    * Merge simples de JSON:
@@ -49,11 +69,9 @@ export class EmailLeadsService {
     projectId: string,
     dto: PublicSubscribeDto,
   ) {
-    const email = dto.email.toLowerCase().trim();
-
-    // 0) Validar formato do e-mail
-    const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-    if (!isValidEmail) {
+    // 0) Sanitiza (conserta ponto duplo etc.) + valida estrito. Fonte única.
+    const email = cleanEmailOrNull(dto.email);
+    if (!email) {
       throw new BadRequestException('Invalid email address format');
     }
 
@@ -150,7 +168,10 @@ export class EmailLeadsService {
   // -------------------------
 
   async create(organizationId: string, dto: CreateEmailLeadDto) {
-    const email = dto.email.toLowerCase().trim();
+    const email = cleanEmailOrNull(dto.email);
+    if (!email) {
+      throw new BadRequestException('Invalid email address format');
+    }
 
     const data: any = {
       organization_id: organizationId,
@@ -183,6 +204,50 @@ export class EmailLeadsService {
     });
   }
 
+  // Tags distintas da org (pra alimentar filtros/autocomplete no front).
+  async distinctTags(organizationId: string): Promise<string[]> {
+    const rows = await this.prisma.email_leads.findMany({
+      where: { organization_id: organizationId, tags: { not: Prisma.DbNull } },
+      select: { tags: true },
+    });
+    const set = new Set<string>();
+    rows.forEach((r) => {
+      if (Array.isArray(r.tags)) r.tags.forEach((t) => set.add(String(t)));
+    });
+    return Array.from(set).sort((a, b) =>
+      a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }),
+    );
+  }
+
+  // Adiciona tag(s) a vários leads de uma vez (append, sem duplicar).
+  async bulkAddTags(
+    organizationId: string,
+    leadIds: string[],
+    addTags: string[],
+  ) {
+    const tags = this.normalizeTags(addTags);
+    const ids = Array.isArray(leadIds) ? leadIds.filter(Boolean) : [];
+    if (ids.length === 0 || tags.length === 0) return { updated: 0 };
+
+    const leads = await this.prisma.email_leads.findMany({
+      where: { organization_id: organizationId, id: { in: ids } },
+      select: { id: true, tags: true },
+    });
+    if (leads.length === 0) return { updated: 0 };
+
+    await this.prisma.$transaction(
+      leads.map((l) => {
+        const current = Array.isArray(l.tags) ? l.tags.map(String) : [];
+        const merged = this.normalizeTags([...current, ...tags]);
+        return this.prisma.email_leads.update({
+          where: { id: l.id },
+          data: { tags: merged },
+        });
+      }),
+    );
+    return { updated: leads.length };
+  }
+
   async update(organizationId: string, id: string, dto: UpdateEmailLeadDto) {
     const lead = await this.prisma.email_leads.findFirst({
       where: { id, organization_id: organizationId },
@@ -193,6 +258,7 @@ export class EmailLeadsService {
     const data: any = {};
     if (dto.name !== undefined) data.name = dto.name?.trim() ?? null;
     if (dto.attributes !== undefined) data.attributes = dto.attributes;
+    if (dto.tags !== undefined) data.tags = this.normalizeTags(dto.tags);
 
     return this.prisma.email_leads.update({
       where: { id },

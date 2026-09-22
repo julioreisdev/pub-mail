@@ -19,8 +19,8 @@ import CustomFormControl from 'ui-component/extended/Form/CustomFormControl';
 import { strengthColor, strengthIndicator } from 'utils/password-strength';
 
 // assets
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { VisibilityIcon as Visibility } from 'ui-component/icons';
+import { VisibilityOffIcon as VisibilityOff } from 'ui-component/icons';
 
 import { post } from '../../../api/api';
 

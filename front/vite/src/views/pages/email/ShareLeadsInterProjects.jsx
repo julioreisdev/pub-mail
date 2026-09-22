@@ -18,8 +18,8 @@ import {
     Tooltip,
     Typography
 } from '@mui/material';
-import ShareRoundedIcon from '@mui/icons-material/ShareRounded';
-import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import { ShareRoundedIcon as ShareRoundedIcon } from 'ui-component/icons';
+import { CloseRoundedIcon as CloseRoundedIcon } from 'ui-component/icons';
 import toast from 'react-hot-toast';
 
 import useEmailProjects from '../../../hooks/useEmailProjects';
@@ -92,11 +92,11 @@ export default function ShareLeadsInterProjects() {
         <>
             <Button
                 onClick={handleOpen}
-                variant="contained"
+                variant="outlined"
                 size="small"
                 color="inherit"
                 startIcon={<ShareRoundedIcon fontSize="small" />}
-                sx={{ borderRadius: 2 }}
+                sx={{ borderRadius: 2, borderColor: 'divider', color: 'text.primary' }}
                 disabled={isLoading}
             >
                 Compartilhar leads

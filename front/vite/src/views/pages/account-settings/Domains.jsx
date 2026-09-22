@@ -21,14 +21,14 @@ import {
     Snackbar
 } from '@mui/material';
 
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import VerifiedRoundedIcon from '@mui/icons-material/VerifiedRounded';
-import HourglassBottomRoundedIcon from '@mui/icons-material/HourglassBottomRounded';
-import DnsRoundedIcon from '@mui/icons-material/DnsRounded';
-import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { VerifiedRoundedIcon as VerifiedRoundedIcon } from 'ui-component/icons';
+import { HourglassBottomRoundedIcon as HourglassBottomRoundedIcon } from 'ui-component/icons';
+import { DnsRoundedIcon as DnsRoundedIcon } from 'ui-component/icons';
+import { LinkRoundedIcon as LinkRoundedIcon } from 'ui-component/icons';
 import { post, patch, remove } from '../../../api/api';
 import useDomains from '../../../hooks/useDomains';
 

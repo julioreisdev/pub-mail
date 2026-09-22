@@ -4,11 +4,11 @@ import { Box, Stack, Tabs, Tab, Typography, TextField, Alert } from '@mui/materi
 
 import MainCard from 'ui-component/cards/MainCard';
 
-import AccountCircleRoundedIcon from '@mui/icons-material/AccountCircleRounded';
-import DomainRoundedIcon from '@mui/icons-material/DomainRounded';
-import VpnKeyRoundedIcon from '@mui/icons-material/VpnKeyRounded';
-import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded';
-import MonitorHeartRoundedIcon from '@mui/icons-material/MonitorHeartRounded';
+import { AccountCircleRoundedIcon as AccountCircleRoundedIcon } from 'ui-component/icons';
+import { DomainRoundedIcon as DomainRoundedIcon } from 'ui-component/icons';
+import { VpnKeyRoundedIcon as VpnKeyRoundedIcon } from 'ui-component/icons';
+import { SmartToyRoundedIcon as SmartToyRoundedIcon } from 'ui-component/icons';
+import { MonitorHeartRoundedIcon as MonitorHeartRoundedIcon } from 'ui-component/icons';
 import DomainsTabs from './DomainsTabs';
 import IntegrationsManager from './IntegrationsManager';
 import AiApiTutorial from './AiApiTutorial';

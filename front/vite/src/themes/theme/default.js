@@ -49,34 +49,53 @@ const defaultColor = {
   grey700: '#364152',
   grey900: '#121926',
 
-  // ==============================|| DARK THEME VARIANTS ||============================== //
+  // ==============================|| DARK THEME VARIANTS (slate-navy, low eye-strain) ||============================== //
 
-  // paper & background
-  darkPaper: '#0e1a30',
-  darkBackground: '#0a1424',
+  // superfícies (profundidade: default < paper < level1 < level2)
+  darkBackground: '#0b1120', // fundo da página
+  darkPaper: '#151d30', // cards / superfícies
+  darkLevel1: '#1d2740', // hover / seleção sutil
+  darkLevel2: '#25304d', // elevação maior (menus, popovers)
 
-  // dark 800 & 900
-  darkLevel1: '#142340',
-  darkLevel2: '#0f1a2f',
+  // texto
+  darkTextTitle: '#f1f5f9', // títulos
+  darkTextPrimary: '#d7e0ec', // corpo
+  darkTextSecondary: '#8fa1bd', // secundário/muted
+  darkTextDisabled: '#5b6b86',
 
-  // text variants
-  darkTextTitle: '#e2eaff',
-  darkTextPrimary: '#c2d1f0',
-  darkTextSecondary: '#8aa0c8',
+  // divisor / bordas no dark
+  darkDivider: '#26314a',
 
-  // primary dark
-  darkPrimaryLight: '#9cbef8',
+  // grey invertido para o dark (mesma semântica do Berry: 900 = "texto escuro",
+  // 100/200 = "fundos/bordas claras" — no dark viram claro/escuro respectivamente)
+  darkGrey50: '#151d30',
+  darkGrey100: '#1b2440',
+  darkGrey200: '#26314a',
+  darkGrey300: '#3b4a66',
+  darkGrey500: '#8fa1bd',
+  darkGrey600: '#aab8cc',
+  darkGrey700: '#d7e0ec',
+  darkGrey900: '#f1f5f9',
+
+  // primary no dark (azul um pouco mais claro p/ contraste em fundo escuro)
+  darkPrimaryLight: '#17233c', // tint de fundo (hover/selected/chip)
   darkPrimaryMain: '#5b9bff',
-  darkPrimaryDark: '#1e5dc8',
-  darkPrimary200: '#80a8f4',
-  darkPrimary800: '#0f3a7a',
+  darkPrimaryDark: '#3b7de0',
+  darkPrimary200: '#3d6bb5',
+  darkPrimary800: '#9cbef8',
 
-  // secondary dark
-  darkSecondaryLight: '#ebedfd',
-  darkSecondaryMain: '#7d8cf4',
-  darkSecondaryDark: '#3848d8',
-  darkSecondary200: '#a3a8f4',
-  darkSecondary800: '#1c2480'
+  // secondary no dark (violeta-azul)
+  darkSecondaryLight: '#1c2140', // tint de fundo
+  darkSecondaryMain: '#8b93f8',
+  darkSecondaryDark: '#5b6cf0',
+  darkSecondary200: '#4a4f9e',
+  darkSecondary800: '#a3a8f4',
+
+  // tints de fundo dos estados semânticos no dark (alerts/chips)
+  darkSuccessLight: '#14301f',
+  darkErrorLight: '#3a1c1c',
+  darkWarningLight: '#3a2f14',
+  darkOrangeLight: '#3a2418'
 };
 
 export default defaultColor;

@@ -19,16 +19,16 @@ import {
   Tooltip,
   Typography
 } from '@mui/material';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import DescriptionRoundedIcon from '@mui/icons-material/DescriptionRounded';
-import DnsRoundedIcon from '@mui/icons-material/DnsRounded';
-import HourglassBottomRoundedIcon from '@mui/icons-material/HourglassBottomRounded';
-import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import VerifiedRoundedIcon from '@mui/icons-material/VerifiedRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { DescriptionRoundedIcon as DescriptionRoundedIcon } from 'ui-component/icons';
+import { DnsRoundedIcon as DnsRoundedIcon } from 'ui-component/icons';
+import { HourglassBottomRoundedIcon as HourglassBottomRoundedIcon } from 'ui-component/icons';
+import { LinkRoundedIcon as LinkRoundedIcon } from 'ui-component/icons';
+import { OpenInNewRoundedIcon as OpenInNewRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { VerifiedRoundedIcon as VerifiedRoundedIcon } from 'ui-component/icons';
 
 import { patch, post, remove } from '../../../api/api';
 import useWebchatDomains from '../../../hooks/useWebchatDomains';

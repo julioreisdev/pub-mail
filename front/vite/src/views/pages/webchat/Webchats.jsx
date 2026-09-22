@@ -26,15 +26,15 @@ import {
   Tooltip,
   Typography
 } from '@mui/material';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
-import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
-import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
-import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
-import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
-import DashboardCustomizeRoundedIcon from '@mui/icons-material/DashboardCustomizeRounded';
-import CampaignRoundedIcon from '@mui/icons-material/CampaignRounded';
+import { AddRoundedIcon as AddRoundedIcon } from 'ui-component/icons';
+import { DeleteRoundedIcon as DeleteRoundedIcon } from 'ui-component/icons';
+import { EditRoundedIcon as EditRoundedIcon } from 'ui-component/icons';
+import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
+import { OpenInNewRoundedIcon as OpenInNewRoundedIcon } from 'ui-component/icons';
+import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
+import { TuneRoundedIcon as TuneRoundedIcon } from 'ui-component/icons';
+import { DashboardCustomizeRoundedIcon as DashboardCustomizeRoundedIcon } from 'ui-component/icons';
+import { CampaignRoundedIcon as CampaignRoundedIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
 import useWebchats from '../../../hooks/useWebchats';
@@ -1227,7 +1227,7 @@ function WebchatAdsDialog({
                 borderRadius: 2,
                 p: 1.25,
                 bgcolor: 'background.default',
-                boxShadow: (theme) => `0 0 0 1px ${theme.palette.secondary.main}22`
+                boxShadow: (theme) => `0 0 0 1px rgba(${theme.vars.palette.secondary.mainChannel} / 0.13)`
               }}
             >
               <Stack spacing={1.25}>
@@ -1300,7 +1300,7 @@ function WebchatAdsDialog({
                             minWidth: 34,
                             px: 1,
                             py: 0.25,
-                            color: theme.palette.secondary.dark,
+                            color: theme.vars.palette.secondary.dark,
                             fontWeight: 700,
                             fontSize: 12,
                             lineHeight: 1.1,
@@ -1308,8 +1308,8 @@ function WebchatAdsDialog({
                             mx: 0.25
                           },
                           '& .MuiTab-root.Mui-selected': {
-                            color: theme.palette.common.white,
-                            bgcolor: theme.palette.secondary.main
+                            color: theme.vars.palette.common.white,
+                            bgcolor: theme.vars.palette.secondary.main
                           },
                           '& .MuiTabs-indicator': {
                             display: 'none'
@@ -1890,7 +1890,7 @@ export default function Webchats() {
   }, [emailProjects]);
 
   const goToWebchatDomainsSettings = () => {
-    navigate('/settings/account-settings?tab=domains&domainTab=webchat');
+    navigate('/settings/domains?sub=webchat');
   };
 
   const handleOpenCreate = () => {

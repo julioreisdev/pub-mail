@@ -25,7 +25,7 @@ import Logo from 'ui-component/Logo';
 
 // assets
 import { IconBook, IconCreditCard, IconDashboard, IconHome2 } from '@tabler/icons-react';
-import MenuIcon from '@mui/icons-material/Menu';
+import { MenuIcon as MenuIcon } from 'ui-component/icons';
 
 function ElevationScroll({ children, window }) {
   const theme = useTheme();

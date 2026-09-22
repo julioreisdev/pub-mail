@@ -1,19 +1,15 @@
 import { memo, useMemo } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
 
 import useMediaQuery from '@mui/material/useMediaQuery';
 import Drawer from '@mui/material/Drawer';
 import Box from '@mui/material/Box';
 
 // project imports
-import { DASHBOARD_PATH } from 'config';
-import faviconPubmail from 'assets/images/favicon_pubmail.png';
-import MenuCard from './MenuCard';
 import MenuList from '../MenuList';
-import LogoSection from '../LogoSection';
 import MiniDrawerStyled from './MiniDrawerStyled';
+import SidebarToggle from './SidebarToggle';
+import SidebarActions from './SidebarActions';
 
-import useConfig from 'hooks/useConfig';
 import { drawerWidth } from 'store/constant';
 import SimpleBar from 'ui-component/third-party/SimpleBar';
 
@@ -27,68 +23,50 @@ function Sidebar() {
   const { menuMaster } = useGetMenuMaster();
   const drawerOpen = menuMaster.isDashboardDrawerOpened;
 
-  const {
-    state: { miniDrawer }
-  } = useConfig();
-
-  const logo = useMemo(
-    () => (
-      <Box sx={{ display: 'flex', justifyContent: drawerOpen ? 'flex-start' : 'center', p: 2 }}>
-        {drawerOpen ? (
-          <LogoSection />
-        ) : (
-          <RouterLink to={DASHBOARD_PATH} aria-label="logo">
-            <img
-              src={faviconPubmail}
-              alt="Pub Mail"
-              style={{ display: 'block', height: 34, width: 34, objectFit: 'contain' }}
-            />
-          </RouterLink>
-        )}
+  // conteúdo interno: coluna full-height → topo (toggle) · lista (rola) · rodapé (tema/sair)
+  const content = useMemo(() => {
+    const contentPadding = drawerOpen ? { px: 2 } : { px: 1 };
+    const list = (
+      <Box sx={{ ...contentPadding, pt: 0.5 }}>
+        <MenuList />
       </Box>
-    ),
-    [drawerOpen]
-  );
-
-  const drawer = useMemo(() => {
-    const drawerContent = (
-      <>
-        <MenuCard />
-      </>
     );
 
-    let drawerSX = { paddingLeft: '0px', paddingRight: '0px', marginTop: '20px' };
-    if (drawerOpen) drawerSX = { paddingLeft: '16px', paddingRight: '16px', marginTop: '0px' };
-
     return (
-      <>
-        {downMD ? (
-          <Box sx={drawerSX}>
-            <MenuList />
-            {drawerOpen && drawerContent}
-          </Box>
-        ) : (
-          <SimpleBar sx={{ height: 'calc(100vh - 90px)', ...drawerSX }}>
-            <MenuList />
-            {drawerOpen && drawerContent}
-          </SimpleBar>
-        )}
-      </>
+      <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <SidebarToggle
+          drawerOpen={downMD ? true : drawerOpen}
+          isMobile={downMD}
+          onToggle={() => handlerDrawerOpen(downMD ? false : !drawerOpen)}
+        />
+
+        <Box sx={{ flex: 1, minHeight: 0 }}>
+          {downMD ? (
+            <Box sx={{ height: '100%', overflowY: 'auto' }}>{list}</Box>
+          ) : (
+            <SimpleBar sx={{ height: '100%' }}>{list}</SimpleBar>
+          )}
+        </Box>
+
+        <Box sx={{ ...contentPadding, pb: 1.5 }}>
+          <SidebarActions drawerOpen={downMD ? true : drawerOpen} />
+        </Box>
+      </Box>
     );
   }, [downMD, drawerOpen]);
 
   return (
-    <Box component="nav" sx={{ flexShrink: { md: 0 }, width: { xs: 'auto', md: drawerWidth } }} aria-label="mailbox folders">
-      {downMD || (miniDrawer && drawerOpen) ? (
+    <Box component="nav" sx={{ flexShrink: { md: 0 }, width: { xs: 'auto', md: drawerWidth } }} aria-label="menu principal">
+      {downMD ? (
         <Drawer
-          variant={downMD ? 'temporary' : 'persistent'}
+          variant="temporary"
           anchor="left"
           open={drawerOpen}
           onClose={() => handlerDrawerOpen(!drawerOpen)}
           slotProps={{
             paper: {
               sx: {
-                mt: downMD ? 0 : 11,
+                mt: 0,
                 zIndex: 1099,
                 width: drawerWidth,
                 bgcolor: 'background.default',
@@ -100,13 +78,11 @@ function Sidebar() {
           ModalProps={{ keepMounted: true }}
           color="inherit"
         >
-          {downMD && logo}
-          {drawer}
+          {content}
         </Drawer>
       ) : (
         <MiniDrawerStyled variant="permanent" open={drawerOpen}>
-          {logo}
-          {drawer}
+          {content}
         </MiniDrawerStyled>
       )}
     </Box>
