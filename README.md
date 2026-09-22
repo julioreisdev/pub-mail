@@ -1,438 +1,194 @@
 # Pub Mail
 
-Plataforma multi-tenant para criação de **webchats com agentes de IA** e **email marketing em massa**, com auto-provisionamento de domínios customizados (HTTPS automático via Let's Encrypt) e rotação inteligente entre múltiplos provedores de IA.
+<p align="right">
+  <a href="README.md"><b>🇧🇷 Português</b></a> · <a href="README.en.md">🇺🇸 Read in English</a>
+</p>
+
+Plataforma **multi-tenant** de marketing e automação: **webchats com agentes de IA**, **quizzes**, **e-mail marketing** completo (construtor visual, automações, segmentação, A/B, analytics) e um **módulo Telegram** (bots, DMs, grupos/canais, broadcasts, fluxos, prova social e vendas via PIX). Domínios próprios dos clientes são provisionados automaticamente (nginx + HTTPS Let's Encrypt), e as chamadas de IA fazem rotação inteligente entre múltiplos provedores.
+
+![Dashboard do Pub Mail](docs/images/dashboard.png)
 
 ## Sumário
 
-- [O que é](#o-que-é)
+- [Visão geral](#visão-geral)
+- [Módulos](#módulos)
+  - [Webchat com IA](#webchat-com-ia)
+  - [Quizzes](#quizzes)
+  - [Email Marketing](#email-marketing)
+  - [Leads e Automações](#leads-e-automações)
+  - [Telegram](#telegram)
+  - [Administração, Integrações e Conta](#administração-integrações-e-conta)
 - [Arquitetura](#arquitetura)
 - [Stack](#stack)
 - [Estrutura do repositório](#estrutura-do-repositório)
 - [Rodando localmente](#rodando-localmente)
-- [Deploy em produção](#deploy-em-produção)
 - [Variáveis de ambiente](#variáveis-de-ambiente)
-- [Funcionalidades-chave](#funcionalidades-chave)
-- [Fluxo de auto-provisionamento de domínios](#fluxo-de-auto-provisionamento-de-domínios)
+- [Deploy em produção](#deploy-em-produção)
 - [Operação](#operação)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## O que é
+## Visão geral
 
-O Pub Mail permite que uma organização:
+Cada **organização** (tenant) tem seus usuários, carteira de tokens, agentes, domínios, webchats, quizzes, projetos de e-mail, leads e bots do Telegram — tudo isolado por `organization_id`. Um `SUPER_ADMIN` de plataforma administra organizações e usuários.
 
-1. **Crie agentes de IA** com persona/produto customizado (`prompt_mestre`, configurações de captura de lead, observações).
-2. **Cadastre domínios próprios** (ex: `chat.minhamarca.com`) que ficam servindo o webchat público — basta apontar DNS na Cloudflare e o sistema gera nginx vhost + SSL Let's Encrypt automaticamente.
-3. **Crie webchats** vinculando um agente a um domínio, com slug customizado (`chat.minhamarca.com/webchat/duvidas`) e personalização visual completa (cores, header, mensagens de boas-vindas, quick replies, anúncios).
-4. **Capture leads** via conversa (nome, e-mail, telefone, campos custom) — leads vão pra `webchat_leads` ou são roteados pra um projeto de e-mail marketing.
-5. **Envie e-mails em massa** via projetos de e-mail com templates HTML personalizados.
-6. **Veja status runtime das chaves de IA** (cooldowns, quotas diárias, último erro) e exporte leads em Excel.
-7. **Sirva `/ads.txt`** customizado por domínio (IAB Authorized Digital Sellers) pra integração com ADX/SSPs.
+O fluxo típico: captar leads (webchat, quiz, formulário no site, Telegram) → nutrir (fluxo inicial, automações, broadcasts, gatilhos) → converter (e-mails, VIP no Telegram com PIX) → medir (analytics, engajamento por lead).
+
+## Módulos
+
+### Webchat com IA
+
+- **Agentes de IA** com persona/produto (`prompt_mestre`), regras de captura de lead e observações.
+- **Domínios próprios** (`chat.suamarca.com`): cliente aponta o DNS, clica "Verificar DNS" e o sistema gera o vhost nginx + certificado SSL sozinho. `ads.txt` (IAB) editável por domínio.
+- **Webchats** com slug (`/webchat/duvidas`), personalização visual completa, **botões** (quick replies com classes CSS), **páginas legais** no rodapé, **anúncios** (GPT/ADX, rótulo opcional) e layout responsivo (coluna de 720px no desktop).
+- **Splits**: pastas de webchats com **redirecionamento ponderado** (`/webchat/splits/<slug>` sorteia entre os membros por peso, com trava anti-loop).
+- **Captura inteligente de leads** na conversa (nome/e-mail/telefone/campos custom), multilíngue, com guardrails no prompt; leads podem ser roteados para um projeto de e-mail.
+- **Rotação multi-provedor de IA** (Groq, Cerebras, Mistral, OpenRouter, Gemini, SambaNova) com cooldown/quota por chave em Redis e fallback degradado.
+
+### Quizzes
+
+- **Domínios de quiz** (mesmo provisionamento do webchat) e **CRUD de quizzes** com splits ponderados.
+- **Construtor visual** (`/quizzes/:id/builder`) com preview real, 3 presets (Clean, Vibrante, Dark Neon), import/export de preset, texto descritivo por pergunta, blocos de conteúdo (texto/imagem/divisor) e classes CSS por botão.
+- **Captação de lead** ao final (campos configuráveis) → `quiz_leads` e, se vinculado, o projeto de e-mail.
+- **Redirecionamento por resposta** (cada opção pode ter sua URL) ou geral.
+- **E-mail imediato ao lead** (HTML/construtor visual, variáveis `{{name}}/{{email}}/{{phone}}`).
+- **Anúncios** (topo) espelhados do webchat e **rastreamento pronto para GTM** (`<a>` reais + eventos `dataLayer`: `quiz_answer`, `quiz_lead`, `quiz_complete`).
+
+### Email Marketing
+
+- **Projetos** (listas) com remetente, bloqueio de leads frios e "apenas leads que interagiram no fluxo".
+- **Construtor visual por blocos** (texto, imagem, botão rastreado, divisor, espaçador, card, colunas, barra no topo) que gera **HTML mínimo e limpo** para cair na caixa de entrada; **preheader** e **From Name** por template; imagens otimizadas (sharp) servidas direto pelo nginx com cache de 1 ano.
+- **Importar templates do Claude**: prompt pronto + planilha `.xlsx/.csv` em formato plano → templates editáveis no construtor.
+- **Agendamentos recorrentes** por horário (minuto-do-dia em Brasília), **templates por agendamento**, **disparo manual**, **reenvio para não-abridores**.
+- **Segmentação** por regras (abriu/clicou em X dias, taxa de abertura/clique, tags, origem, data de entrada) com contagem ao vivo.
+- **Testes A/B** de assunto + template com decisão automática e envio do vencedor ao restante.
+- **Formulário de captação v2**: um **único código** copiável (formato WordPress: cola no editor de código e edita no visual) — campos, textos, botão com URL de destino, cores, feedback opcional, tudo configurável e salvo por projeto. Sem e-mail o botão é um link normal; com e-mail capta e redireciona. API pública `POST /email/leads/subscribe/:org/:project` para formulários próprios.
+- **Entregabilidade**: validação estrita de e-mail em todas as entradas, higiene automática (conserta/remove inválidos), **webhooks da Resend** (entregue/bounce/spam) com **supressão automática** e estorno de tokens quando nada é enviado.
+- **Analytics**: disparos, entregues, aberturas, cliques únicos, bounces, spam, série temporal e engajamento atual da base.
+
+### Leads e Automações
+
+- **Leads** unificados por origem (Webchats, Quizzes, Projetos de e-mail): engajamento por lead, **tags** (edição individual e em massa), filtros server-side, exportação Excel.
+- **Fluxo Inicial** (drip por projeto): sequência de e-mails com atrasos, **condições por passo** (só se abriu/clicou o anterior) e **métricas por passo**.
+- **Reciclagem (win-back)**: agendamentos que disparam **só para leads frios**.
+- **Gatilhos por comportamento**: ao abrir/clicar → adicionar tag ou enviar template, com frequência por lead (uma vez, cooldown, ilimitado).
+
+### Telegram
+
+![DMs do Telegram](docs/images/telegram-dms.png)
+
+- **Bots** (token do @BotFather) com webhook automático, revalidação, perfil (nome, descrição, comandos) e **aviso de flood/ban** no card.
+- **DMs** estilo Telegram (fotos, emojis, anexos, tags do contato, presença), **Grupos** e **Canais** auto-descobertos (convite, foto, contagem de membros, sair).
+- **Fluxo Inicial**: construtor visual (reactflow) com blocos arrastáveis — mensagens múltiplas, mídia/áudio (voice via ffmpeg), atraso "digitando", botões (próximo passo, link, grupo, outro bot, **vender plano**), respostas por texto, tags, deep-link de captação (`?start=`).
+- **Automações** temporizadas após o `/start` (condição "inativo", tags, botões).
+- **Broadcasts** em massa (DMs + grupos + canais, vários bots) com rotação de copies, horários diários, variáveis (`{{nome}}` etc.), botões inline, fila com rate-limit por bot, status por horário e histórico paginado.
+- **Mensagem rotativa (prova social)**: uma mensagem que é **editada em loop** ("Fulano acabou de aderir…") em grupos/canais ou nas DMs, sempre como última mensagem, com travas anti-flood (cadência mínima, teto de edições por lead, detecção de lead que saiu).
+- **Pagamentos / VIP**: `/vip` → planos → **PIX** (Mercado Pago ou PushinPay, QR + copia-e-cola com botão de copiar) → validação real no gateway → **link de convite de uso único** para o grupo/canal VIP. **Assinaturas por tempo** com lembrete, expiração (remove do VIP) e renovação. Mensagens do checkout totalmente configuráveis. Botão de plano também em broadcasts, automações e fluxo.
+
+### Administração, Integrações e Conta
+
+![Integrações](docs/images/integracoes.png)
+
+- **Administração → Usuários** (`SUPER_ADMIN`): organizações e usuários cross-org, criação de org + admin, troca de senha, exclusão em cascata. Suporte a **organização oculta** do desenvolvedor (invisível para os demais).
+- **Integrações**: chaves de IA por provedor **mascaradas** (adicionar/remover por chave, rotação automática), Resend + Signing Secret do webhook, IP de borda e e-mail do certbot. **Status de API** mostra o estado runtime de cada chave; **Tutorial de IA** ensina a obter as chaves.
+- **Conta & Domínios**: dados da conta, domínios de webchat e de quiz.
+- **Interface**: tema **claro/escuro**, sidebar em grupos recolhíveis, dashboard com resumo da conta.
 
 ## Arquitetura
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│               nginx (TLS + roteamento)                   │
-│  pubmail.* → SPA Vite (estático)                         │
-│  pubmail-api.* → back :8000                              │
-│  pubmail-ai.* → ai-micro :4000                           │
-│  pubmail-mail.* → email-micro :9999                      │
-│  pubmail-db.* → phpMyAdmin (basic auth + php-fpm)        │
-│  <dominio-webchat-do-cliente> → SPA + /ads.txt           │
-└──────────────────────────────────────────────────────────┘
-        │                    │                    │
-        ▼                    ▼                    ▼
-   ┌─────────┐         ┌─────────┐         ┌──────────┐
-   │  Back   │ ──────→ │AI micro │         │Email mic │
-   │ NestJS  │         │ Express │         │ Express  │
-   │  :8000  │         │  :4000  │         │  :9999   │
-   └────┬────┘         └────┬────┘         └──────────┘
-        │                   │
-        ▼                   ▼
-   ┌────────┐          ┌────────┐
-   │ MySQL  │          │ Redis  │
-   │  :3306 │          │  :6379 │
-   └────────┘          └────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                   nginx (TLS + roteamento)                   │
+│  bluewebchat.online          → SPA Vite (estático)           │
+│  api.bluewebchat.online      → back :8000 (+ /uploads)       │
+│  <domínio-do-cliente>        → SPA + /ads.txt (webchat/quiz) │
+└──────────────────────────────────────────────────────────────┘
+                     │
+                     ▼
+              ┌────────────┐   127.0.0.1   ┌────────────┐  ┌────────────┐
+              │   Back     │ ────────────▶ │  AI micro  │  │ Email micro│
+              │  NestJS    │ ────────────▶ │  :4000     │  │   :9999    │
+              │   :8000    │               └─────┬──────┘  └─────┬──────┘
+              └─────┬──────┘                     │               │
+                    ▼                            ▼               ▼
+              ┌──────────┐                 ┌──────────────────────┐
+              │  MySQL 8 │                 │        Redis 7       │
+              └──────────┘                 └──────────────────────┘
+   Externos: Telegram Bot API (webhooks) · Resend (e-mail + webhooks) · Mercado Pago / PushinPay (PIX)
 ```
 
-- **Front (Vite/React)**: SPA servida estaticamente pelo nginx em `pubmail.*` e em todos os domínios de webchat dos clientes (mesmo `dist/`, roteamento por `Host` header).
-- **Back (NestJS)**: API REST autenticada por JWT. Gerencia organizações, usuários, agentes, webchats, domínios, leads, configurações do sistema (chaves de IA, Resend, etc). É quem provisiona vhosts nginx + roda certbot quando o cliente cadastra um domínio novo.
-- **AI micro-services (Express, ESM)**: orquestra chamadas de IA. Tem **rotação inteligente** entre 6 provedores (Groq, Cerebras, Mistral, OpenRouter, Gemini, SambaNova) com Redis tracking de cooldown/quota por chave, fallback degradado pra Groq Llama 3.1 8B se tudo falhar.
-- **Email micro-services (Express, ESM)**: dispatcher de e-mail (Resend) com fila Redis pra envios em massa.
-- **MySQL 8**: storage principal (Prisma ORM).
-- **Redis**: estado das chaves de IA + filas de e-mail.
-- **phpMyAdmin**: admin DB com HTTP Basic Auth pelo nginx.
+- **Front (Vite/React)**: SPA servida pelo nginx no domínio da plataforma e em todos os domínios de cliente (mesmo `dist/`, roteia por `Host`). O browser **só fala com o back**.
+- **Back (NestJS)**: API REST (JWT), multi-tenant, provisiona vhosts + certbot, roda os crons/workers (agendamentos, fluxos, A/B, higiene, Telegram) e recebe os webhooks públicos (Telegram, Resend, gateways de pagamento).
+- **AI micro** e **Email micro**: só em loopback; o back é o único cliente deles.
+- **MySQL 8** (Prisma) e **Redis** (estado das chaves de IA + filas BullMQ de e-mail).
 
 ## Stack
 
 | Componente | Versão |
 |---|---|
 | Node | 20.x |
-| Yarn | 4.10.3 (corepack) |
+| Yarn | 4.x (corepack, `nodeLinker: node-modules`) |
 | NestJS | 11 |
-| Prisma | 7.3 |
-| React | 19 |
-| Vite | 7 |
-| MUI | 5/7 |
+| Prisma | 7 (adapter MariaDB) |
+| React / Vite / MUI | 19 / 7 / 7 |
+| reactflow | 11 |
 | MySQL | 8.0 |
 | Redis | 7 |
-| nginx | 1.24+ |
-| Certbot | 2.9+ |
-| PHP-FPM (phpMyAdmin) | 8.3 |
+| nginx / Certbot | 1.24+ / 2.9+ |
+| ffmpeg, libvips (sharp) | dependências de sistema (áudio/imagens) |
 | Ubuntu (prod) | 24.04 LTS |
 
 ## Estrutura do repositório
 
 ```
 pub-mail/
-├── back/                          # NestJS API + Prisma
-│   ├── prisma/                    # schema.prisma + migrations
-│   ├── src/                       # módulos (auth, webchats, email-marketing, ...)
-│   └── package.json
-├── ai-micro-services/             # AI router multi-provider
-│   ├── src/
-│   │   ├── providers/             # adapters (groq, cerebras, mistral, ...)
-│   │   ├── services/              # ai-router.js, key-state-store.js, webchat.service.js
-│   │   ├── controllers/
-│   │   └── routes/
-│   └── package.json
-├── email-micro-services/          # dispatcher Resend
-│   ├── server.js
-│   └── package.json
-├── front/vite/                    # SPA React
-│   ├── src/
-│   ├── vite.config.mjs
-│   └── package.json
-├── docker-compose.yml             # MySQL + Redis pra dev local
-├── .rsync-deploy-excludes         # padrões pro rsync de deploy
-└── README.md
+├── back/                      # NestJS API + Prisma
+│   ├── prisma/                # schema.prisma + migrations
+│   └── src/
+│       ├── auth/ admin/       # JWT, roles, administração
+│       ├── webchats/ quizzes/ # webchat, domínios, quizzes, splits, anúncios
+│       ├── email-marketing/   # projetos, templates, leads, flows, ab, triggers, analytics…
+│       ├── cron-jobs/         # agendamentos de e-mail
+│       ├── telegram/          # bots, chat, fluxos, automações, broadcasts, rotators, payments
+│       └── webhooks/          # Resend + tracking de abertura/clique
+├── ai-micro-services/         # roteador multi-provedor de IA
+├── email-micro-services/      # dispatcher Resend (BullMQ)
+├── front/vite/                # SPA React
+│   └── src/views/pages/       # webchat, quiz, email, leads, telegram, admin…
+├── docs/images/               # imagens deste README
+├── docker-compose.yml         # MySQL + Redis + phpMyAdmin para dev local
+└── CLAUDE.md                  # notas operacionais detalhadas (deploy, gotchas, histórico)
 ```
 
 ## Rodando localmente
 
 ### Pré-requisitos
 
-- Node 20+
-- Yarn 4 (via `corepack enable && corepack prepare yarn@4.10.3 --activate`)
-- Docker Compose (pra subir MySQL + Redis)
+Node 20, Yarn 4 (corepack), Docker (para MySQL/Redis), `ffmpeg` (áudio do Telegram) e `libvips` (sharp) — ambos opcionais em dev.
 
 ### Setup
 
 ```bash
-# 1. Clone e suba dependências
-git clone <repo> pub-mail && cd pub-mail
-docker compose up -d   # sobe MySQL e Redis em portas locais
+# 1. Dependências de infra
+docker compose up -d            # MySQL :3306, Redis :6379, phpMyAdmin :8081
 
 # 2. Back
-cd back
-echo "nodeLinker: node-modules" > .yarnrc.yml
-yarn install
-cp .env.example .env   # edite com suas chaves
-yarn prisma generate
-yarn prisma migrate deploy
-yarn start:dev         # roda em :8000 com watch
+cd back && yarn install
+yarn prisma migrate deploy && yarn prisma generate
+yarn start:dev                  # :8000
 
-# 3. AI micro-services (em outro terminal)
-cd ai-micro-services
-echo "nodeLinker: node-modules" > .yarnrc.yml
-yarn install
-cp .env.example .env
-yarn start             # :4000
+# 3. AI micro (outro terminal)
+cd ai-micro-services && yarn install && yarn dev   # :4000
 
-# 4. Email micro-services (em outro terminal)
-cd email-micro-services
-yarn install
-cp .env.example .env
-yarn start             # :9999
+# 4. Email micro (outro terminal)
+cd email-micro-services && yarn install && yarn dev   # :9999
 
-# 5. Front (em outro terminal)
-cd front/vite
-echo "nodeLinker: node-modules" > .yarnrc.yml
-yarn install
-yarn start             # :3000 com HMR
+# 5. Front (outro terminal)
+cd front/vite && yarn install && yarn dev   # :3000
 ```
 
-Acesse `http://localhost:3000` e crie a primeira conta via `/register`.
-
-### .env mínimo de dev
-
-**back/.env:**
-```env
-DATABASE_URL="mysql://root:mysqlpass@localhost:3306/pubmail"
-REDIS_HOST=localhost
-REDIS_PORT=6379
-JWT_ACCESS_SECRET="dev_access"
-JWT_REFRESH_SECRET="dev_refresh"
-PORT=8000
-EMAIL_SERVICE_URL="http://localhost:9999"
-EMAIL_SERVICE_KEY="dev-email-key"
-IA_SERVICE_URL="http://localhost:4000"
-IA_SERVICE_KEY="dev-ia-key"
-WEBCHAT_DOMAIN_BIND_PROVIDER="CERTBOT"
-HTTP_BODY_LIMIT="2gb"
-```
-
-**ai-micro-services/.env:**
-```env
-PORT=4000
-IA_SERVICE_KEY=dev-ia-key
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-```
-
-**email-micro-services/.env:**
-```env
-PORT=9999
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-EMAIL_SERVICE_KEY=dev-email-key
-```
-
-**front/vite/.env:**
-```env
-VITE_APP_BASE_NAME=/
-VITE_API_URL=http://localhost:8000
-VITE_AI_URL=http://localhost:4000
-VITE_EMAIL_URL=http://localhost:9999
-GENERATE_SOURCEMAP=false
-```
-
-> **Atenção crítica:** `VITE_APP_BASE_NAME=/` é obrigatório. Sem ele, o build do Vite gera asset paths como `/undefined/...` e a SPA renderiza tela branca.
-
-## Deploy em produção
-
-Setup de referência: **Ubuntu 24.04 LTS**, single VPS, deploy nativo (sem Docker em prod).
-
-### 1. Pacotes do sistema
-
-```bash
-apt update
-apt install -y curl ca-certificates gnupg build-essential git rsync ufw \
-                apache2-utils nginx redis-server mysql-server \
-                certbot python3-certbot-nginx \
-                php-fpm php-mysql php-mbstring php-zip php-gd php-curl php-xml unzip
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
-corepack enable && corepack prepare yarn@4.10.3 --activate
-```
-
-### 2. UFW (libere SSH ANTES de habilitar)
-
-```bash
-ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443/tcp
-ufw --force enable
-```
-
-### 3. DNS resolver confiável
-
-A resolver default da VPS pode ter cache stale (Hostinger e similares). Force Cloudflare/Google:
-
-```bash
-mkdir -p /etc/systemd/resolved.conf.d
-cat > /etc/systemd/resolved.conf.d/pubmail.conf <<EOF
-[Resolve]
-DNS=1.1.1.1 1.0.0.1 8.8.8.8
-FallbackDNS=8.8.4.4
-DNSStubListener=yes
-Cache=yes
-EOF
-systemctl restart systemd-resolved
-```
-
-### 4. MySQL: setar senha root + criar DB
-
-```bash
-mysql -u root <<SQL
-ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'SUA_SENHA_FORTE';
-FLUSH PRIVILEGES;
-CREATE DATABASE pubmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-SQL
-```
-
-### 5. Upload do código
-
-Do seu local:
-
-```bash
-rsync -avz --exclude-from=.rsync-deploy-excludes ./ root@<VPS_IP>:/opt/pub-mail/
-```
-
-### 6. .env de produção
-
-Crie os 4 `.env` em `/opt/pub-mail/{back,ai-micro-services,email-micro-services,front/vite}/.env` com os valores apropriados. Exemplos completos:
-
-**`/opt/pub-mail/back/.env`** (chmod 600):
-```env
-DATABASE_URL="mysql://root:SUA_SENHA@localhost:3306/pubmail"
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-JWT_ACCESS_SECRET="<32 bytes random>"
-JWT_REFRESH_SECRET="<32 bytes random>"
-JWT_ACCESS_EXPIRES_IN="24h"
-JWT_REFRESH_EXPIRES_IN="30d"
-PORT=8000
-BASE_API_URL="https://pubmail-api.seu-dominio.com"
-EMAIL_SERVICE_URL="http://127.0.0.1:9999"
-EMAIL_SERVICE_KEY="<key compartilhada com email-micro>"
-IA_SERVICE_URL="http://127.0.0.1:4000"
-IA_SERVICE_KEY="<key compartilhada com ai-micro>"
-WEBCHAT_DOMAIN_BIND_PROVIDER="CERTBOT"
-HTTP_BODY_LIMIT="2gb"
-NODE_ENV="production"
-WEBCHAT_FRONT_DIST="/opt/pub-mail/front/vite/dist"
-WEBCHAT_BACKEND_INTERNAL_URL="http://127.0.0.1:8000"
-NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
-NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
-CERTBOT_BIN="/usr/bin/certbot"
-CERTBOT_MODE="nginx"
-```
-
-**`/opt/pub-mail/front/vite/.env`** (gravado ANTES do build):
-```env
-VITE_APP_VERSION=1.0.0
-VITE_APP_BASE_NAME=/
-VITE_API_URL=https://pubmail-api.seu-dominio.com
-VITE_AI_URL=https://pubmail-ai.seu-dominio.com
-VITE_EMAIL_URL=https://pubmail-mail.seu-dominio.com
-GENERATE_SOURCEMAP=false
-```
-
-### 7. Build dos services
-
-```bash
-# Back
-cd /opt/pub-mail/back
-echo "nodeLinker: node-modules" > .yarnrc.yml
-rm -rf .yarn .pnp.* node_modules
-yarn install
-yarn add dotenv      # exigido pelo prisma.config.ts
-yarn prisma generate
-yarn prisma migrate deploy
-yarn nest build
-
-# AI micro
-cd /opt/pub-mail/ai-micro-services
-echo "nodeLinker: node-modules" > .yarnrc.yml
-rm -rf .yarn .pnp.* node_modules
-yarn install
-
-# Email micro
-cd /opt/pub-mail/email-micro-services
-echo "nodeLinker: node-modules" > .yarnrc.yml
-rm -rf .yarn .pnp.* node_modules
-yarn install
-
-# Front
-cd /opt/pub-mail/front/vite
-echo "nodeLinker: node-modules" > .yarnrc.yml
-yarn install
-yarn build           # gera dist/
-```
-
-> **Importante:** os 4 projetos precisam de `nodeLinker: node-modules` no `.yarnrc.yml`. Sem isso, Yarn 4 usa Plug'n'Play e o Prisma + alguns pacotes nativos quebram.
-
-### 8. Systemd units
-
-Crie `/etc/systemd/system/pubmail-back.service`:
-
-```ini
-[Unit]
-Description=Pub Mail — Back (NestJS)
-After=network.target mysql.service redis-server.service
-Wants=mysql.service redis-server.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/pub-mail/back
-EnvironmentFile=/opt/pub-mail/back/.env
-ExecStart=/usr/bin/node dist/src/main.js
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=pubmail-back
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Faça o equivalente pra `pubmail-ai.service` (ExecStart `node src/server.js`) e `pubmail-email.service` (`node server.js`).
-
-> O service roda **como root** porque o back precisa escrever em `/etc/nginx/sites-available` e executar `nginx`/`certbot` em runtime pra auto-provisionamento. Em ambientes que exigem hardening, você pode trocar pra um user dedicado com sudoers específico (`/etc/sudoers.d/pubmail`) liberando só esses comandos.
-
-```bash
-mkdir -p /opt/pub-mail/back/uploads
-systemctl daemon-reload
-systemctl enable --now pubmail-back pubmail-ai pubmail-email
-```
-
-### 9. Nginx vhosts dos 5 subdomínios fixos
-
-Pra cada subdomínio (`pubmail`, `pubmail-api`, `pubmail-ai`, `pubmail-mail`), crie um arquivo em `/etc/nginx/sites-available/pubmail-<role>` apontando pro role correspondente:
-
-- `pubmail-front`: serve `/opt/pub-mail/front/vite/dist` com fallback SPA `/index.html`
-- `pubmail-api`: `proxy_pass http://127.0.0.1:8000;`
-- `pubmail-ai`: `proxy_pass http://127.0.0.1:4000;`
-- `pubmail-mail`: `proxy_pass http://127.0.0.1:9999;`
-
-Templates completos no diretório [docs/nginx-templates/](#) (referência: gerar via deploy script).
-
-### 10. Default deny pra Hosts não cadastrados
-
-Crítico pra evitar que requests com `Host` desconhecido caiam no primeiro vhost (vazamento de comportamento):
-
-```nginx
-# /etc/nginx/sites-enabled/000-default-deny
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-    return 444;
-}
-server {
-    listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
-    server_name _;
-    ssl_certificate /etc/letsencrypt/live/pubmail.seu-dominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/pubmail.seu-dominio.com/privkey.pem;
-    return 444;
-}
-```
-
-### 11. SSL Let's Encrypt
-
-```bash
-ln -s /etc/nginx/sites-available/pubmail-front /etc/nginx/sites-enabled/
-# ... idem pros outros 3
-rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
-
-certbot --nginx --non-interactive --agree-tos -m seu@email.com --redirect \
-  -d pubmail.seu-dominio.com \
-  -d pubmail-api.seu-dominio.com \
-  -d pubmail-ai.seu-dominio.com \
-  -d pubmail-mail.seu-dominio.com
-```
-
-`certbot.timer` já fica ativo automaticamente, renova 2x/dia.
-
-### 12. phpMyAdmin
-
-```bash
-htpasswd -cb /etc/nginx/pubmail-db.htpasswd admin SENHA_BASIC_AUTH
-mkdir -p /opt/phpmyadmin && cd /opt/phpmyadmin
-curl -sL https://files.phpmyadmin.net/phpMyAdmin/5.2.2/phpMyAdmin-5.2.2-all-languages.tar.gz \
-  -o pma.tgz && tar -xzf pma.tgz --strip-components=1 && rm pma.tgz
-
-# config.inc.php com auth_type=cookie e blowfish_secret aleatório
-chown -R www-data:www-data /opt/phpmyadmin
-```
-
-Vhost: bloco `auth_basic` na location `/`, fastcgi pra `*.php` no socket `/run/php/php8.3-fpm.sock`. Cert separado via certbot.
+> Webhooks (Telegram, Resend, gateways) precisam de uma URL pública — em dev use um túnel (ex.: `ngrok http 8000`) e aponte `PUBLIC_API_URL` para ele.
 
 ## Variáveis de ambiente
 
@@ -440,21 +196,22 @@ Vhost: bloco `auth_basic` na location `/`, fastcgi pra `*.php` no socket `/run/p
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `PORT` | 3000 | Porta HTTP do back |
-| `DATABASE_URL` | — | URL Prisma do MySQL |
-| `REDIS_HOST` / `REDIS_PORT` | localhost / 6379 | Redis (filas e tokens) |
-| `JWT_ACCESS_SECRET` | — | Secret access JWT |
-| `JWT_REFRESH_SECRET` | — | Secret refresh JWT |
-| `IA_SERVICE_URL` | — | URL interna do ai-micro |
-| `IA_SERVICE_KEY` | — | Auth shared com ai-micro |
-| `EMAIL_SERVICE_URL` | — | URL interna do email-micro |
-| `EMAIL_SERVICE_KEY` | — | Auth shared com email-micro |
-| `WEBCHAT_FRONT_DIST` | `/opt/pub-mail/front/vite/dist` | Path do build do front |
-| `WEBCHAT_BACKEND_INTERNAL_URL` | `http://127.0.0.1:3000` | Usado nos vhosts auto-gerados pra proxiar `/ads.txt` |
-| `NGINX_SITES_AVAILABLE` | `/etc/nginx/sites-available` | Onde back escreve vhosts |
-| `NGINX_SITES_ENABLED` | `/etc/nginx/sites-enabled` | Onde back symlinka |
-| `CERTBOT_BIN` | `certbot` | Path do binário |
-| `CERTBOT_MODE` | `nginx` | Plugin certbot (`nginx` ou `webroot`) |
+| `PORT` | 8000 | Porta HTTP |
+| `DATABASE_HOST/USER/PASS/NAME/PORT` | — | **Conexão usada em runtime** (adapter MariaDB) |
+| `DATABASE_URL` | — | Só para o CLI do Prisma (migrate/generate) |
+| `DATABASE_POOL_LIMIT` | 10 | **Obrigatório** — o back abre vários pools; com o default (50) estoura o `max_connections` do MySQL |
+| `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | Redis |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | — | Segredos JWT |
+| `IA_SERVICE_URL` / `IA_SERVICE_KEY` | `http://127.0.0.1:4000` | AI micro |
+| `EMAIL_SERVICE_URL` / `EMAIL_SERVICE_KEY` | `http://127.0.0.1:9999` | Email micro |
+| `PUBLIC_API_URL` | `https://api.bluewebchat.online` | URL pública do back (webhooks do Telegram/pagamentos, formulário de captação) |
+| `WEBCHAT_FRONT_DIST` | `/opt/pub-mail/front/vite/dist` | Build do front servido nos domínios de cliente |
+| `WEBCHAT_BACKEND_INTERNAL_URL` | `http://127.0.0.1:8000` | Usado nos vhosts gerados para `/ads.txt` |
+| `NGINX_SITES_AVAILABLE` / `NGINX_SITES_ENABLED` | `/etc/nginx/...` | Onde o back escreve os vhosts |
+| `CERTBOT_BIN` / `CERTBOT_MODE` | `certbot` / `nginx` | Provisionamento SSL |
+| `HTTP_BODY_LIMIT`, `UPLOAD_MAX_FILE_SIZE_BYTES` | — | Limites de upload |
+
+Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda, e-mail do certbot) ficam no banco (`system_settings`) e são editadas em **Integrações**.
 
 ### AI micro
 
@@ -462,7 +219,7 @@ Vhost: bloco `auth_basic` na location `/`, fastcgi pra `*.php` no socket `/run/p
 |---|---|---|
 | `PORT` | 4000 | |
 | `IA_SERVICE_KEY` | — | Validado em `x-api-key` |
-| `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | KeyStateStore |
+| `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | Estado das chaves |
 | `OPENROUTER_REFERER` | — | Header recomendado pelo OpenRouter |
 
 ### Email micro
@@ -471,156 +228,64 @@ Vhost: bloco `auth_basic` na location `/`, fastcgi pra `*.php` no socket `/run/p
 |---|---|---|
 | `PORT` | 9999 | |
 | `EMAIL_SERVICE_KEY` | — | Validado em `x-api-key` |
-| `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | Filas |
+| `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | Filas BullMQ |
+| `NEST_WEBHOOK_URL` | — | Callback interno para o back (resultado do disparo) |
+| `BASE_URL_API` | — | URL pública do back (pixel de abertura / clique rastreado) |
 
 ### Front (Vite)
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
-| `VITE_APP_BASE_NAME` | **sim (`/`)** | Sem isso, asset paths quebram (tela branca) |
-| `VITE_API_URL` | sim | URL pública do back |
-| `VITE_AI_URL` | sim | URL pública do ai-micro |
-| `VITE_EMAIL_URL` | sim | URL pública do email-micro |
+| `VITE_APP_BASE_NAME` | **sim (`/`)** | Sem isso os assets quebram (tela branca) |
+| `VITE_API_URL` | sim | URL pública do back — o browser só fala com ele |
 
-## Funcionalidades-chave
+## Deploy em produção
 
-### Multi-provider AI rotation
+Produção roda em **AWS EC2 (Ubuntu 24.04)**, deploy nativo (sem Docker), serviços `systemd` (`pubmail-back`, `pubmail-ai`, `pubmail-email`), nginx + certbot. O acesso é **somente via AWS SSM** (sem SSH): o código é empacotado, enviado ao S3 e extraído na instância por `aws ssm send-command`.
 
-O ai-micro tem 6 adapters (Groq, Cerebras, Mistral, OpenRouter, Gemini, SambaNova) implementando o protocolo OpenAI-compatible. O `ai-router.js`:
+Resumo do fluxo (detalhes, gotchas e o passo a passo completo estão em `CLAUDE.md`):
 
-1. Coleta todas as `(provider, key)` enviadas pelo back.
-2. Filtra chaves em cooldown ou com quota diária esgotada (estado em Redis).
-3. Ordena por `(provider.priority ASC, total_uses_today ASC, last_used_at ASC)` — round-robin natural.
-4. Tenta sequencialmente; em erro classifica (`rate_limit | daily_exhausted | invalid_key | transient | fatal`) e atualiza Redis com TTL apropriado.
-5. **Fallback degradado**: se todas as 70B falharem, tenta Llama 3.1 8B-instant via Groq como última cartada.
+```bash
+# Front: empacotar → S3 → extrair na instância → build em pasta temporária → swap atômico
+cd /opt/pub-mail/front/vite && export NODE_OPTIONS=--max-old-space-size=4096
+rm -rf dist_new && yarn build --outDir dist_new
+[ -f dist_new/index.html ] && { rm -rf dist_prev; mv dist dist_prev; mv dist_new dist; }
 
-A página **Status de API** no front mostra estado runtime de cada chave (cooldown countdown, reqs hoje, tokens, último erro).
+# Back: (se mudou schema) migrate deploy + generate → build → restart só se o build passou
+cd /opt/pub-mail/back && yarn prisma migrate deploy && yarn prisma generate
+yarn nest build && test -f dist/src/main.js && systemctl restart pubmail-back
+```
 
-### Auto-provisionamento de domínios de webchat
+Pontos de infra que importam:
 
-Cliente cadastra um domínio (ex: `chat.cliente.com`) na UI:
-
-1. Front chama `POST /webchat-domains` com o domínio.
-2. Cliente aponta DNS na Cloudflare (proxy laranja **Proxied** OK — código aceita IPs do CF via CIDRs).
-3. Cliente clica **Verificar DNS**:
-   - Back resolve A records, valida que apontam pra IP esperado **OU** pertencem aos CIDRs do Cloudflare.
-   - Marca `status=VERIFIED`.
-   - Escreve vhost HTTP em `/etc/nginx/sites-available/pubmail-domain-<dominio>` com:
-     - `root` apontando pro `dist/` do front (mesmo SPA, roteia por slug)
-     - `location = /ads.txt` proxiando pro back (resolve por Host header)
-     - SPA fallback `try_files`
-   - Recarrega nginx.
-   - Roda `certbot --nginx -d <dominio>` que patcha o vhost com `listen 443 ssl` + cert.
-
-A partir desse momento, `https://chat.cliente.com/webchat/<slug>` serve o webchat público com SSL próprio.
-
-### ads.txt por domínio (IAB)
-
-Cada `webchat_domains` tem coluna `ads_txt TEXT`. O cliente edita pelo botão "ads.txt" na lista de domínios. O conteúdo é servido em `https://<dominio>/ads.txt` (proxy nginx → back, que resolve por `Host` e devolve `text/plain` com `Cache-Control: public, max-age=300`).
-
-### Captura inteligente de leads no webchat
-
-Sistema de prompts da IA garante:
-- Resposta sempre no idioma da última mensagem do usuário (multilíngue).
-- Toda resposta com pelo menos 1 emoji persuasivo.
-- Maioria das respostas com 2-3 quick replies contextuais — opções como sub-tópicos para aprofundar conversa com o agente.
-- **Exceção**: turnos pedindo nome/e-mail/telefone do lead vêm sem opções (lead precisa digitar o dado). Há guardrail no código que força `options=[]` mesmo se a IA tentar enviar.
-- Agente sempre **especialista que ajuda no chat**, nunca a instituição que entrega o serviço final (não promete contratação/aprovação/venda direta — informa, ensina, esclarece).
-
-### Página Leads
-
-- Tabela paginada com filtro por webchat e busca por nome/e-mail/telefone.
-- **Export Excel** client-side via `xlsx` (até 50k registros por export).
-- Endpoints: `GET /webchat-leads`, `GET /webchat-leads/export`.
+- **Somente 80/443** abertos. Domínios da plataforma no Cloudflare em **DNS only**; domínios de cliente podem usar proxy (o back aceita os CIDRs do Cloudflare).
+- Segredos em `/root/pubmail.secrets`; o back roda como root para escrever vhosts e rodar o certbot.
+- `nginx` serve `/uploads` direto do disco (imagens de e-mail/Telegram não passam pelo Node).
+- Redis com `maxmemory` + `noeviction`; MySQL com `innodb_buffer_pool_size` ajustado; swap de 2 GB.
 
 ## Operação
 
-### Atualizar prod
-
 ```bash
-# Local — pushe código
-rsync -avz --exclude-from=.rsync-deploy-excludes ./ root@<VPS>:/opt/pub-mail/
-
-# VPS — rebuild apenas o que mudou
-ssh root@<VPS>
-cd /opt/pub-mail/back && yarn install && yarn prisma migrate deploy && yarn nest build
-cd /opt/pub-mail/front/vite && yarn install && yarn build
-systemctl restart pubmail-back pubmail-ai pubmail-email
-```
-
-### Logs
-
-```bash
-journalctl -u pubmail-back -f       # ou pubmail-ai / pubmail-email
+journalctl -u pubmail-back -f                      # logs (ou pubmail-ai / pubmail-email)
 journalctl -u pubmail-back --since "1 hour ago" -p err
-tail -f /var/log/nginx/access.log
-tail -f /var/log/nginx/error.log
+certbot renew                                      # renovação (o timer já faz sozinho)
+mysqldump -u pubmail -p pubmail | gzip > backup.sql.gz
 ```
 
-### Renovar certificados manualmente
-
-```bash
-certbot renew                    # respeita renew_before_expiry (30 dias)
-certbot renew --force-renewal    # força (debug)
-```
-
-### Regenerar nginx blocks de todos os domínios
-
-Útil após mudar o template `ensureNginxHttpBlockForDomain`:
-
-```bash
-curl -X POST https://pubmail-api.seu-dominio.com/webchat-domains/regenerate-nginx \
-  -H "Authorization: Bearer <JWT_DA_ORG>"
-```
-
-Em seguida, re-rode `certbot --nginx -d <dominio>` pra cada domínio se o template antigo era HTTP-only.
-
-### Backup MySQL (sugestão)
-
-Não vem configurado por padrão. Sugestão de cron:
-
-```bash
-# /etc/cron.daily/pubmail-mysql-backup
-mysqldump -u root -p"$DB_PASS" pubmail | gzip > /var/backups/pubmail-$(date +\%F).sql.gz
-find /var/backups -name "pubmail-*.sql.gz" -mtime +7 -delete
-```
+- **Regenerar vhosts** de todos os domínios: `POST /webchat-domains/regenerate-nginx` (JWT da org) e, se necessário, `certbot --nginx -d <domínio>`.
+- **Telegram em flood-wait**: o card do bot mostra "Em pausa" com a hora de retorno; os runners respeitam o `retry_after` sozinhos.
 
 ## Troubleshooting
 
-### Tela branca no front
-- Confirme que `VITE_APP_BASE_NAME=/` está no `.env` do front **antes** de rodar `yarn build`. Sem isso, vite gera asset paths como `/undefined/...`.
-- Inspecione `dist/index.html` — `<script src="...">` deve apontar pra `/assets/...`, não `/undefined/assets/...`.
-
-### "Cannot GET /webchat/X" em domínio do cliente
-- O domínio não está cadastrado, ou o vhost dele não foi criado. Sem vhost matching, o request cai no `default_server` que retorna 444 (close connection) — se sua resposta for "Cannot GET", você não tem o `000-default-deny` configurado.
-
-### "Verificar DNS" falha mesmo com Cloudflare apontado
-- Resolver da VPS pode ter cache stale. Force resolver público:
-  ```bash
-  cat > /etc/systemd/resolved.conf.d/pubmail.conf <<EOF
-  [Resolve]
-  DNS=1.1.1.1 1.0.0.1 8.8.8.8
-  EOF
-  systemctl restart systemd-resolved
-  resolvectl flush-caches
-  systemctl restart pubmail-back   # pega resolver atualizado
-  ```
-
-### certbot retorna "Another instance is already running"
-```bash
-pkill -f certbot
-rm -f /var/lib/letsencrypt/.certbot.lock
-```
-
-### HTTP 520 em domínio de webchat após salvar ads.txt
-- Bug histórico (já corrigido na v atual): salvar ads.txt regenerava o vhost zerando o SSL config. Se acontecer:
-  ```bash
-  certbot --nginx -d <dominio>   # patcha o vhost de novo com SSL
-  ```
-
-### Yarn 4 + Prisma quebrando
-- Sempre use `nodeLinker: node-modules` no `.yarnrc.yml`. Plug'n'Play (default) não funciona com Prisma e alguns nativos.
+- **Tela branca no front** — `VITE_APP_BASE_NAME=/` precisa existir **antes** do `yarn build`.
+- **"Too many connections" no MySQL** — falta `DATABASE_POOL_LIMIT=10` no `back/.env`.
+- **`/ads.txt` quebrado em domínio de cliente** — `WEBCHAT_BACKEND_INTERNAL_URL` deve apontar para `:8000`.
+- **"Verificar DNS" falha com o DNS correto** — resolver com cache: use `1.1.1.1`/`8.8.8.8` no `systemd-resolved` e reinicie o back.
+- **certbot "Another instance is already running"** — `pkill -f certbot && rm -f /var/lib/letsencrypt/.certbot.lock`.
+- **Disparo com 0 enviados** — e-mail inválido derrubava o lote (corrigido: validação + fallback individual + estorno de tokens). Verifique `error_message` no envio.
+- **Bot do Telegram não responde** — veja o card em Telegram → Configurações: token revogado (permanente, recadastrar) ou flood-wait (temporário, volta sozinho).
+- **Yarn 4 + Prisma** — sempre `nodeLinker: node-modules` no `.yarnrc.yml`.
 
 ---
 
-**Licença**: privada / proprietary.
+**Licença**: privada / proprietária.
