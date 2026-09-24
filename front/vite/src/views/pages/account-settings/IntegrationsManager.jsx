@@ -46,6 +46,7 @@ export default function IntegrationsManager() {
     const [webhookSecretInput, setWebhookSecretInput] = useState('');
     const [edgeIpInput, setEdgeIpInput] = useState('');
     const [certbotEmailInput, setCertbotEmailInput] = useState('');
+    const [canEditInfra, setCanEditInfra] = useState(false); // edge IP / certbot: só SUPER_ADMIN (infra da plataforma)
 
     const webhookUrl = `${import.meta.env.VITE_API_URL || ''}/webhooks/resend`;
 
@@ -62,6 +63,7 @@ export default function IntegrationsManager() {
         setWebhookSecretInput(data?.resend_webhook_secret || '');
         setEdgeIpInput(data?.webchat_edge_ip || '');
         setCertbotEmailInput(data?.certbot_email || '');
+        setCanEditInfra(Boolean(data?.can_edit_infra));
         setUpdatedAt(data?.updated_at || null);
     }, []);
 
@@ -118,8 +120,7 @@ export default function IntegrationsManager() {
             const payload = {
                 resend_api_key: resendInput,
                 resend_webhook_secret: webhookSecretInput,
-                webchat_edge_ip: edgeIpInput,
-                certbot_email: certbotEmailInput
+                ...(canEditInfra ? { webchat_edge_ip: edgeIpInput, certbot_email: certbotEmailInput } : {})
             };
             const data = await patch('/system-settings', payload);
             applyServerData(data);
@@ -249,7 +250,8 @@ export default function IntegrationsManager() {
                 </Stack>
             </Box>
 
-            {/* ---- Webchat Edge / SSL ---- */}
+            {/* ---- Webchat Edge / SSL (infra da plataforma — só SUPER_ADMIN) ---- */}
+            {canEditInfra ? (
             <Box sx={{ borderRadius: 3, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper', p: { xs: 2, md: 2.5 } }}>
                 <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>Webchat — Edge / SSL</Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.5 }}>
@@ -260,6 +262,7 @@ export default function IntegrationsManager() {
                     <TextField fullWidth type="email" label="Certbot Email" placeholder="admin@suaempresa.com" value={certbotEmailInput} onChange={(e) => setCertbotEmailInput(e.target.value)} />
                 </Stack>
             </Box>
+            ) : null}
 
             <Stack direction="row" spacing={1.5} alignItems="center" justifyContent="space-between">
                 {updatedAt ? (

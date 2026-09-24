@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOkResponse,
@@ -31,6 +31,7 @@ type SettingsResponse = {
   resend_webhook_secret: string;
   webchat_edge_ip: string;
   certbot_email: string;
+  can_edit_infra: boolean;
   updated_at: Date;
 };
 
@@ -47,9 +48,9 @@ export class SystemSettingsController {
   })
   @ApiOkResponse({ description: 'Configurações lidas com sucesso.' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido.' })
-  async read(): Promise<SettingsResponse> {
-    const row = await this.service.get();
-    return this.toResponse(row);
+  async read(@Req() req: any): Promise<SettingsResponse> {
+    const row = await this.service.get(req.user.organizationId);
+    return this.toResponse(row, req);
   }
 
   @Patch()
@@ -58,9 +59,9 @@ export class SystemSettingsController {
   })
   @ApiOkResponse({ description: 'Configurações atualizadas.' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido.' })
-  async update(@Body() dto: UpdateSystemSettingsDto): Promise<SettingsResponse> {
-    const row = await this.service.update(dto);
-    return this.toResponse(row);
+  async update(@Req() req: any, @Body() dto: UpdateSystemSettingsDto): Promise<SettingsResponse> {
+    const row = await this.service.update(req.user.organizationId, dto, req.user.role === 'SUPER_ADMIN');
+    return this.toResponse(row, req);
   }
 
   @Get('ai-keys-status')
@@ -69,31 +70,33 @@ export class SystemSettingsController {
   })
   @ApiOkResponse({ description: 'Status das chaves consultado com sucesso.' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido.' })
-  async aiKeysStatus(): Promise<Record<string, any>> {
-    return this.service.getAiKeysStatus();
+  async aiKeysStatus(@Req() req: any): Promise<Record<string, any>> {
+    return this.service.getAiKeysStatus(req.user.organizationId);
   }
 
   @Post('ai-keys')
   @ApiOperation({ summary: 'Adiciona uma ou mais chaves a um provedor de IA.' })
   async addAiKeys(
+    @Req() req: any,
     @Body('provider') provider: string,
     @Body('keys') keys: string,
   ): Promise<SettingsResponse> {
-    const row = await this.service.addAiKeys(provider, keys);
-    return this.toResponse(row);
+    const row = await this.service.addAiKeys(req.user.organizationId, provider, keys);
+    return this.toResponse(row, req);
   }
 
   @Delete('ai-keys')
   @ApiOperation({ summary: 'Remove a chave no índice informado de um provedor de IA.' })
   async removeAiKey(
+    @Req() req: any,
     @Body('provider') provider: string,
     @Body('index') index: number,
   ): Promise<SettingsResponse> {
-    const row = await this.service.removeAiKey(provider, Number(index));
-    return this.toResponse(row);
+    const row = await this.service.removeAiKey(req.user.organizationId, provider, Number(index));
+    return this.toResponse(row, req);
   }
 
-  private toResponse(row: SystemSettingsRow): SettingsResponse {
+  private toResponse(row: SystemSettingsRow, req: any): SettingsResponse {
     const groq = this.service.parseKeys(row.groq_api_keys);
     const cerebras = this.service.parseKeys(row.cerebras_api_keys);
     const gemini = this.service.parseKeys(row.gemini_api_keys);
@@ -119,6 +122,7 @@ export class SystemSettingsController {
       resend_webhook_secret: row.resend_webhook_secret || '',
       webchat_edge_ip: row.webchat_edge_ip || '',
       certbot_email: row.certbot_email || '',
+      can_edit_infra: req.user.role === 'SUPER_ADMIN',
       updated_at: row.updated_at,
     };
   }

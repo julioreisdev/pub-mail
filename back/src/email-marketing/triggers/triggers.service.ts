@@ -317,7 +317,7 @@ export class TriggersService {
       });
     }
 
-    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
     const payload = {
       dispatchId: sentRow.id,
       leads: { count: 1, sample: [mappedLead] },

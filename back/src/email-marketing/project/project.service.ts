@@ -119,6 +119,77 @@ export class EmailProjectsService {
     });
   }
 
+  // =========================================================================
+  // FLUXO INICIAL (welcome): e-mail automatico quando um lead NOVO entra no
+  // projeto (webchat / quiz / cadastro manual). A importacao em massa NAO
+  // dispara. A config mora em email_projects.settings.welcome e o disparo e
+  // feito pelo EmailSchedulesRunner.sendWelcomeToLead.
+  // Desligado por padrao: sem enabled=true nada e enviado.
+  // =========================================================================
+  async getWelcome(organizationId: string, id: string) {
+    const project = await this.prisma.email_projects.findFirst({
+      where: { id, organization_id: organizationId },
+      select: { settings: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    const w = (project.settings as any)?.welcome ?? {};
+    return {
+      enabled: Boolean(w.enabled),
+      templateId: w.templateId ?? null,
+    };
+  }
+
+  async setWelcome(
+    organizationId: string,
+    id: string,
+    dto: { enabled?: boolean; templateId?: string | null },
+  ) {
+    const project = await this.prisma.email_projects.findFirst({
+      where: { id, organization_id: organizationId },
+      select: { settings: true },
+    });
+    if (!project) throw new NotFoundException('Project not found');
+
+    const enabled = Boolean(dto?.enabled);
+    const templateId = dto?.templateId ?? null;
+
+    if (enabled && !templateId) {
+      throw new BadRequestException(
+        'Escolha o template de boas-vindas para ativar o fluxo inicial.',
+      );
+    }
+
+    // O template precisa existir e pertencer a ESTE projeto.
+    if (templateId) {
+      const tpl = await this.prisma.email_templates.findFirst({
+        where: { id: templateId, project_id: id },
+        select: { id: true },
+      });
+      if (!tpl) {
+        throw new BadRequestException(
+          'Template nao encontrado neste projeto.',
+        );
+      }
+    }
+
+    // settings e substituido por inteiro no update: le o atual e injeta apenas
+    // a chave welcome, preservando sender e o resto da config.
+    const current =
+      project.settings && typeof project.settings === 'object'
+        ? { ...(project.settings as any) }
+        : {};
+    current.welcome = { enabled, templateId };
+
+    await this.prisma.email_projects.update({
+      where: { id },
+      data: { settings: current },
+      select: { id: true },
+    });
+
+    return { enabled, templateId };
+  }
+
   // soft delete (não remove do banco)
   async remove(organizationId: string, id: string) {
     const exists = await this.prisma.email_projects.findFirst({

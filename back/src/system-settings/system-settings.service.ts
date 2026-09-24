@@ -7,6 +7,9 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSystemSettingsDto } from './dto/update-system-settings.dto';
 
+// system_settings (id=1) guarda SÓ infraestrutura da plataforma (edge IP / certbot).
+// Chaves de IA e Resend vivem em organization_settings — uma linha por organização
+// (isolamento multi-tenant: nenhuma org enxerga ou usa chave de outra).
 const SINGLETON_ID = 1;
 
 // provedor de IA -> coluna de chaves
@@ -19,8 +22,9 @@ const AI_COLUMNS: Record<string, string> = {
   sambanova: 'sambanova_api_keys',
 };
 
+// Visão consolidada devolvida ao front: chaves da org + infra da plataforma.
 export type SystemSettingsRow = {
-  id: number;
+  organization_id: string;
   groq_api_keys: string | null;
   cerebras_api_keys: string | null;
   gemini_api_keys: string | null;
@@ -31,12 +35,9 @@ export type SystemSettingsRow = {
   resend_webhook_secret: string | null;
   webchat_edge_ip: string | null;
   certbot_email: string | null;
-  created_at: Date;
   updated_at: Date;
 };
 
-// Bundle de chaves de IA passado adiante para o ai-micro-services. As chaves
-// estão sempre como array de strings (vazio = provider desabilitado).
 export type AiProviderKeysBundle = {
   groq: string[];
   cerebras: string[];
@@ -52,22 +53,51 @@ export class SystemSettingsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async get(): Promise<SystemSettingsRow> {
-    const existing = await this.prisma.system_settings.findUnique({
-      where: { id: SINGLETON_ID },
-    });
-    if (existing) return existing as SystemSettingsRow;
-
-    return (await this.prisma.system_settings.create({
-      data: { id: SINGLETON_ID },
-    })) as SystemSettingsRow;
+  // ---------------------------------------------------------------- infra (plataforma)
+  private async platform() {
+    const existing = await this.prisma.system_settings.findUnique({ where: { id: SINGLETON_ID } });
+    if (existing) return existing;
+    return this.prisma.system_settings.create({ data: { id: SINGLETON_ID } });
   }
 
-  async update(dto: UpdateSystemSettingsDto): Promise<SystemSettingsRow> {
+  // ---------------------------------------------------------------- por organização
+  private async orgRow(organizationId: string) {
+    if (!organizationId) throw new BadRequestException('Organização não identificada.');
+    const existing = await this.prisma.organization_settings.findUnique({
+      where: { organization_id: organizationId },
+    });
+    if (existing) return existing;
+    return this.prisma.organization_settings.create({ data: { organization_id: organizationId } });
+  }
+
+  async get(organizationId: string): Promise<SystemSettingsRow> {
+    const [org, infra] = await Promise.all([this.orgRow(organizationId), this.platform()]);
+    return {
+      organization_id: organizationId,
+      groq_api_keys: org.groq_api_keys,
+      cerebras_api_keys: org.cerebras_api_keys,
+      gemini_api_keys: org.gemini_api_keys,
+      mistral_api_keys: org.mistral_api_keys,
+      openrouter_api_keys: org.openrouter_api_keys,
+      sambanova_api_keys: org.sambanova_api_keys,
+      resend_api_key: org.resend_api_key,
+      resend_webhook_secret: org.resend_webhook_secret,
+      webchat_edge_ip: infra.webchat_edge_ip,
+      certbot_email: infra.certbot_email,
+      updated_at: org.updated_at > infra.updated_at ? org.updated_at : infra.updated_at,
+    };
+  }
+
+  // canEditInfra = SUPER_ADMIN: só ele mexe em edge IP / certbot (são da plataforma).
+  async update(
+    organizationId: string,
+    dto: UpdateSystemSettingsDto,
+    canEditInfra = false,
+  ): Promise<SystemSettingsRow> {
     const setIfDefined = (value: string | undefined) =>
       value !== undefined ? this.normalizeNullableString(value) : undefined;
 
-    const data = {
+    const orgData = {
       groq_api_keys: setIfDefined(dto.groq_api_keys),
       cerebras_api_keys: setIfDefined(dto.cerebras_api_keys),
       gemini_api_keys: setIfDefined(dto.gemini_api_keys),
@@ -76,104 +106,94 @@ export class SystemSettingsService {
       sambanova_api_keys: setIfDefined(dto.sambanova_api_keys),
       resend_api_key: setIfDefined(dto.resend_api_key),
       resend_webhook_secret: setIfDefined(dto.resend_webhook_secret),
-      webchat_edge_ip: setIfDefined(dto.webchat_edge_ip),
-      certbot_email: setIfDefined(dto.certbot_email),
     };
-
-    const updated = await this.prisma.system_settings.upsert({
-      where: { id: SINGLETON_ID },
-      create: { id: SINGLETON_ID, ...data },
-      update: data,
+    await this.prisma.organization_settings.upsert({
+      where: { organization_id: organizationId },
+      create: { organization_id: organizationId, ...orgData },
+      update: orgData,
     });
 
-    return updated as SystemSettingsRow;
+    if (canEditInfra) {
+      const infra = {
+        webchat_edge_ip: setIfDefined(dto.webchat_edge_ip),
+        certbot_email: setIfDefined(dto.certbot_email),
+      };
+      await this.prisma.system_settings.upsert({
+        where: { id: SINGLETON_ID },
+        create: { id: SINGLETON_ID, ...infra },
+        update: infra,
+      });
+    }
+
+    return this.get(organizationId);
   }
 
   // === Groq (mantido por backward-compat: o email-template ainda usa só Groq) ===
-  async getGroqApiKeysOrFail(): Promise<string[]> {
-    const settings = await this.get();
-    const keys = this.parseKeys(settings.groq_api_keys);
+  async getGroqApiKeysOrFail(organizationId: string): Promise<string[]> {
+    const org = await this.orgRow(organizationId);
+    const keys = this.parseKeys(org.groq_api_keys);
     if (keys.length === 0) {
       throw new InternalServerErrorException(
-        'Nenhuma chave da Groq configurada. Defina em Conta & Domínios > Integrações.',
+        'Nenhuma chave da Groq configurada. Defina em Configurações > Integrações.',
       );
     }
     return keys;
   }
 
-  // === Webchat usa o bundle completo de providers ===
-  async getAiProviderKeysOrFail(): Promise<AiProviderKeysBundle> {
-    const settings = await this.get();
-    const bundle: AiProviderKeysBundle = {
-      groq: this.parseKeys(settings.groq_api_keys),
-      cerebras: this.parseKeys(settings.cerebras_api_keys),
-      gemini: this.parseKeys(settings.gemini_api_keys),
-      mistral: this.parseKeys(settings.mistral_api_keys),
-      openrouter: this.parseKeys(settings.openrouter_api_keys),
-      sambanova: this.parseKeys(settings.sambanova_api_keys),
-    };
-
+  async getAiProviderKeysOrFail(organizationId: string): Promise<AiProviderKeysBundle> {
+    const org = await this.orgRow(organizationId);
+    const bundle = this.bundleOf(org);
     const totalKeys = Object.values(bundle).reduce((sum, arr) => sum + arr.length, 0);
     if (totalKeys === 0) {
       throw new InternalServerErrorException(
-        'Nenhuma chave de IA configurada. Defina pelo menos um provedor em Conta & Domínios > Integrações.',
+        'Nenhuma chave de IA configurada. Defina pelo menos um provedor em Configurações > Integrações.',
       );
     }
     return bundle;
   }
 
-  async getResendApiKeyOrFail(): Promise<string> {
-    const settings = await this.get();
-    const value = String(settings.resend_api_key || '').trim();
+  async getResendApiKeyOrFail(organizationId: string): Promise<string> {
+    const org = await this.orgRow(organizationId);
+    const value = String(org.resend_api_key || '').trim();
     if (!value) {
       throw new InternalServerErrorException(
-        'Chave do Resend não configurada. Defina em Conta & Domínios > Integrações.',
+        'Chave do Resend não configurada. Defina em Configurações > Integrações.',
       );
     }
     return value;
   }
 
-  async getResendWebhookSecret(): Promise<string | null> {
-    const settings = await this.get();
-    const value = String(settings.resend_webhook_secret || '').trim();
+  async getResendWebhookSecret(organizationId: string): Promise<string | null> {
+    const org = await this.orgRow(organizationId);
+    const value = String(org.resend_webhook_secret || '').trim();
     return value || null;
   }
 
+  // Infra da plataforma (não é por org).
   async getWebchatEdgeIpOrFail(): Promise<string> {
-    const settings = await this.get();
-    const value = String(settings.webchat_edge_ip || '').trim();
+    const infra = await this.platform();
+    const value = String(infra.webchat_edge_ip || '').trim();
     if (!value) {
       throw new InternalServerErrorException(
-        'IP do edge para webchat não configurado. Defina em Conta & Domínios > Integrações.',
+        'IP do edge para webchat não configurado (plataforma).',
       );
     }
     return value;
   }
 
   async getCertbotEmailOrFail(): Promise<string> {
-    const settings = await this.get();
-    const value = String(settings.certbot_email || '').trim();
+    const infra = await this.platform();
+    const value = String(infra.certbot_email || '').trim();
     if (!value) {
-      throw new InternalServerErrorException(
-        'E-mail do Certbot não configurado. Defina em Conta & Domínios > Integrações.',
-      );
+      throw new InternalServerErrorException('E-mail do Certbot não configurado (plataforma).');
     }
     return value;
   }
 
-  // === Status runtime das chaves (proxy para o ai-micro-services) ===
-  // Lê o bundle do DB e pergunta pro ai-micro o estado consolidado em Redis.
-  // Não exige nenhuma chave configurada — se vazio, retorna estrutura vazia.
-  async getAiKeysStatus(): Promise<Record<string, any>> {
-    const settings = await this.get();
-    const providerKeys: AiProviderKeysBundle = {
-      groq: this.parseKeys(settings.groq_api_keys),
-      cerebras: this.parseKeys(settings.cerebras_api_keys),
-      gemini: this.parseKeys(settings.gemini_api_keys),
-      mistral: this.parseKeys(settings.mistral_api_keys),
-      openrouter: this.parseKeys(settings.openrouter_api_keys),
-      sambanova: this.parseKeys(settings.sambanova_api_keys),
-    };
+  // === Status runtime das chaves (proxy para o ai-micro-services), só as chaves da org ===
+  async getAiKeysStatus(organizationId: string): Promise<Record<string, any>> {
+    const org = await this.orgRow(organizationId);
+    const providerKeys = this.bundleOf(org);
 
     const serviceUrl = process.env.IA_SERVICE_URL;
     const serviceKey = process.env.IA_SERVICE_KEY;
@@ -186,36 +206,35 @@ export class SystemSettingsService {
     try {
       const response = await fetch(`${serviceUrl}/api/ia-keys-status`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': serviceKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': serviceKey },
         body: JSON.stringify({ provider_keys: providerKeys }),
       });
-
       if (!response.ok) {
         const detail = await response.text().catch(() => '');
-        throw new Error(
-          `ai-micro retornou ${response.status}: ${String(detail).slice(0, 300)}`,
-        );
+        throw new Error(`ai-micro retornou ${response.status}: ${String(detail).slice(0, 300)}`);
       }
-
       const json = (await response.json()) as { success?: boolean; data?: any; message?: string };
-      if (!json.success) {
-        throw new Error(json.message || 'Falha ao consultar status das chaves.');
-      }
+      if (!json.success) throw new Error(json.message || 'Falha ao consultar status das chaves.');
       return json.data ?? {};
     } catch (err: any) {
-      this.logger.error(
-        `Falha ao consultar status das chaves de IA: ${err?.message || err}`,
-      );
+      this.logger.error(`Falha ao consultar status das chaves de IA: ${err?.message || err}`);
       throw new InternalServerErrorException(
         'Falha ao consultar status das chaves de IA. Verifique se o serviço de IA está no ar.',
       );
     }
   }
 
-  // Compat — algumas partes do código antigo chamavam parseGroqKeys diretamente.
+  private bundleOf(org: any): AiProviderKeysBundle {
+    return {
+      groq: this.parseKeys(org.groq_api_keys),
+      cerebras: this.parseKeys(org.cerebras_api_keys),
+      gemini: this.parseKeys(org.gemini_api_keys),
+      mistral: this.parseKeys(org.mistral_api_keys),
+      openrouter: this.parseKeys(org.openrouter_api_keys),
+      sambanova: this.parseKeys(org.sambanova_api_keys),
+    };
+  }
+
   parseGroqKeys(raw: string | null | undefined): string[] {
     return this.parseKeys(raw);
   }
@@ -227,7 +246,6 @@ export class SystemSettingsService {
       .filter((k) => k.length > 0);
   }
 
-  // Mascara uma chave para exibição segura (ex.: "gsk_...XF7f").
   maskKey(k: string): string {
     const s = String(k || '');
     if (s.length <= 8) return `${s.slice(0, 2)}••••`;
@@ -238,39 +256,35 @@ export class SystemSettingsService {
     return this.parseKeys(raw).map((k) => this.maskKey(k));
   }
 
-  // Adiciona uma ou mais chaves (CSV/linha) a um provedor, sem duplicar.
-  async addAiKeys(provider: string, keysCsv: string): Promise<SystemSettingsRow> {
+  async addAiKeys(organizationId: string, provider: string, keysCsv: string): Promise<SystemSettingsRow> {
     const col = AI_COLUMNS[provider];
     if (!col) throw new BadRequestException('Provedor inválido.');
     const incoming = this.parseKeys(keysCsv);
     if (incoming.length === 0) throw new BadRequestException('Informe ao menos uma chave.');
-    const settings = await this.get();
-    const set = new Set(this.parseKeys((settings as any)[col]));
+    const org = await this.orgRow(organizationId);
+    const set = new Set(this.parseKeys((org as any)[col]));
     for (const k of incoming) set.add(k);
-    const merged = [...set].join(',');
-    const updated = await this.prisma.system_settings.update({
-      where: { id: SINGLETON_ID },
-      data: { [col]: merged || null },
+    await this.prisma.organization_settings.update({
+      where: { organization_id: organizationId },
+      data: { [col]: [...set].join(',') || null },
     });
-    return updated as SystemSettingsRow;
+    return this.get(organizationId);
   }
 
-  // Remove a chave no índice informado de um provedor.
-  async removeAiKey(provider: string, index: number): Promise<SystemSettingsRow> {
+  async removeAiKey(organizationId: string, provider: string, index: number): Promise<SystemSettingsRow> {
     const col = AI_COLUMNS[provider];
     if (!col) throw new BadRequestException('Provedor inválido.');
-    const settings = await this.get();
-    const list = this.parseKeys((settings as any)[col]);
+    const org = await this.orgRow(organizationId);
+    const list = this.parseKeys((org as any)[col]);
     if (!Number.isInteger(index) || index < 0 || index >= list.length) {
       throw new BadRequestException('Índice inválido.');
     }
     list.splice(index, 1);
-    const merged = list.join(',');
-    const updated = await this.prisma.system_settings.update({
-      where: { id: SINGLETON_ID },
-      data: { [col]: merged || null },
+    await this.prisma.organization_settings.update({
+      where: { organization_id: organizationId },
+      data: { [col]: list.join(',') || null },
     });
-    return updated as SystemSettingsRow;
+    return this.get(organizationId);
   }
 
   private normalizeNullableString(value: string | undefined | null): string | null {

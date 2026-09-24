@@ -230,6 +230,7 @@ export class AdminService {
           await tx.organization_domains.deleteMany(where);
           await tx.billing_cards.deleteMany(where);
           await tx.wallets.deleteMany(where);
+          await tx.organization_settings.deleteMany(where); // chaves de API da org
           await tx.users.deleteMany(where);
 
           await tx.organizations.delete({ where: { id } });

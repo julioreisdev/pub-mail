@@ -118,7 +118,7 @@ export class EmailAbService {
       });
     }
 
-    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
     const payload = {
       dispatchId: sentRow.id,
       leads: { count: total, sample: mapped },

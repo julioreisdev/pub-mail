@@ -96,7 +96,7 @@ export class IaIntegrationsService {
 
         // 2. EXECUÇÃO: Chama o Micro-serviço de IA
         const microserviceUrl = `${process.env.IA_SERVICE_URL}/api/ia-email-template`;
-        const groqApiKeys = await this.systemSettings.getGroqApiKeysOrFail();
+        const groqApiKeys = await this.systemSettings.getGroqApiKeysOrFail(organizationId);
 
         let generatedTemplate: GeneratedEmailTemplate;
         try {

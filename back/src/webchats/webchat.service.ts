@@ -631,7 +631,7 @@ export class WebchatsService {
       );
     }
 
-    const providerKeys = await this.systemSettings.getAiProviderKeysOrFail();
+    const providerKeys = await this.systemSettings.getAiProviderKeysOrFail(webchat.organization_id);
 
     // Timeout duro pro fetch back→ai-micro. Sem isso, se o ai-micro travar,
     // o socket fica pendurado e empilha conexões abertas no back. 90s cobre

@@ -9,6 +9,7 @@ import { cleanEmailOrNull } from '../../common/email.util';
 import { CreateEmailLeadDto } from './dto/create-email-lead.dto';
 import { UpdateEmailLeadDto } from './dto/update-email-lead.dto';
 import { PublicSubscribeDto } from './dto/public-subscribe.dto';
+import { EmailSchedulesRunner } from '../../cron-jobs/schedules.service';
 
 function isPrismaUniqueError(e: any) {
   return e?.code === 'P2002';
@@ -16,7 +17,10 @@ function isPrismaUniqueError(e: any) {
 
 @Injectable()
 export class EmailLeadsService {
-  constructor(private prisma: PrismaService) { }
+  constructor(
+    private prisma: PrismaService,
+    private readonly schedulesRunner: EmailSchedulesRunner,
+  ) { }
 
   private readonly leadSelect = {
     id: true,
@@ -89,6 +93,9 @@ export class EmailLeadsService {
     });
     if (!project) throw new NotFoundException('Project not found');
 
+    // Holder: TypeScript no sigue asignaciones hechas dentro del callback de
+    // la transaccion (con un `let` suelto inferiria `never` en el chequeo).
+    const welcome: { leadId: string | null } = { leadId: null };
     await this.prisma.$transaction(async (tx) => {
       // 3) Buscar lead existente (sem depender do alias do unique composto)
       const existing = await tx.email_leads.findFirst({
@@ -144,6 +151,8 @@ export class EmailLeadsService {
             status: 'SUBSCRIBED',
           },
         });
+        // vinculo NUEVO -> candidato a welcome (se dispara fuera de la tx)
+        welcome.leadId = leadId;
       } else if (pivot.status === 'UNSUBSCRIBED') {
         // reativação: usuário preencheu o formulário de novo
         await tx.email_project_leads.updateMany({
@@ -159,6 +168,13 @@ export class EmailLeadsService {
         });
       }
     });
+
+    // FLUJO INICIAL: si el lead entro por primera vez al proyecto y el proyecto
+    // tiene welcome activado, se envia el correo de bienvenida (best-effort,
+    // fuera de la transaccion; nunca rompe el alta del lead).
+    if (welcome.leadId) {
+      void this.schedulesRunner.sendWelcomeToLead(projectId, welcome.leadId);
+    }
 
     return { message: 'Lead subscribed successfully' };
   }

@@ -10,6 +10,7 @@ import { QuizAdsService } from './quiz-ads.service';
 import { QuizLeadEmailService } from './quiz-lead-email.service';
 import { CreateQuizDto } from './dto/create-quiz.dto';
 import { UpdateQuizDto } from './dto/update-quiz.dto';
+import { EmailSchedulesRunner } from '../cron-jobs/schedules.service';
 
 function normalizeDomain(raw: string): string {
   return String(raw || '')
@@ -61,6 +62,7 @@ export class QuizzesService {
     private readonly splits: QuizSplitsService,
     private readonly ads: QuizAdsService,
     private readonly leadEmail: QuizLeadEmailService,
+    private readonly schedulesRunner: EmailSchedulesRunner,
   ) {}
 
   // Garante que o domínio é um domínio de QUIZ cadastrado E verificado.
@@ -346,6 +348,11 @@ export class QuizzesService {
       );
     }
 
+    // Holder (no `let` suelto): TypeScript no sigue asignaciones hechas dentro
+    // del callback de la transaccion y terminaria infiriendo `never`.
+    const quizWelcome: {
+      value: { projectId: string; leadId: string } | null;
+    } = { value: null };
     const result = await this.prisma.$transaction(
       async (tx) => {
         // Registra em quiz_leads (aparece em "Leads"), SEM duplicar: dedupe por
@@ -435,6 +442,11 @@ export class QuizzesService {
                 status: 'SUBSCRIBED',
               } as any,
             });
+            // vinculo NUEVO -> candidato a welcome (fuera de la tx)
+            quizWelcome.value = {
+              projectId: quiz.email_project_id,
+              leadId: emailLead.id,
+            };
           }
           routedTo = 'email_project';
         }
@@ -443,6 +455,16 @@ export class QuizzesService {
       },
       { maxWait: 30_000, timeout: 30_000 },
     );
+
+    // FLUJO INICIAL (welcome a nivel de proyecto): si el lead entro por primera
+    // vez al proyecto de email y el proyecto tiene welcome activado, se envia el
+    // correo de bienvenida (best-effort, fuera de la tx; nunca rompe el alta).
+    if (quizWelcome.value) {
+      void this.schedulesRunner.sendWelcomeToLead(
+        quizWelcome.value.projectId,
+        quizWelcome.value.leadId,
+      );
+    }
 
     // E-mail imediato ao lead (best-effort, fora da transação). Só dispara se
     // o quiz tem lead_email_html + projeto vinculado + e-mail do lead.

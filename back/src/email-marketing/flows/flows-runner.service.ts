@@ -302,7 +302,7 @@ export class EmailFlowsRunner {
         });
       }
 
-      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
       const payload = {
         dispatchId: dispatchId || `flow-${en.id}`,
         leads: { count: 1, sample: [mappedLead] },

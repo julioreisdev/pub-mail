@@ -1,1 +1,0 @@
-import{J as i,K as n}from"./index-Bu6h5f_P.js";const u="/email/projects";function c(r={}){const{data:t,error:s,isLoading:a,isValidating:o,mutate:e}=i(u,n,{revalidateOnFocus:!0,shouldRetryOnError:!1,...r});return{emailProjects:t??null,isLoading:a,isValidating:o,error:s,refresh:()=>e(),mutate:e}}export{c as u};

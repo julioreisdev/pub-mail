@@ -1,1 +1,0 @@
-import{J as o,K as u}from"./index-Bu6h5f_P.js";const i="/agentes";function c(r={}){const{data:t,error:s,isLoading:a,isValidating:n,mutate:e}=o(i,u,{revalidateOnFocus:!0,shouldRetryOnError:!1,...r});return{agentes:t??null,isLoading:a,isValidating:n,error:s,refresh:()=>e(),mutate:e}}export{c as u};

@@ -143,7 +143,7 @@ export class QuizLeadEmailService {
         }
       }
 
-      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
 
       const payload = {
         dispatchId,

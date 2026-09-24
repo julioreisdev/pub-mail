@@ -241,27 +241,81 @@ Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live
 
 ## Production deployment
 
-Production runs on **AWS EC2 (Ubuntu 24.04)**, native deployment (no Docker), `systemd` services (`pubmail-back`, `pubmail-ai`, `pubmail-email`), nginx + certbot. Access is **AWS SSM only** (no SSH): code is packaged, uploaded to S3 and extracted on the instance via `aws ssm send-command`.
+> **Sep/2026:** the AWS installation (EC2 via SSM) is being **decommissioned**. The next environment is a **new server with a clean database**. The runbook below is the official from-scratch install; the AWS history lives only in `CLAUDE.md`.
 
-Flow summary (details, gotchas and the full step-by-step live in `CLAUDE.md`):
+**Native** deployment (no Docker): Ubuntu 24.04, Node 20 + Yarn 4 (corepack), MySQL 8, Redis 7, nginx + certbot, `ffmpeg` and `libvips`. Services run under `systemd`. Code lives in `/opt/pub-mail`.
+
+### 1. Packages
 
 ```bash
-# Front: package → S3 → extract on the instance → build into a temp dir → atomic swap
-cd /opt/pub-mail/front/vite && export NODE_OPTIONS=--max-old-space-size=4096
-rm -rf dist_new && yarn build --outDir dist_new
-[ -f dist_new/index.html ] && { rm -rf dist_prev; mv dist dist_prev; mv dist_new dist; }
-
-# Back: (if the schema changed) migrate deploy + generate → build → restart only if the build passed
-cd /opt/pub-mail/back && yarn prisma migrate deploy && yarn prisma generate
-yarn nest build && test -f dist/src/main.js && systemctl restart pubmail-back
+apt update && apt install -y nginx mysql-server redis-server certbot python3-certbot-nginx ffmpeg libvips42 build-essential git
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs && corepack enable
 ```
 
-Infra points that matter:
+### 2. MySQL + Redis
 
-- **Only 80/443** open. Platform domains on Cloudflare in **DNS only**; customer domains may use the proxy (the back accepts Cloudflare CIDRs).
-- Secrets in `/root/pubmail.secrets`; the back runs as root to write vhosts and run certbot.
-- `nginx` serves `/uploads` straight from disk (email/Telegram images never hit Node).
-- Redis with `maxmemory` + `noeviction`; MySQL with a tuned `innodb_buffer_pool_size`; 2 GB swap.
+```bash
+mysql -e "CREATE DATABASE pubmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -e "CREATE USER 'pubmail'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY '<DB_PASS>'; GRANT ALL ON pubmail.* TO 'pubmail'@'127.0.0.1'; FLUSH PRIVILEGES;"
+# recommended: innodb_buffer_pool_size ~25% of RAM; redis: maxmemory + noeviction
+```
+
+> The database **must** be `utf8mb4_unicode_ci` — migrations create tables with that collation and FKs fail if the server default differs.
+
+### 3. Code and `.env`
+
+```bash
+git clone <repo> /opt/pub-mail
+cd /opt/pub-mail && for d in back ai-micro-services email-micro-services front/vite; do cp $d/.env.example $d/.env; done
+# fill in each .env (.env files are NOT versioned) → see "Environment variables"; generate secrets with: openssl rand -hex 32
+```
+
+The usual pitfalls (see the variables table): `DATABASE_HOST/USER/PASS/NAME/PORT` (runtime) **and** `DATABASE_URL` (Prisma CLI); `DATABASE_POOL_LIMIT=10`; `WEBCHAT_BACKEND_INTERNAL_URL=http://127.0.0.1:8000`; `PUBLIC_API_URL`, `BASE_URL_API` and `NEST_WEBHOOK_URL` with the new public back URL; `VITE_APP_BASE_NAME=/` and `VITE_API_URL` on the front.
+
+### 4. Build + database + seed
+
+```bash
+cd /opt/pub-mail/back && yarn install && yarn prisma migrate deploy && yarn prisma generate && yarn nest build
+# platform user (SUPER_ADMIN, hidden organization) + edge IP + certbot email — no password in code:
+SEED_ADMIN_EMAIL=dev@yourcompany.com SEED_ADMIN_PASSWORD='<strong password>' SEED_EDGE_IP=<server IPv4> SEED_CERTBOT_EMAIL=ops@yourcompany.com \
+  node scripts/seed-platform.mjs | mysql -u pubmail -p'<DB_PASS>' -h 127.0.0.1 pubmail
+
+cd /opt/pub-mail/ai-micro-services && yarn install
+cd /opt/pub-mail/email-micro-services && yarn install
+cd /opt/pub-mail/front/vite && yarn install && NODE_OPTIONS=--max-old-space-size=4096 yarn build
+```
+
+The seed is **idempotent** (run it again to change the password). Each organization registers **its own keys** (AI, Resend, webhook) under *Settings → Integrations* — nothing is shared between organizations. Edge IP and certbot email belong to the platform and only the `SUPER_ADMIN` can edit them.
+
+### 5. Services (`systemd`)
+
+Three units — `pubmail-back` (`node dist/src/main.js`, port 8000, **runs as root** to write nginx vhosts and run certbot), `pubmail-ai` (`node server.js`, 4000) and `pubmail-email` (9999) — each with `WorkingDirectory` in its folder, `EnvironmentFile=<folder>/.env`, `Restart=always`. The micros stay **loopback-only** (the email micro has no auth on `/send`).
+
+### 6. nginx + SSL
+
+- **Front** vhost (platform domain): `root /opt/pub-mail/front/vite/dist` + `try_files $uri /index.html`.
+- **API** vhost (`api.<domain>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **before** `location / { proxy_pass http://127.0.0.1:8000; }`.
+- `000-default-deny` (`default_server` returning 444) for unknown hosts.
+- `certbot --nginx -d <front> -d api.<front>`. Customer domains are provisioned by the system itself (automatic vhost + certbot when clicking "Verify DNS").
+- Firewall: only **80/443** (plus whatever admin access the infra team defines).
+
+### 7. After going live
+
+Webhooks to re-point to the new URL: **Telegram** (the system re-sets the webhook when you revalidate each bot under *Telegram → Settings*), **Resend** (`https://api.<domain>/webhooks/resend`, per organization), **PIX gateways** (*Payments → Gateway*). Then, in each organization, register the keys under Integrations.
+
+### Updates (after the install)
+
+```bash
+# Front: build into a temp dir + atomic swap (if it fails, the site stays intact)
+cd /opt/pub-mail/front/vite && rm -rf dist_new && NODE_OPTIONS=--max-old-space-size=4096 yarn build --outDir dist_new
+[ -f dist_new/index.html ] && { rm -rf dist_prev; mv dist dist_prev; mv dist_new dist; }
+
+# Back: migrate (if there is a migration) → build → restart ONLY if the build had no type errors
+cd /opt/pub-mail/back && yarn prisma migrate deploy && yarn prisma generate
+yarn nest build 2>&1 | tee /tmp/build.log; grep -qE "error TS|Found [0-9]+ error" /tmp/build.log || systemctl restart pubmail-back
+```
+
+> `nest build` **emits `dist/` even with TypeScript errors** — hence the `grep`. Never restart a build that had errors.
 
 ## Operations
 
@@ -274,6 +328,7 @@ mysqldump -u pubmail -p pubmail | gzip > backup.sql.gz
 
 - **Regenerate vhosts** for every domain: `POST /webchat-domains/regenerate-nginx` (org JWT) and, if needed, `certbot --nginx -d <domain>`.
 - **Telegram in flood-wait**: the bot card shows "Paused" with the return time; the runners honour `retry_after` on their own.
+- **Per-organization isolation**: AI/Resend/webhook keys live in `organization_settings` (one row per org); `system_settings` only holds platform infra. New endpoints must **always** filter by `organization_id` (and `hidden:false` on cross-org listings).
 
 ## Troubleshooting
 

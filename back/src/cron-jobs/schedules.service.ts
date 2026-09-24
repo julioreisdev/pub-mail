@@ -471,7 +471,9 @@ export class EmailSchedulesRunner {
   private async sendEmailToMicroservice(payload: any): Promise<number> {
     const url = `${this.emailServiceUrl}/send`;
     try {
-      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+      const orgId = payload?.organization?.id || payload?.project?.organization_id;
+      if (!orgId) throw new Error('Payload sem organização — não dá pra resolver a chave do Resend.');
+      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(orgId);
       const enrichedPayload = { ...payload, resend_api_key: resendApiKey };
       const response = await axios.post(url, enrichedPayload, {
         headers: { 'Content-Type': 'application/json' },
@@ -805,5 +807,116 @@ export class EmailSchedulesRunner {
       },
     });
     return { sent: totalLeads, dispatchId: sentRow.id };
+  }
+
+  // ===========================================================================
+  // FLUXO INICIAL (welcome): e-mail de boas-vindas quando um lead NOVO entra no
+  // projeto (webchat / quiz / cadastro). Config em email_projects.settings.welcome
+  // = { enabled, templateId }. Desligado por padrão. Best-effort: NUNCA lança
+  // (chamado com `void` fora da transação do cadastro). Cobra token e grava
+  // histórico em email_projects_schedules_sent, igual aos gatilhos.
+  // ===========================================================================
+  async sendWelcomeToLead(projectId: string, leadId: string): Promise<void> {
+    try {
+      const project = await this.prisma.email_projects.findFirst({
+        where: { id: projectId, active: true },
+        include: { organizations: true },
+      });
+      if (!project) return;
+      const welcome = (project.settings as any)?.welcome;
+      if (!welcome?.enabled || !welcome?.templateId) return;
+      const sender = (project.settings as any)?.sender;
+      if (!sender?.fromEmail) return;
+
+      const lead = await this.prisma.email_leads.findFirst({
+        where: { id: leadId, organization_id: project.organization_id, global_status: 'ACTIVE' },
+      });
+      if (!lead?.email) return;
+
+      const template = await this.prisma.email_templates.findFirst({
+        where: { id: String(welcome.templateId), project_id: projectId },
+        select: { id: true, subject: true, body_html: true, body_text: true, builder_model: true },
+      });
+      if (!template) return;
+
+      const baseApi = process.env.BASE_API_URL || 'http://localhost:8000';
+      const mappedLead = {
+        ...lead,
+        attributes: {
+          ...(lead.attributes && typeof lead.attributes === 'object' ? (lead.attributes as any) : {}),
+          unsubscribe_link: `${baseApi}/email/leads/unsubscribe/${project.id}/${lead.email}`,
+        },
+      };
+
+      const sentRow = await this.prisma.email_projects_schedules_sent.create({
+        data: {
+          organization_id: project.organization_id,
+          project_id: project.id,
+          run_at: new Date(),
+          schedule_daily: false,
+          sent: false,
+          total_leads: 1,
+          sent_for_leads: 0,
+          tokens_unit_cost: 0,
+          tokens_cost: 0,
+        },
+      });
+
+      const tokensPerLead = Number(this.configService.get<number>('EMAIL_TOKENS_FOR_ONE_LEAD') ?? 0);
+      if (tokensPerLead > 0) {
+        const wallet = await this.prisma.wallets.findFirst({
+          where: { organization_id: project.organization_id, status: 'ACTIVE' },
+        });
+        if (!wallet || Number(wallet.balance) < tokensPerLead) {
+          await this.prisma.email_projects_schedules_sent.update({
+            where: { id: sentRow.id },
+            data: { error_message: 'Saldo insuficiente (boas-vindas).' },
+          });
+          return;
+        }
+        await this.prisma.wallets.update({ where: { id: wallet.id }, data: { balance: { decrement: tokensPerLead } } });
+        await this.prisma.transactions.create({
+          data: {
+            wallet_id: wallet.id,
+            amount: -tokensPerLead,
+            description: `BOAS-VINDAS | Projeto: ${project.id.slice(0, 8)} | 1 lead`,
+            type: 'TOKEN_DEBIT',
+          },
+        });
+        await this.prisma.email_projects_schedules_sent.update({
+          where: { id: sentRow.id },
+          data: { tokens_unit_cost: tokensPerLead, tokens_cost: tokensPerLead },
+        });
+      }
+
+      const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
+      const payload = {
+        dispatchId: sentRow.id,
+        leads: { count: 1, sample: [mappedLead] },
+        project,
+        organization: project.organizations,
+        schedule: null,
+        template: {
+          subject: template.subject,
+          from_name: (template.builder_model as any)?.from_name?.trim?.() || null,
+          body_html: template.body_html,
+          body_text: template.body_text || '',
+        },
+        templatesCount: 1,
+        keepTemplates: true,
+        resend_api_key: resendApiKey,
+      };
+
+      const resp = await axios.post(`${this.emailServiceUrl}/send`, payload, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (resp.status !== 201) throw new Error(`micro status ${resp.status}`);
+      await this.prisma.email_projects_schedules_sent.update({
+        where: { id: sentRow.id },
+        data: { sent: true, subject: template.subject, body_html: template.body_html, body_text: template.body_text || '' },
+      });
+    } catch (e: any) {
+      this.logger.warn(`sendWelcomeToLead falhou (projeto ${projectId}, lead ${leadId}): ${e?.message || e}`);
+    }
   }
 }

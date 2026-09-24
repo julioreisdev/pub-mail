@@ -153,7 +153,7 @@ export class RecycleService {
       });
     }
 
-    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail();
+    const resendApiKey = await this.systemSettings.getResendApiKeyOrFail(project.organization_id);
     const payload = {
       dispatchId: sentRow.id,
       leads: { count: totalLeads, sample: mappedLeads },

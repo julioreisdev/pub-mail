@@ -33,7 +33,7 @@ export class DashboardService {
     // Integrações de IA = provedores com pelo menos 1 chave cadastrada (singleton global).
     let providers = AI_PROVIDERS.map((p) => ({ key: p.key.replace('_api_keys', ''), label: p.label, count: 0 }));
     try {
-      const settings: any = await this.systemSettings.get();
+      const settings: any = await this.systemSettings.get(organizationId);
       providers = AI_PROVIDERS.map((p) => ({
         key: p.key.replace('_api_keys', ''),
         label: p.label,

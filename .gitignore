@@ -1,0 +1,21 @@
+# dependências / builds
+node_modules/
+dist/
+dist_new/
+dist_prev/
+*.tsbuildinfo
+back/generated/
+# yarn 4
+**/.yarn/cache/
+**/.yarn/install-state.gz
+**/.yarn/unplugged/
+.pnp.*
+# segredos — NUNCA versionar (use os .env.example)
+.env
+.env.*
+!.env.example
+# dados de runtime
+uploads/
+# sistema / editor
+.DS_Store
+*.log

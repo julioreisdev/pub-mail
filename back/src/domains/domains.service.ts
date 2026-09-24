@@ -11,8 +11,8 @@ export class DomainsService {
         private readonly systemSettings: SystemSettingsService,
     ) { }
 
-    private async getResend(): Promise<Resend> {
-        const apiKey = await this.systemSettings.getResendApiKeyOrFail();
+    private async getResend(organizationId: string): Promise<Resend> {
+        const apiKey = await this.systemSettings.getResendApiKeyOrFail(organizationId);
         return new Resend(apiKey);
     }
 
@@ -26,7 +26,7 @@ export class DomainsService {
         if (exists) throw new ConflictException('Domínio já cadastrado na sua organização.');
 
         try {
-            const resend = await this.getResend();
+            const resend = await this.getResend(organizationId);
             // 2. Cria o domínio no painel oficial do Resend
             const { data, error } = await resend.domains.create({
                 name: domainStr,
@@ -75,7 +75,7 @@ export class DomainsService {
 
         // Remove do Resend também para limpar sua conta
         if (domain.provider_id) {
-            const resend = await this.getResend();
+            const resend = await this.getResend(organizationId);
             await resend.domains.remove(domain.provider_id);
         }
 
@@ -96,7 +96,7 @@ export class DomainsService {
         if (!domain.provider_id) throw new BadRequestException('ID do provedor ausente neste domínio.');
 
         try {
-            const resend = await this.getResend();
+            const resend = await this.getResend(organizationId);
             // 1. Pede pro Resend escanear o DNS do cliente
             await resend.domains.verify(domain.provider_id);
 

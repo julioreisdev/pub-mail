@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Req,
   UseGuards,
   ParseUUIDPipe,
@@ -77,6 +78,55 @@ export class EmailProjectsController {
     @Body() dto: UpdateEmailProjectDto,
   ) {
     return this.service.update(req.user.organizationId, id, dto);
+  }
+
+  // -------------------------
+  // FLUXO INICIAL (welcome)
+  // -------------------------
+  @Get(':id/welcome')
+  @ApiOperation({
+    summary: 'Ler config do fluxo inicial (e-mail de boas-vindas) do projeto',
+  })
+  @ApiParam({ name: 'id', description: 'ID do projeto', type: String, format: 'uuid' })
+  @ApiOkResponse({ description: '{ enabled, templateId }' })
+  @ApiNotFoundResponse({ description: 'Projeto não encontrado' })
+  @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
+  getWelcome(@Req() req: any, @Param('id', new ParseUUIDPipe()) id: string) {
+    return this.service.getWelcome(req.user.organizationId, id);
+  }
+
+  @Put(':id/welcome')
+  @ApiOperation({
+    summary:
+      'Ativar/desativar o fluxo inicial e escolher o template de boas-vindas',
+  })
+  @ApiParam({ name: 'id', description: 'ID do projeto', type: String, format: 'uuid' })
+  @ApiBody({
+    description:
+      'Desligado por padrão. Para ativar, enabled=true e templateId obrigatório (template do próprio projeto).',
+    schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', example: true },
+        templateId: {
+          type: 'string',
+          format: 'uuid',
+          nullable: true,
+          example: '9f3d6c2a-4c3a-4f72-9b4a-0d7a2b1c3e9a',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({ description: '{ enabled, templateId }' })
+  @ApiBadRequestResponse({ description: 'Template inválido ou ausente' })
+  @ApiNotFoundResponse({ description: 'Projeto não encontrado' })
+  @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
+  setWelcome(
+    @Req() req: any,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: { enabled?: boolean; templateId?: string | null },
+  ) {
+    return this.service.setWelcome(req.user.organizationId, id, dto);
   }
 
   @Delete(':id')

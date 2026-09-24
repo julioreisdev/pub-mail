@@ -109,12 +109,13 @@ export class ResendWebhooksService {
   // hard-bounce/reclamação vale para todos os projetos daquele e-mail. O disparo
   // já filtra global_status=ACTIVE, então isso remove o lead dos próximos envios.
   private async suppress(
+    organizationId: string,
     recipients: string[],
     status: 'BOUNCED' | 'COMPLAINED',
   ) {
     if (recipients.length === 0) return 0;
     const res = await this.prisma.email_leads.updateMany({
-      where: { email: { in: recipients }, global_status: 'ACTIVE' },
+      where: { organization_id: organizationId, email: { in: recipients }, global_status: 'ACTIVE' },
       data: { global_status: status as any },
     });
     return res.count;
@@ -122,10 +123,23 @@ export class ResendWebhooksService {
 
   // ------------------------------------------------------------- handler
   async handle(headers: Record<string, any>, rawBody: string, body: any) {
-    const secret = await this.systemSettings.getResendWebhookSecret();
+    // A org dona do evento vem da tag dispatch_id (sent row) — cada org tem seu próprio
+    // Resend + Signing Secret, então a assinatura é verificada com o segredo DAQUELA org.
+    const dispatchIdEarly = this.dispatchIdOf(body?.data || {});
+    const sent = dispatchIdEarly
+      ? await this.prisma.email_projects_schedules_sent
+          .findUnique({ where: { id: dispatchIdEarly }, select: { organization_id: true } })
+          .catch(() => null)
+      : null;
+    if (!sent) {
+      this.logger.warn('Webhook do Resend sem dispatch_id conhecido — ignorando.');
+      return { ok: false, reason: 'unknown_dispatch' };
+    }
+    const organizationId = sent.organization_id;
+    const secret = await this.systemSettings.getResendWebhookSecret(organizationId);
     if (!secret) {
       this.logger.warn(
-        'Webhook do Resend recebido, mas resend_webhook_secret não está configurado — ignorando.',
+        `Webhook do Resend recebido, mas a org ${organizationId} não tem resend_webhook_secret — ignorando.`,
       );
       return { ok: false, reason: 'webhook_secret_not_configured' };
     }
@@ -163,11 +177,11 @@ export class ResendWebhooksService {
         break;
       case 'email.bounced':
         if (dispatchId) await this.incr(dispatchId, 'bounced_count');
-        if (this.isHardBounce(data)) suppressed = await this.suppress(recipients, 'BOUNCED');
+        if (this.isHardBounce(data)) suppressed = await this.suppress(organizationId, recipients, 'BOUNCED');
         break;
       case 'email.complained':
         if (dispatchId) await this.incr(dispatchId, 'complained_count');
-        suppressed = await this.suppress(recipients, 'COMPLAINED');
+        suppressed = await this.suppress(organizationId, recipients, 'COMPLAINED');
         break;
       default:
         // sent / delivery_delayed / opened / clicked etc. — não tratados aqui
