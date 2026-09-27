@@ -10,6 +10,7 @@ const emails = {
     id: 'email',
     title: 'Email Marketing',
     type: 'group',
+    requiredModule: 'email',
     icon: icons.IconMailBolt,
     children: [
         {

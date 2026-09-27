@@ -5,7 +5,7 @@ const PROVIDERS = [
     {
         key: 'groq',
         title: 'Groq',
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         url: 'https://console.groq.com/keys',
         free: '1.000 req/dia · 30 RPM · 6.000 tokens/min',
         steps: [

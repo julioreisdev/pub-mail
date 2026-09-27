@@ -5,10 +5,14 @@ import axios from 'axios';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
+import { AccessService } from '../platform-billing/access.service';
 import { EmailSchedule } from './domain/email_schedules_domain';
 import { isColdLink } from '../email-marketing/recycle/recycle.service';
 import { filterLinksBySegment } from '../email-marketing/segments/segment.util';
-import { getUnopeners } from '../email-marketing/resend/unopeners.util';
+import {
+  getUnopeners,
+  sentNotResendableReason,
+} from '../email-marketing/resend/unopeners.util';
 
 type ScheduleLite = {
   id: string;
@@ -37,6 +41,7 @@ export class EmailSchedulesRunner {
     private prisma: PrismaService,
     private configService: ConfigService,
     private readonly systemSettings: SystemSettingsService,
+    private readonly access: AccessService,
   ) {
     this.logger.log('EmailSchedulesRunner loaded');
   }
@@ -160,6 +165,12 @@ export class EmailSchedulesRunner {
 
     if (!projectLite) return;
 
+    // Assinatura da org vencida/pendente/bloqueada => nada dispara (sem sent row, sem token).
+    if (!(await this.access.isOrgActive(projectLite.organization_id))) {
+      this.logger.log(`pulando org=${projectLite.organization_id}: acesso inativo (schedule ${schedule.id})`);
+      return;
+    }
+
     let sentRow: { id: string };
 
     try {
@@ -277,7 +288,14 @@ export class EmailSchedulesRunner {
         `[EMAIL_DISPATCH_PAYLOAD_SUCCESS] ${JSON.stringify(payloadSummary, null, 2)}`,
       );
 
-      if (!payload.keepTemplates && payload.templatesCount > 2) {
+      // Auto-exclusão do template usado (>2 no pool). NUNCA apaga template
+      // referenciado por boas-vindas ou gatilhos (A-38) — sem FK, eles
+      // passariam a falhar em silêncio.
+      if (
+        !payload.keepTemplates &&
+        payload.templatesCount > 2 &&
+        !(payload.protectedTemplateIds as Set<string>).has(template.id)
+      ) {
         await this.prisma.email_templates.delete({
           where: { id: template.id },
         });
@@ -432,21 +450,48 @@ export class EmailSchedulesRunner {
       }
     }
 
-    // Sem seleção (ou selecionados já apagados) => sorteia entre TODOS os
-    // templates do escopo (normal/reciclagem) e pode apagar depois quando > 2
-    // (apagar só vale p/ normal; reciclagem tem keepTemplates=true).
+    // Templates "protegidos": referenciados por boas-vindas (settings.welcome)
+    // ou por gatilhos SEND_TEMPLATE. Ficam FORA do sorteio automático (que pode
+    // apagar o template depois) e nunca são apagados (A-38).
+    const protectedTemplateIds = await this.protectedTemplateIds(
+      schedule.project_id,
+      project.settings,
+    );
+
+    // Sem seleção (ou selecionados já apagados) => sorteia entre os templates
+    // do escopo (normal/reciclagem) EXCETO os protegidos, e pode apagar depois
+    // quando > 2 (apagar só vale p/ normal; reciclagem tem keepTemplates=true).
     if (!template) {
-      templatesCount = await this.prisma.email_templates.count({
-        where: { project_id: schedule.project_id, recycle: isRecycle },
-      });
+      const poolWhere = {
+        project_id: schedule.project_id,
+        recycle: isRecycle,
+        ...(protectedTemplateIds.size > 0
+          ? { id: { notIn: [...protectedTemplateIds] } }
+          : {}),
+      };
+      templatesCount = await this.prisma.email_templates.count({ where: poolWhere });
       if (templatesCount > 0) {
         const skip = Math.floor(Math.random() * templatesCount);
         template = await this.prisma.email_templates.findFirst({
-          where: { project_id: schedule.project_id, recycle: isRecycle },
+          where: poolWhere,
           orderBy: { id: 'asc' },
           skip,
           select: templateFields,
         });
+      } else if (protectedTemplateIds.size > 0) {
+        // Só sobraram templates protegidos: usa um deles, mas SEM apagar.
+        const fallbackWhere = { project_id: schedule.project_id, recycle: isRecycle };
+        templatesCount = await this.prisma.email_templates.count({ where: fallbackWhere });
+        if (templatesCount > 0) {
+          const skip = Math.floor(Math.random() * templatesCount);
+          template = await this.prisma.email_templates.findFirst({
+            where: fallbackWhere,
+            orderBy: { id: 'asc' },
+            skip,
+            select: templateFields,
+          });
+          keepTemplates = true;
+        }
       }
     }
 
@@ -465,7 +510,30 @@ export class EmailSchedulesRunner {
       template,
       templatesCount,
       keepTemplates,
+      protectedTemplateIds,
     };
+  }
+
+  // Ids de templates do projeto que NÃO podem ser apagados automaticamente:
+  // o de boas-vindas (settings.welcome.templateId) e os de gatilhos
+  // SEND_TEMPLATE (email_behavior_triggers.template_id).
+  private async protectedTemplateIds(
+    projectId: string,
+    settings: any,
+  ): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const welcomeId = settings?.welcome?.templateId;
+    if (welcomeId) ids.add(String(welcomeId));
+    try {
+      const triggers = await this.prisma.email_behavior_triggers.findMany({
+        where: { project_id: projectId, template_id: { not: null } },
+        select: { template_id: true },
+      });
+      for (const t of triggers) if (t.template_id) ids.add(String(t.template_id));
+    } catch (e: any) {
+      this.logger.warn(`protectedTemplateIds: ${e?.message ?? e}`);
+    }
+    return ids;
   }
 
   private async sendEmailToMicroservice(payload: any): Promise<number> {
@@ -487,14 +555,21 @@ export class EmailSchedulesRunner {
   // =========================================================================
   // 🚀 MÉTODO NOVO: DISPARO MANUAL (BOTÃO "DISPARAR AGORA")
   // =========================================================================
-  async executeManualDispatch(projectId: string, templateId?: string | null) {
+  // O projeto PRECISA pertencer à organização do usuário logado (A-04 — antes
+  // qualquer usuário disparava a base de outra org só sabendo o projectId).
+  async executeManualDispatch(
+    organizationId: string,
+    projectId: string,
+    templateId?: string | null,
+  ) {
     this.logger.log(
       `[MANUAL DISPATCH] Iniciando disparo para projeto: ${projectId}${templateId ? ` (template ${templateId})` : ' (aleatório)'}`,
     );
     const runAt = new Date();
 
+    if (!organizationId) throw new Error('Organização não identificada.');
     const project = await this.prisma.email_projects.findFirst({
-      where: { id: projectId, active: true },
+      where: { id: projectId, organization_id: organizationId, active: true },
       include: { organizations: true },
     });
     if (!project) throw new Error('Projeto não encontrado ou inativo.');
@@ -694,9 +769,25 @@ export class EmailSchedulesRunner {
   ) {
     const original = await this.prisma.email_projects_schedules_sent.findFirst({
       where: { id: sentId, organization_id: organizationId, project_id: projectId },
-      select: { subject: true, from_name: true, body_html: true, body_text: true },
+      select: {
+        id: true,
+        subject: true,
+        from_name: true,
+        body_html: true,
+        body_text: true,
+        flow_step_id: true,
+        recycle: true,
+        total_leads: true,
+      },
     });
     if (!original) throw new Error('Disparo original não encontrado.');
+
+    // Só disparos NORMAIS podem ser reenviados (A-28): o reenvio usa "todos os
+    // inscritos menos quem abriu", o que não faz sentido pra fluxo, gatilho,
+    // boas-vindas, A/B, reciclagem (dispararia pra base inteira).
+    const blocked = await sentNotResendableReason(this.prisma, original);
+    if (blocked) throw new Error(blocked);
+
     const html = String(original.body_html ?? '').trim();
     if (!html)
       throw new Error('Este disparo não tem conteúdo salvo para reenviar.');
@@ -823,6 +914,10 @@ export class EmailSchedulesRunner {
         include: { organizations: true },
       });
       if (!project) return;
+      if (!(await this.access.isOrgActive(project.organization_id))) {
+        this.logger.debug(`pulando org=${project.organization_id}: acesso inativo (welcome)`);
+        return;
+      }
       const welcome = (project.settings as any)?.welcome;
       if (!welcome?.enabled || !welcome?.templateId) return;
       const sender = (project.settings as any)?.sender;

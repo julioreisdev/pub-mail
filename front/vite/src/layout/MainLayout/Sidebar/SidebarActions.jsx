@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { useNavigate } from 'react-router-dom';
 
-import { useColorScheme, alpha } from '@mui/material/styles';
+import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Avatar from '@mui/material/Avatar';
 import Divider from '@mui/material/Divider';
@@ -51,7 +51,7 @@ export default function SidebarActions({ drawerOpen }) {
         fontSize: 15,
         fontWeight: 700,
         color: 'primary.main',
-        bgcolor: (t) => alpha(t.palette.primary.main, 0.15)
+        bgcolor: (t) => `rgba(${t.vars.palette.primary.mainChannel} / 0.15)`
       }}
     >
       {initial}

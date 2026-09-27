@@ -1,9 +1,16 @@
-import { BadRequestException, Injectable, UnauthorizedException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+  NotFoundException,
+} from '@nestjs/common';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { AccessService } from '../platform-billing/access.service';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
@@ -14,6 +21,7 @@ export class AuthService {
     private prisma: PrismaService,
     private usersService: UsersService,
     private jwt: JwtService,
+    private readonly access: AccessService,
   ) {}
 
   private getAccessExpiresIn() {
@@ -83,6 +91,7 @@ export class AuthService {
         role: true,
         active: true,
         password_hash: true,
+        organizations: { select: { status: true } },
       },
     });
 
@@ -92,6 +101,11 @@ export class AuthService {
 
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
+
+    // A-09: org desativada não loga (a senha certa não deve revelar nada além disso).
+    if (user.organizations?.status === false) {
+      throw new ForbiddenException('Organização desativada');
+    }
 
     return { id: user.id, organization_id: user.organization_id, role: user.role };
   }
@@ -156,11 +170,22 @@ export class AuthService {
     const refreshHash = this.hashToken(dto.refreshToken);
 
     const user = await this.prisma.users.findFirst({
-      where: { id: userId, refresh_token: refreshHash, active: true },
-      select: { id: true, organization_id: true, role: true },
+      where: { id: userId, refresh_token: refreshHash },
+      select: {
+        id: true,
+        organization_id: true,
+        role: true,
+        active: true,
+        organizations: { select: { status: true } },
+      },
     });
 
     if (!user) throw new UnauthorizedException('Refresh token not recognized');
+    // A-09: usuário desativado ou org desativada não renova token.
+    if (!user.active) throw new UnauthorizedException('Usuário desativado');
+    if (user.organizations?.status === false) {
+      throw new ForbiddenException('Organização desativada');
+    }
 
     const { accessToken, expiresIn: accessExpiresIn } = this.signAccessToken(user);
     const { refreshToken, expiresIn: refreshExpiresIn } = this.signRefreshToken(user.id);
@@ -200,7 +225,9 @@ export class AuthService {
   if (!user) throw new NotFoundException('User not found');
   if (!organization) throw new NotFoundException('Organization not found');
 
-  return { user, organization };
+  // Acesso: módulos do usuário + assinatura da org (front monta menu/gate com isso).
+  const access = await this.access.forMe(user.id, user.organization_id, user.role);
+  return { user, organization, access };
 }
 
 

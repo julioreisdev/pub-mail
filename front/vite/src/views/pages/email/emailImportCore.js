@@ -4,7 +4,7 @@
 // (via emailBuilderCore) -> ficam editáveis no construtor e geram HTML limpo.
 // ============================================================================
 
-import { createBlock, createDefaultBody, normalizeModel, modelToHtml } from './emailBuilderCore';
+import { createBlock, createDefaultBody, normalizeModel, modelToHtml, safeColor } from './emailBuilderCore';
 
 // HTML de pré-visualização: substitui as variáveis por valores de exemplo e
 // "desfaz" o wrapper de tracking do CTA pra mostrar o link real.
@@ -62,7 +62,8 @@ export function rowToTemplate(rawRow) {
   const ctaText = pick(r, 'cta_text', 'cta', 'botao', 'botão');
   const ctaUrl = pick(r, 'cta_url', 'link', 'url');
   const ps = pick(r, 'ps', 'p.s.');
-  const accent = pick(r, 'accent_color', 'cor', 'accent') || '#4f46e5';
+  // A-76: cor do CSV passa pelo mesmo validador do construtor (hex/rgb) — inválida = padrão
+  const accent = safeColor(pick(r, 'accent_color', 'cor', 'accent'), '#4f46e5');
 
   const blocks = [];
   if (heading) blocks.push({ ...createBlock('heading'), html: esc(heading), align: 'center', color: accent });

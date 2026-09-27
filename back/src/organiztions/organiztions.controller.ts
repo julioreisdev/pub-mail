@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, Patch, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { OrganiztionsService } from './organiztions.service';
 import { UpdateOrganiztionDto } from './dto/update-organiztion.dto';
 
@@ -30,7 +32,10 @@ export class OrganiztionsController {
     return this.organiztionsService.findMyOrganization(req.user.organizationId);
   }
 
+  // Escritas na org só para OWNER/ADMIN (A-07). Leitura continua para todos.
   @Patch('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Atualizar minha organização (tenant) via token' })
   @ApiBody({ type: UpdateOrganiztionDto })
   @ApiOkResponse({ description: 'Organização atualizada com sucesso' })
@@ -42,6 +47,8 @@ export class OrganiztionsController {
   }
 
   @Delete('me')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Desativar minha organização (soft delete)' })
   @ApiOkResponse({ description: 'Organização desativada com sucesso' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })

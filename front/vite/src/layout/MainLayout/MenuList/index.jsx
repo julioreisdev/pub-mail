@@ -12,6 +12,7 @@ import menuItems from 'menu-items';
 
 import { useGetMenuMaster } from 'api/menu';
 import { useAuth } from 'contexts/AuthContext';
+import useAccess from 'hooks/useAccess';
 
 // ==============================|| SIDEBAR MENU LIST ||============================== //
 
@@ -20,13 +21,17 @@ function MenuList() {
   const drawerOpen = menuMaster.isDashboardDrawerOpened;
   const { user } = useAuth();
   const role = user?.user?.role;
+  const { has } = useAccess();
 
   const [selectedID, setSelectedID] = useState('');
 
   const lastItem = null;
 
-  // Esconde grupos restritos por role (ex.: Administração só p/ SUPER_ADMIN).
-  const items = menuItems.items.filter((item) => !item.requiredRole || item.requiredRole === role);
+  // Esconde grupos restritos por role (ex.: Administração só p/ SUPER_ADMIN)
+  // e por MÓDULO liberado pro usuário (requiredModule: email|webchat|quiz|telegram|settings).
+  const items = menuItems.items.filter(
+    (item) => (!item.requiredRole || item.requiredRole === role) && (!item.requiredModule || has(item.requiredModule))
+  );
 
   let lastItemIndex = items.length - 1;
   let remItems = [];

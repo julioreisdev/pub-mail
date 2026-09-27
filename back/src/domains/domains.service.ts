@@ -1,11 +1,34 @@
-import { ConflictException, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateDomainDto } from './dto/create-domain.dto';
 import { Resend } from 'resend';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
 
+// Status do Resend -> status local (enum domain_status: PENDING|VERIFIED|FAILED).
+// Antes só `verified` era refletido; `failed` ficava PENDING pra sempre (A-64).
+export function mapResendDomainStatus(
+    raw: unknown,
+    fallback: 'PENDING' | 'VERIFIED' | 'FAILED',
+): 'PENDING' | 'VERIFIED' | 'FAILED' {
+    const s = String(raw ?? '').trim().toLowerCase();
+    switch (s) {
+        case 'verified':
+            return 'VERIFIED';
+        case 'failed':
+        case 'temporary_failure':
+            return 'FAILED';
+        case 'pending':
+        case 'not_started':
+            return 'PENDING';
+        default:
+            return fallback;
+    }
+}
+
 @Injectable()
 export class DomainsService {
+    private readonly logger = new Logger(DomainsService.name);
+
     constructor(
         private prisma: PrismaService,
         private readonly systemSettings: SystemSettingsService,
@@ -73,10 +96,22 @@ export class DomainsService {
 
         if (!domain) throw new NotFoundException('Domínio não encontrado.');
 
-        // Remove do Resend também para limpar sua conta
+        // Remove do Resend também para limpar a conta — best-effort: sem chave,
+        // provedor fora ou domínio já apagado lá NÃO impede apagar localmente.
         if (domain.provider_id) {
-            const resend = await this.getResend(organizationId);
-            await resend.domains.remove(domain.provider_id);
+            try {
+                const resend = await this.getResend(organizationId);
+                const { error } = await resend.domains.remove(domain.provider_id);
+                if (error) {
+                    this.logger.warn(
+                        `Resend não removeu o domínio ${domain.domain} (${domain.provider_id}): ${error.message}`,
+                    );
+                }
+            } catch (e: any) {
+                this.logger.warn(
+                    `Falha ao remover ${domain.domain} no Resend (segue apagando local): ${e?.message ?? e}`,
+                );
+            }
         }
 
         await this.prisma.organization_domains.delete({
@@ -103,11 +138,12 @@ export class DomainsService {
             // 2. Consulta imediatamente qual foi o resultado do escaneamento
             const { data } = await resend.domains.get(domain.provider_id);
 
-            // 3. Analisa o status retornado pelo Resend (verified, pending, failed...)
-            let newStatus = domain.status;
-            if (data?.status === 'verified') {
-                newStatus = 'VERIFIED';
-            }
+            // 3. Mapeia o status do Resend (verified / pending / failed /
+            // temporary_failure / not_started) pro enum local, incluindo FAILED.
+            const newStatus = mapResendDomainStatus(
+                data?.status,
+                domain.status as 'PENDING' | 'VERIFIED' | 'FAILED',
+            );
 
             // 4. Atualiza seu banco e devolve pro Front
             return await this.prisma.organization_domains.update({

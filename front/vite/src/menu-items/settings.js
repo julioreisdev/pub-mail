@@ -1,8 +1,8 @@
 // assets
-import { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings } from '@tabler/icons-react';
+import { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings, IconCreditCard } from '@tabler/icons-react';
 
 // constant
-const icons = { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings };
+const icons = { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings, IconCreditCard };
 
 // ==============================|| CONFIGURAÇÕES MENU ITEMS ||============================== //
 
@@ -10,6 +10,7 @@ const settings = {
   id: 'settings',
   title: 'Configurações',
   type: 'group',
+  requiredModule: 'settings',
   icon: icons.IconSettings,
   children: [
     {
@@ -34,6 +35,14 @@ const settings = {
       type: 'item',
       url: '/settings/integrations',
       icon: icons.IconPlugConnected,
+      target: false
+    },
+    {
+      id: 'settings-payments',
+      title: 'Pagamentos',
+      type: 'item',
+      url: '/settings/payments',
+      icon: icons.IconCreditCard,
       target: false
     },
     {

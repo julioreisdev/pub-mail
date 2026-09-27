@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
     Box,
@@ -148,6 +148,11 @@ function GatewayTab() {
 
     return (
         <Box sx={{ maxWidth: 620 }}>
+            <Alert severity="info" sx={{ mb: 2, py: 0.5 }}>
+                O gateway PIX é <strong>um só por organização</strong> e também é usado pelas cobranças do <strong>Webchat</strong>. Você pode
+                gerenciá-lo aqui ou em <a href="/settings/payments" style={{ fontWeight: 700 }}>Configurações → Pagamentos</a> (onde ficam as
+                vendas de todos os canais). As mensagens do checkout abaixo valem só para o Telegram.
+            </Alert>
             <TgCard hover={false} sx={{ p: 2.5 }}>
                 <Stack spacing={2.25}>
                     <Box>
@@ -495,17 +500,25 @@ function SalesTab({ bots }) {
     const [status, setStatus] = useState('all');
     const [botFilter, setBotFilter] = useState('all');
     const [page, setPage] = useState(1);
+    const reqRef = useRef(0); // A-75: ignora respostas fora de ordem
 
     useEffect(() => {
         setPage(1);
     }, [status, botFilter]);
 
     useEffect(() => {
+        const seq = ++reqRef.current;
         setLoading(true);
         get(`/telegram/payments/sales?page=${page}&status=${status}&bot_id=${botFilter}`)
-            .then(setData)
-            .catch(() => setData({ items: [], total: 0, page: 1, pages: 1, revenue_paid: 'R$ 0,00', paid_count: 0 }))
-            .finally(() => setLoading(false));
+            .then((d) => {
+                if (seq === reqRef.current) setData(d);
+            })
+            .catch(() => {
+                if (seq === reqRef.current) setData({ items: [], total: 0, page: 1, pages: 1, revenue_paid: 'R$ 0,00', paid_count: 0 });
+            })
+            .finally(() => {
+                if (seq === reqRef.current) setLoading(false);
+            });
     }, [page, status, botFilter]);
 
     return (

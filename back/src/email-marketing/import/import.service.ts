@@ -59,6 +59,8 @@ export class EmailImportService {
     for (let i = 0; i < normalized.length; i += chunkSize) {
       const chunk = normalized.slice(i, i + chunkSize);
 
+      // Transação interativa com timeout maior que o default (5 s): um chunk
+      // de 300 linhas faz ~900 queries e estourava em base grande (A-62).
       await this.prisma.$transaction(async (tx) => {
         for (const r of chunk) {
           if (!r.email) {
@@ -125,7 +127,7 @@ export class EmailImportService {
             skippedAlreadyLinked++;
           }
         }
-      });
+      }, { timeout: 60_000, maxWait: 10_000 });
     }
 
     return {
@@ -203,9 +205,15 @@ export class EmailImportService {
       );
     }
 
-    // Busca todos os IDs de leads do projeto de origem
+    // Busca os leads do projeto de origem — SÓ os inscritos (SUBSCRIBED) cujo
+    // lead está ATIVO (sem bounce/spam). Quem se desinscreveu ou foi suprimido
+    // NÃO pode ser reinscrito no destino (auditoria A-16).
     const sourceLeads = await this.prisma.email_project_leads.findMany({
-      where: { project_id: fromProjectId },
+      where: {
+        project_id: fromProjectId,
+        status: 'SUBSCRIBED',
+        leads: { global_status: 'ACTIVE' },
+      },
       select: { lead_id: true },
     });
 
@@ -254,25 +262,35 @@ export class EmailImportService {
   // FUNÇÕES PRIVADAS / HELPERS
   // =========================================================
   private normalizeRow(row: Row) {
-    const rawEmail =
-      row.email ??
-      row.Email ??
-      row.EMAIL ??
-      row['e-mail'] ??
-      row['E-mail'] ??
-      row['E-mail Address'];
+    // Cabeçalhos casados sem diferenciar caixa/espaços/BOM ("E-mail ", "EMAIL",
+    // "﻿email"...). As chaves originais continuam nos attributes.
+    const byKey = new Map<string, any>();
+    for (const [k, v] of Object.entries(row)) {
+      const key = this.headerKey(k);
+      if (key && !byKey.has(key)) byKey.set(key, v);
+    }
+    const pick = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = byKey.get(k);
+        if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+      }
+      return undefined;
+    };
+
+    const rawEmail = pick('email', 'e-mail', 'e-mail address', 'email address', 'mail');
     // Sanitiza (conserta ponto duplo etc.) + valida estrito. Linha inválida
     // vira email=undefined -> contabilizada como invalidRow (não entra).
     const email = cleanEmailOrNull(rawEmail);
 
-    const rawName = row.name ?? row.Name ?? row.NOME ?? row.nome;
+    const rawName = pick('name', 'nome', 'full name', 'nome completo');
     const name = (rawName ?? '').toString().trim() || undefined;
 
     const attributes: any = {};
     for (const [k, v] of Object.entries(row)) {
-      const key = k.toString().trim().toLowerCase();
-      if (key === 'email' || key === 'e-mail') continue;
-      if (key === 'name' || key === 'nome') continue;
+      const key = this.headerKey(k);
+      if (!key) continue;
+      if (['email', 'e-mail', 'e-mail address', 'email address', 'mail'].includes(key)) continue;
+      if (['name', 'nome', 'full name', 'nome completo'].includes(key)) continue;
       if (v === undefined || v === null) continue;
       const s = String(v).trim();
       if (!s) continue;
@@ -284,6 +302,27 @@ export class EmailImportService {
       name,
       attributes: Object.keys(attributes).length ? attributes : null,
     };
+  }
+
+  // Chave normalizada de cabeçalho: sem BOM, trim, minúsculo.
+  private headerKey(k: unknown): string {
+    return String(k ?? '')
+      .replace(/^﻿/, '')
+      .trim()
+      .toLowerCase();
+  }
+
+  // Detecta o separador do CSV pela linha de cabeçalho (`,` `;` ou TAB) — o
+  // Excel pt-BR exporta com `;` e antes 100% das linhas viravam inválidas.
+  private detectCsvSeparator(text: string): string {
+    const firstLine = text.split(/\r?\n/, 1)[0] || '';
+    const counts: Array<[string, number]> = [
+      [',', (firstLine.match(/,/g) || []).length],
+      [';', (firstLine.match(/;/g) || []).length],
+      ['\t', (firstLine.match(/\t/g) || []).length],
+    ];
+    counts.sort((a, b) => b[1] - a[1]);
+    return counts[0][1] > 0 ? counts[0][0] : ',';
   }
 
   private mergeJson(oldJson: any, newJson: any) {
@@ -307,10 +346,21 @@ export class EmailImportService {
     }
 
     if (filename.endsWith('.csv')) {
+      // Remove BOM (UTF-8) e detecta o separador antes de parsear.
+      let text = file.buffer.toString('utf8');
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+      const separator = this.detectCsvSeparator(text);
+
       return await new Promise<Row[]>((resolve, reject) => {
         const results: Row[] = [];
-        Readable.from(file.buffer)
-          .pipe(csvParser())
+        Readable.from(Buffer.from(text, 'utf8'))
+          .pipe(
+            csvParser({
+              separator,
+              mapHeaders: ({ header }: { header: string }) =>
+                String(header ?? '').replace(/^﻿/, '').trim(),
+            }),
+          )
           .on('data', (data: any) => results.push(data))
           .on('end', () => resolve(results))
           .on('error', (err: any) => reject(err));

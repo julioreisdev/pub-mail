@@ -3,6 +3,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { TelegramFlowRuntimeService } from './telegram-flow-runtime.service';
 import { stepDelayMs } from './telegram-automations.service';
+import { noteFlood, retryAfterOf } from './telegram-flood.util';
+import { AccessService } from '../platform-billing/access.service';
 
 @Injectable()
 export class TelegramAutomationsRunner {
@@ -12,6 +14,7 @@ export class TelegramAutomationsRunner {
   constructor(
     private readonly prisma: PrismaService,
     private readonly runtime: TelegramFlowRuntimeService,
+    private readonly access: AccessService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -24,7 +27,15 @@ export class TelegramAutomationsRunner {
         orderBy: { next_send_at: 'asc' },
         take: 200,
       });
+      const orgOk = new Map<string, boolean>(); // 1 checagem (e 1 log) por org por tick
       for (const enr of due) {
+        // assinatura da org vencida → enrollment fica como está (retoma quando reativar)
+        if (!orgOk.has(enr.organization_id)) {
+          const ok = await this.access.isOrgActive(enr.organization_id);
+          orgOk.set(enr.organization_id, ok);
+          if (!ok) this.logger.log(`pulando org=${enr.organization_id}: acesso inativo`);
+        }
+        if (!orgOk.get(enr.organization_id)) continue;
         try {
           await this.process(enr);
         } catch (e: any) {
@@ -64,9 +75,16 @@ export class TelegramAutomationsRunner {
       return;
     }
 
-    // avalia condição
+    const contact = await this.prisma.telegram_contacts.findFirst({
+      where: enr.contact_id ? { id: enr.contact_id } : { bot_id: enr.bot_id, tg_user_id: BigInt(enr.tg_user_id) },
+      select: { first_name: true, last_name: true, username: true, attributes: true },
+    });
+    const attrs: any = (contact?.attributes as any) || {};
+
+    // avalia condição ("inativo" = nenhuma mensagem IN nem toque em botão desde a inscrição)
     let shouldSend = true;
     if (step.condition?.type === 'inactive') {
+      const since = enr.enrolled_at ? new Date(enr.enrolled_at).getTime() : 0;
       const interactions = await this.prisma.telegram_messages.count({
         where: {
           bot_id: enr.bot_id,
@@ -75,7 +93,8 @@ export class TelegramAutomationsRunner {
           ...(enr.enrolled_at ? { created_at: { gt: enr.enrolled_at } } : {}),
         },
       });
-      if (interactions > 0) shouldSend = false;
+      const clicked = Number(attrs.last_callback_at || 0) > since; // callback_query registrado no captureUpdate
+      if (interactions > 0 || clicked) shouldSend = false;
     }
 
     if (!shouldSend && step.condition?.on_fail === 'stop') {
@@ -84,18 +103,29 @@ export class TelegramAutomationsRunner {
     }
 
     if (shouldSend) {
-      const contact = await this.prisma.telegram_contacts.findFirst({
-        where: enr.contact_id ? { id: enr.contact_id } : { bot_id: enr.bot_id, tg_user_id: BigInt(enr.tg_user_id) },
-        select: { first_name: true, last_name: true, username: true, attributes: true },
-      });
       const info = {
         first_name: contact?.first_name || '',
         last_name: contact?.last_name || '',
         username: contact?.username || '',
-        start_param: (contact?.attributes as any)?.start_param || '',
+        start_param: attrs.start_param || '',
       };
       const bot2 = { id: enr.bot_id, organization_id: enr.organization_id };
-      await this.runtime.sendComposed(bot2, bot.token, String(enr.tg_user_id), String(enr.tg_user_id), step, info);
+      const r: any = await this.runtime.sendComposed(bot2, bot.token, String(enr.tg_user_id), String(enr.tg_user_id), step, info);
+      if (r && !r.ok) {
+        if (r.error_code === 403) {
+          // lead bloqueou/parou o bot → não adianta seguir o drip
+          await this.setEnrollment(enr.id, { status: 'STOPPED' });
+          return;
+        }
+        if (r.error_code === 429) {
+          // flood-wait: reagenda ESTE passo pra depois do retry_after (não perde o passo)
+          const retry = retryAfterOf(r);
+          await noteFlood(this.prisma, enr.bot_id, r);
+          await this.setEnrollment(enr.id, { next_send_at: new Date(Date.now() + retry * 1000) });
+          this.logger.warn(`automação: bot ${enr.bot_id} em flood-wait ${retry}s — passo reagendado.`);
+          return;
+        }
+      }
       if (Array.isArray(step.apply_tags) && step.apply_tags.length) {
         await this.runtime.applyTags(bot2, String(enr.tg_user_id), step.apply_tags).catch(() => undefined);
       }

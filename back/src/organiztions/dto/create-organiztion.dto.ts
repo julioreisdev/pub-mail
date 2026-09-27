@@ -1,6 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
+// DTO do TENANT: só nome/documento. `status` e `stripe_customer_id` NÃO são
+// aceitos por aqui (A-08) — status é gerenciado pelo /admin e o customer do
+// Stripe pelo próprio BillingService.
 export class CreateOrganiztionDto {
   @ApiProperty({
     example: 'Pub Mail',
@@ -9,6 +12,7 @@ export class CreateOrganiztionDto {
   })
   @IsNotEmpty()
   @IsString()
+  @MaxLength(255)
   name: string;
 
   @ApiPropertyOptional({
@@ -20,21 +24,4 @@ export class CreateOrganiztionDto {
   @IsString()
   @MaxLength(20)
   document_id?: string;
-
-  @ApiPropertyOptional({
-    example: true,
-    description: 'Status da organização. Se omitido, usa o default do banco/prisma.',
-  })
-  @IsOptional()
-  @IsBoolean()
-  status?: boolean; // pode omitir e deixar o default do banco/prisma
-
-  @ApiPropertyOptional({
-    example: 'cus_ABC123xyz',
-    description: 'ID do cliente no Stripe (geralmente não vem do cliente final).',
-    maxLength: 255,
-  })
-  @IsOptional()
-  @IsString()
-  stripe_customer_id?: string; // geralmente não vem do cliente
 }

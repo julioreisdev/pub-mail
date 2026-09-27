@@ -10,6 +10,7 @@ const telegram = {
   id: 'telegram',
   title: 'Telegram',
   type: 'group',
+  requiredModule: 'telegram',
   icon: icons.IconBrandTelegram,
   children: [
     {

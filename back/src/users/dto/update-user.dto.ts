@@ -15,8 +15,9 @@ export class UpdateUserDto {
 
   @ApiPropertyOptional({
     example: 'ADMIN',
-    description: 'Papel do usuário dentro da organização',
-    enum: users_role,
+    description:
+      'Papel do usuário dentro da organização. Só OWNER/ADMIN alteram; OWNER e SUPER_ADMIN nunca são atribuídos por esta rota (use /admin).',
+    enum: [users_role.ADMIN, users_role.MEMBER],
   })
   @IsOptional()
   @IsEnum(users_role)

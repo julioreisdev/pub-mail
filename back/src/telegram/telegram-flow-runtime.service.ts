@@ -62,6 +62,40 @@ export class TelegramFlowRuntimeService {
   private hasOutgoing(def: any, nodeId: string): boolean {
     return (def.edges || []).some((x: any) => x.source === nodeId);
   }
+  // Aresta por sourceHandle em QUALQUER nó (botão de mensagem antiga, fora do passo atual).
+  private edgeTargetAnywhere(def: any, handle: string): string | null {
+    const e = (def.edges || []).find((x: any) => x.sourceHandle === handle);
+    return e?.target || null;
+  }
+
+  // Normaliza p/ comparação: minúsculo, sem acento, espaços colapsados.
+  private norm(s: any): string {
+    return String(s || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  private escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  // Casa a resposta do lead com as `answers` do nó, por prioridade:
+  // 1) igualdade exata (normalizada) → 2) palavra inteira → 3) `includes` (compat: comportamento antigo).
+  // Assim "sim" não casa "assim" quando existe uma resposta melhor.
+  private matchAnswer(answers: any[], text: string): any | null {
+    const t = this.norm(text);
+    if (!t) return null;
+    const list = (Array.isArray(answers) ? answers : []).map((a) => ({ a, kw: this.norm(a?.keyword) })).filter((x) => x.kw);
+    const exact = list.find((x) => x.kw === t);
+    if (exact) return exact.a;
+    // \b é só ASCII → limites via classes unicode (letra/número/_)
+    const word = list.find((x) => new RegExp(`(^|[^\\p{L}\\p{N}_])${this.escapeRe(x.kw)}([^\\p{L}\\p{N}_]|$)`, 'u').test(t));
+    if (word) return word.a;
+    const loose = list.find((x) => t.includes(x.kw));
+    return loose ? loose.a : null;
+  }
 
   private interpolate(text: string, info: Info): string {
     return String(text || '')
@@ -140,14 +174,8 @@ export class TelegramFlowRuntimeService {
     if (!node) return;
 
     let targetId: string | null = null;
-    const low = text.toLowerCase();
-    for (const a of node.data?.answers || []) {
-      const kw = String(a.keyword || '').toLowerCase().trim();
-      if (kw && low.includes(kw)) {
-        targetId = this.edgeTarget(def, node.id, `ans-${a.id}`);
-        if (targetId) break;
-      }
-    }
+    const matched = this.matchAnswer(node.data?.answers || [], text);
+    if (matched) targetId = this.edgeTarget(def, node.id, `ans-${matched.id}`);
     if (!targetId) targetId = this.edgeTarget(def, node.id, 'fallback');
     if (!targetId) return; // fica no mesmo passo
     await this.advance(bot, token, chatId, from.id, def, targetId, info);
@@ -157,20 +185,22 @@ export class TelegramFlowRuntimeService {
   private async onCallback(bot: Bot, token: string, def: any, cq: any) {
     const from = cq.from || {};
     const chatId = cq.message?.chat?.id ?? from.id;
-    await tg.answerCallbackQuery(token, cq.id).catch(() => undefined);
 
     const data = String(cq.data || '');
+    // só responde os callbacks do fluxo (fb:) — pay:/paycheck:/paycancel: são respondidos
+    // pelo runtime de pagamentos (com o toast dele); responder aqui antes engolia o toast.
     if (!data.startsWith('fb:')) return;
+    await tg.answerCallbackQuery(token, cq.id).catch(() => undefined);
     const buttonId = data.slice(3);
 
+    // 1) aresta do botão a partir do passo atual; 2) senão, o botão pode ser de uma mensagem
+    // antiga (o lead voltou e tocou num botão de passos atrás) → procura a aresta no grafo todo.
     const enr = await this.prisma.telegram_flow_enrollments.findFirst({
-      where: { bot_id: bot.id, tg_user_id: BigInt(from.id), status: 'ACTIVE' },
+      where: { bot_id: bot.id, tg_user_id: BigInt(from.id) },
     });
-    if (!enr || !enr.current_node_id) return;
-    const node = this.findNode(def, enr.current_node_id);
-    if (!node) return;
-
-    const targetId = this.edgeTarget(def, node.id, `btn-${buttonId}`);
+    const node = enr?.current_node_id ? this.findNode(def, enr.current_node_id) : null;
+    let targetId = node ? this.edgeTarget(def, node.id, `btn-${buttonId}`) : null;
+    if (!targetId) targetId = this.edgeTargetAnywhere(def, `btn-${buttonId}`);
     if (!targetId) return;
     const info: Info = {
       first_name: from.first_name,
@@ -183,7 +213,10 @@ export class TelegramFlowRuntimeService {
 
   // ---------- avançar (envia nó + grava posição) ----------
   private async advance(bot: Bot, token: string, chatId: number, tgUserId: number, def: any, nodeId: string, info: Info) {
-    await this.sendNode(bot, token, chatId, tgUserId, def, nodeId, info);
+    const delivered = await this.sendNode(bot, token, chatId, tgUserId, def, nodeId, info);
+    // nada chegou ao lead (mídia + fallback falharam) → não avança a posição (o lead não ficaria
+    // "preso" num passo cujos botões nunca viu; a próxima interação repete a partir do passo anterior).
+    if (!delivered) return;
     // empurra a mensagem rotativa (se houver) pra baixo do que acabou de ser enviado
     await this.rotators.bumpForContact(bot.id, tgUserId).catch(() => undefined);
     const terminal = !this.hasOutgoing(def, nodeId);
@@ -195,9 +228,10 @@ export class TelegramFlowRuntimeService {
       .catch(() => undefined);
   }
 
-  private async sendNode(bot: Bot, token: string, chatId: number, tgUserId: number, def: any, nodeId: string, info: Info) {
+  // Devolve true se pelo menos uma mensagem foi entregue (ou se o nó não tinha nada a enviar).
+  private async sendNode(bot: Bot, token: string, chatId: number, tgUserId: number, def: any, nodeId: string, info: Info): Promise<boolean> {
     const node = this.findNode(def, nodeId);
-    if (!node) return;
+    if (!node) return false;
 
     const rows: any[] = [];
     for (const b of node.data?.buttons || []) {
@@ -215,6 +249,7 @@ export class TelegramFlowRuntimeService {
     const msgs = rawMsgs.filter((m: any) => (m?.text && String(m.text).trim()) || (m?.media && m.media.url));
     if (!msgs.length && rows.length) msgs.push({ text: '' }); // botões precisam de uma mensagem carregadora
 
+    let deliveredAny = false;
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
       const isLast = i === msgs.length - 1;
@@ -224,12 +259,14 @@ export class TelegramFlowRuntimeService {
         await tg.sendChatAction(token, chatId, 'typing').catch(() => undefined);
         await this.sleep(delaySec * 1000);
       }
-      await this.deliver(bot, token, chatId, tgUserId, caption, m.media, isLast ? keyboard : {});
+      const r = await this.deliver(bot, token, chatId, tgUserId, caption, m.media, isLast ? keyboard : {});
+      if (r?.ok) deliveredAny = true;
     }
 
     if (Array.isArray(node.data?.apply_tags) && node.data.apply_tags.length) {
       await this.applyTags(bot, tgUserId, node.data.apply_tags);
     }
+    return msgs.length ? deliveredAny : true;
   }
 
   // Envio genérico (mídia/texto/botões) + log OUT. Reusado por fluxo e automações.
@@ -243,16 +280,28 @@ export class TelegramFlowRuntimeService {
     extra: Record<string, any>,
   ) {
     let r: any;
+    let sentMediaType: string | undefined = media?.type;
+    let mediaResult: any = null;
     if (media && media.url && media.type) {
       const action = media.type === 'voice' ? 'record_voice' : media.type === 'video' ? 'upload_video' : 'upload_photo';
       await tg.sendChatAction(token, chatId, action).catch(() => undefined);
-      r = await tg.sendMediaUrl(token, chatId, media.type, media.url, caption || undefined, extra);
+      // legenda >1024 → mídia sem legenda + texto (com os botões) em mensagem separada
+      r = await tg.sendMediaWithText(token, chatId, media.type, media.url, caption, extra);
+      mediaResult = r.media?.ok ? r.media.result : null;
+      if (!r.ok && !r.media?.ok && r.error_code !== 429 && r.error_code !== 403) {
+        // a mídia falhou (URL fora do ar, arquivo grande demais…): manda o texto (ou um marcador)
+        // com o reply_markup — os botões SEMPRE chegam, o lead não fica preso no passo.
+        this.logger.warn(`mídia ${media.type} falhou (${r.description}); enviando texto com os botões.`);
+        r = await tg.sendMessage(token, chatId, caption || '…', extra);
+        sentMediaType = undefined;
+        mediaResult = null;
+      }
     } else {
       await tg.sendChatAction(token, chatId, 'typing').catch(() => undefined);
       r = await tg.sendMessage(token, chatId, caption || '…', extra);
     }
     if (r.ok) {
-      const { mediaType, fileId, preview } = this.extractSent(media?.type, r.result, caption);
+      const { mediaType, fileId, preview } = this.extractSent(sentMediaType, mediaResult || r.result, caption);
       await this.logOut(bot, chatId, tgUserId, caption || null, r.result?.message_id, mediaType, fileId, preview);
     }
     return r;
@@ -268,10 +317,6 @@ export class TelegramFlowRuntimeService {
     }
     const extra = rows.length ? { reply_markup: { inline_keyboard: rows } } : {};
     return this.deliver(bot, token, chatId, tgUserId, caption, msg?.media, extra);
-  }
-
-  interpolatePublic(text: string, info: Info) {
-    return this.interpolate(text, info);
   }
 
   // extrai media_type + file_id + prévia do resultado do envio

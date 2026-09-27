@@ -10,6 +10,7 @@ import {
   UseGuards,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth/jwt-auth.guard';
 import { Public } from '../../auth/public.decorator';
 import { EmailLeadsService } from './leads.service';
@@ -41,6 +42,8 @@ export class EmailLeadsController {
   constructor(private readonly service: EmailLeadsService) {}
 
   @Public()
+  // A-13: 20 inscrições/min por IP.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('subscribe/:organizationId/:projectId')
   @ApiOperation({ summary: 'Webhook público: inscrever/reativar lead em um projeto (sem autenticação)' })
   @ApiParam({ name: 'organizationId', description: 'ID da organização (tenant)', type: String, format: 'uuid' })
@@ -154,10 +157,26 @@ export class EmailLeadsController {
   })
   @ApiNotFoundResponse({ description: 'Project, Lead ou vínculo não encontrado' })
   unsubscribe(
-    @Param("projectId") projectId: string,
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
     @Param("leadEmail") leadEmail: string
   ) {
     return this.service.unsubscribe(projectId, leadEmail);
+  }
+
+  // One-click unsubscribe (RFC 8058): os provedores (Gmail/Yahoo) fazem um POST
+  // com body `List-Unsubscribe=One-Click` na URL do header List-Unsubscribe.
+  // Público, sem token (é o provedor quem chama). Sempre 200 — idempotente.
+  @Public()
+  @Post('unsubscribe-oneclick/:projectId/:leadEmail')
+  @ApiOperation({ summary: 'One-click unsubscribe (RFC 8058) — chamado pelos provedores de e-mail' })
+  @ApiParam({ name: 'projectId', type: String, format: 'uuid' })
+  @ApiParam({ name: 'leadEmail', description: 'E-mail do lead (URL encoded)', type: String })
+  @ApiOkResponse({ description: 'Sempre { ok: true } (idempotente)' })
+  unsubscribeOneClick(
+    @Param('projectId', new ParseUUIDPipe()) projectId: string,
+    @Param('leadEmail') leadEmail: string,
+  ) {
+    return this.service.unsubscribeOneClick(projectId, leadEmail);
   }
 
 }

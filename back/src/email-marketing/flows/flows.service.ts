@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { encodeWebhookUrls } from '../../common/cta-url.util';
 import { SaveFlowDto } from './dto/save-flow.dto';
 
 @Injectable()
@@ -177,7 +178,9 @@ export class EmailFlowsService {
       delay_value: Math.max(0, Math.floor(Number(s.delay_value) || 0)),
       delay_unit: s.delay_unit === 'hours' ? 'hours' : 'minutes',
       subject: String(s.subject || '').slice(0, 255),
-      body_html: s.body_html ?? '',
+      // CTAs rastreados com o destino encodado (igual aos templates) — senão
+      // UTMs são truncadas no `&` na hora do clique.
+      body_html: encodeWebhookUrls(String(s.body_html ?? '')),
       builder_model: (s.builder_model as any) ?? null,
       // 1º passo não tem "anterior" → condição sempre 'always'.
       condition:

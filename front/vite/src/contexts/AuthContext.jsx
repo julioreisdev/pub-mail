@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { get, post } from '../api/api';
+import { get, post, storeTokens, clearStoredSession } from '../api/api';
 
 const AuthContext = createContext(null);
 
@@ -18,9 +18,13 @@ export function AuthProvider({ children }) {
 
     const isAuthenticated = !!token;
 
-    const persistSession = ({ token: newToken, user: newUser }) => {
-        localStorage.setItem('token', newToken);
-        setToken(newToken);
+    // Contrato do back (auth.service.ts):
+    //   POST /auth/login → { tokens: { accessToken, refreshToken, accessExpiresIn, refreshExpiresIn }, user }
+    //   GET  /auth/me    → { user, organization }
+    // 'token' = access; 'refreshToken' usado pelo interceptor do api.js no 401.
+    const persistSession = ({ tokens, user: newUser }) => {
+        storeTokens(tokens);
+        setToken(tokens?.accessToken || '');
 
         if (newUser) {
             localStorage.setItem('user', JSON.stringify(newUser));
@@ -32,35 +36,51 @@ export function AuthProvider({ children }) {
     };
 
     const clearSession = () => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+        clearStoredSession();
         setToken('');
         setUser(null);
-        window.location.reload();
     };
 
-    // Login: chama API, guarda token, e opcionalmente já busca /me
+    // Login: chama API, guarda tokens e (se preciso) busca /me
     const login = async ({ email, password }) => {
         const result = await post('/auth/login', { email, password });
 
-        const newToken = result?.token || result?.accessToken;
-        if (!newToken) throw new Error('Resposta inválida: token não encontrado.');
+        const tokens = result?.tokens;
+        if (!tokens?.accessToken) throw new Error('Resposta inválida: token não encontrado.');
 
-        // se a API já devolver user, ótimo; se não, a gente busca via /me
-        const maybeUser = result?.user || null;
-
-        persistSession({ token: newToken, user: maybeUser });
-
-        // se não veio user no login, busca agora
-        if (!maybeUser) {
-            const me = await get('/auth/me');
-            persistSession({ token: newToken, user: me });
+        // /auth/me devolve { user, organization, access }; o login devolve só `user`.
+        // Guarda os tokens no storage (o interceptor precisa deles) e só publica a
+        // sessão no contexto DEPOIS do /me — senão o app monta com `access` vazio
+        // (menu/rotas/leads errados por um instante e 403 espúrios).
+        storeTokens(tokens);
+        let me = null;
+        try {
+            me = await get('/auth/me');
+        } catch (e) {
+            console.warn('[Auth] /auth/me após login falhou (mantendo user do login):', e?.message || e);
         }
+        persistSession({ tokens, user: me || (result?.user ? { user: result.user } : null) });
 
         return true;
     };
 
+    // Recarrega /auth/me (user + organization + access). Usado pelo AccessGate
+    // após pagar / boas-vindas / 402 vindo da API. Best-effort.
+    const refreshAccess = async () => {
+        try {
+            const me = await get('/auth/me');
+            localStorage.setItem('user', JSON.stringify(me));
+            setUser(me);
+            return me;
+        } catch (e) {
+            console.warn('[Auth] refreshAccess falhou:', e?.message || e);
+            return null;
+        }
+    };
+
     const logout = () => {
+        // revoga o refresh no back (best-effort) e limpa local
+        post('/auth/logout').catch(() => {});
         clearSession();
     };
 
@@ -84,12 +104,16 @@ export function AuthProvider({ children }) {
                     setIsAuthLoading(false);
                 }
             } catch (e) {
-                // token inválido/expirado => desloga
-                console.log('[Auth] bootstrap falhou:', e);
-                if (isMounted) {
-                    clearSession();
-                    setIsAuthLoading(false);
+                const status = e?.response?.status;
+                if (status === 401 || status === 403) {
+                    // sessão inválida (o interceptor já tentou refresh) => desloga
+                    console.log('[Auth] sessão inválida no bootstrap:', status);
+                    if (isMounted) clearSession();
+                } else {
+                    // 5xx / rede: mantém o user em cache e segue (não desloga por instabilidade)
+                    console.warn('[Auth] bootstrap /auth/me falhou (mantendo sessão em cache):', e?.message || e);
                 }
+                if (isMounted) setIsAuthLoading(false);
             }
         };
 
@@ -108,7 +132,8 @@ export function AuthProvider({ children }) {
             isAuthenticated,
             isAuthLoading,
             login,
-            logout
+            logout,
+            refreshAccess
         }),
         [token, user, isAuthenticated, isAuthLoading]
     );

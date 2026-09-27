@@ -94,14 +94,17 @@ export class QuizSplitsService {
     });
   }
 
-  async update(organizationId: string, id: string, name: string) {
+  // Renomeia SEM mexer no slug (A-66) — o slug só muda se vier explícito.
+  async update(organizationId: string, id: string, name: string, slugRaw?: string) {
     const split = await this.prisma.quiz_splits.findFirst({
       where: { id, organization_id: organizationId },
     });
     if (!split) throw new NotFoundException('Split não encontrado.');
     const clean = String(name || '').trim();
     if (!clean) throw new BadRequestException('Nome do split é obrigatório.');
-    const slug = await this.uniqueSlug(slugify(clean), id);
+    const wanted = slugRaw !== undefined ? slugify(String(slugRaw)) : null;
+    const slug =
+      wanted && wanted !== split.slug ? await this.uniqueSlug(wanted, id) : split.slug;
     return this.prisma.quiz_splits.update({
       where: { id },
       data: { name: clean, slug },

@@ -1,6 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
-import { alpha } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -14,14 +13,7 @@ import Tooltip from '@mui/material/Tooltip';
 import { IconCopy, IconCheck } from '@tabler/icons-react';
 
 import MainCard from 'ui-component/cards/MainCard';
-
-const safeJsonParse = (text, fallback) => {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-};
+import { useAuth } from 'contexts/AuthContext';
 
 const formatDateTime = (iso) => {
   if (!iso) return '—';
@@ -86,7 +78,8 @@ function IdRow({ label, value }) {
 }
 
 export default function AccountDataPage() {
-  const parsed = useMemo(() => safeJsonParse(localStorage.getItem('user'), null), []);
+  // A-87: lê o user do contexto de auth (fonte única), não do localStorage.
+  const { user: parsed } = useAuth();
   const user = parsed?.user || null;
   const org = parsed?.organization || null;
 
@@ -114,7 +107,7 @@ export default function AccountDataPage() {
                 fontSize: 26,
                 fontWeight: 700,
                 color: 'primary.main',
-                bgcolor: (t) => alpha(t.palette.primary.main, 0.14)
+                bgcolor: (t) => `rgba(${t.vars.palette.primary.mainChannel} / 0.14)`
               }}
             >
               {initial}

@@ -960,7 +960,9 @@ export default function TelegramBroadcasts() {
     const [fTime, setFTime] = useState('all');
     const [filterAnchor, setFilterAnchor] = useState(null);
 
+    const reqRef = useRef(0); // A-75: ignora respostas fora de ordem (load chamado em sequência)
     const load = useCallback(async () => {
+        const seq = ++reqRef.current;
         setLoading(true);
         try {
             const [bc, b, g, c] = await Promise.all([
@@ -969,14 +971,16 @@ export default function TelegramBroadcasts() {
                 get('/telegram/groups?bot_id=all'),
                 get('/telegram/channels?bot_id=all')
             ]);
+            if (seq !== reqRef.current) return;
             setList(bc);
             setBots(b);
             setGroups(g);
             setChannels(c);
         } catch (e) {
+            if (seq !== reqRef.current) return;
             toast.error(errMsg(e, 'Falha ao carregar broadcasts.'));
         } finally {
-            setLoading(false);
+            if (seq === reqRef.current) setLoading(false);
         }
     }, []);
 

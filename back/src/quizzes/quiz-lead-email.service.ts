@@ -5,6 +5,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
+import { AccessService } from '../platform-billing/access.service';
 
 type QuizLike = {
   id: string;
@@ -35,6 +36,7 @@ export class QuizLeadEmailService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly systemSettings: SystemSettingsService,
+    private readonly access: AccessService,
   ) {}
 
   async maybeSend(quiz: QuizLike, lead: LeadLike): Promise<void> {
@@ -50,6 +52,22 @@ export class QuizLeadEmailService {
         include: { organizations: true },
       });
       if (!project) return;
+      if (!(await this.access.isOrgActive(project.organization_id))) {
+        this.logger.debug(`pulando org=${project.organization_id}: acesso inativo (quiz ${quiz.id})`);
+        return;
+      }
+
+      // A-14: só envia pra lead ACTIVE (sem bounce/spam) e inscrito no projeto.
+      const leadRow = await this.prisma.email_leads.findFirst({
+        where: { organization_id: project.organization_id, email },
+        select: { id: true, global_status: true },
+      });
+      if (!leadRow || leadRow.global_status !== 'ACTIVE') return;
+      const rel = await this.prisma.email_project_leads.findFirst({
+        where: { project_id: project.id, lead_id: leadRow.id },
+        select: { status: true },
+      });
+      if (!rel || rel.status !== 'SUBSCRIBED') return;
 
       const sender = (project.settings as any)?.sender;
       if (!sender?.fromEmail) {

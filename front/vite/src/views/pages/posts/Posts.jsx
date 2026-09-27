@@ -686,7 +686,7 @@ function CreatePostDialog({ open, onClose, onCreated }) {
                     />
 
                     <Grid container spacing={2}>
-                        <Grid item xs={12} md={6}>
+                        <Grid size={{ xs: 12, md: 6 }}>
                             <FormControl fullWidth>
                                 <TextField select label="Tipo do post" value={form.post_type} onChange={handleChange('post_type')}>
                                     {POST_TYPE_OPTIONS.map((option) => (
@@ -699,7 +699,7 @@ function CreatePostDialog({ open, onClose, onCreated }) {
                             </FormControl>
                         </Grid>
 
-                        <Grid item xs={12} md={6}>
+                        <Grid size={{ xs: 12, md: 6 }}>
                             <TextField
                                 label="Tags"
                                 value={form.tags}
@@ -1095,7 +1095,7 @@ export default function Posts() {
                             </Stack>
 
                             <Grid container spacing={2}>
-                                <Grid item xs={12} sm={6} md={3}>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                     <Box
                                         sx={{
                                             p: 2,
@@ -1114,7 +1114,7 @@ export default function Posts() {
                                     </Box>
                                 </Grid>
 
-                                <Grid item xs={12} sm={6} md={3}>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                     <Box
                                         sx={{
                                             p: 2,
@@ -1133,7 +1133,7 @@ export default function Posts() {
                                     </Box>
                                 </Grid>
 
-                                <Grid item xs={12} sm={6} md={3}>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                     <Box
                                         sx={{
                                             p: 2,
@@ -1152,7 +1152,7 @@ export default function Posts() {
                                     </Box>
                                 </Grid>
 
-                                <Grid item xs={12} sm={6} md={3}>
+                                <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                                     <Box
                                         sx={{
                                             p: 2,

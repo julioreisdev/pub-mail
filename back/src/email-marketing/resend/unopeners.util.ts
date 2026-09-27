@@ -33,3 +33,34 @@ export async function getUnopeners(
 
   return { nonOpeners, totalActive: active.length };
 }
+
+// Regra do "Reenviar para não-abridores" (A-28): o reenvio manda para "todos os
+// inscritos ativos menos quem abriu", então só faz sentido para um disparo
+// NORMAL (agendado/manual) pra base. Devolve o motivo do bloqueio ou null.
+export async function sentNotResendableReason(
+  prisma: PrismaService,
+  sent: {
+    id: string;
+    flow_step_id?: string | null;
+    recycle?: boolean | null;
+    total_leads?: number | null;
+  },
+): Promise<string | null> {
+  if (sent.flow_step_id) {
+    return 'Este envio é de um passo do Fluxo Inicial — não pode ser reenviado para não-abridores.';
+  }
+  if (sent.recycle) {
+    return 'Este envio é de reciclagem (win-back) — não pode ser reenviado para não-abridores.';
+  }
+  if ((sent.total_leads ?? 0) <= 1) {
+    return 'Este envio foi individual (gatilho, boas-vindas ou teste) — não pode ser reenviado para não-abridores.';
+  }
+  const [asVariant, asWinner] = await Promise.all([
+    prisma.email_ab_variants.count({ where: { test_sent_id: sent.id } }),
+    prisma.email_ab_tests.count({ where: { winner_sent_id: sent.id } }),
+  ]);
+  if (asVariant > 0 || asWinner > 0) {
+    return 'Este envio faz parte de um teste A/B — não pode ser reenviado para não-abridores.';
+  }
+  return null;
+}

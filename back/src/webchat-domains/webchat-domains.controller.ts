@@ -19,6 +19,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { CreateWebchatDomainDto } from './dto/create-webchat-domain.dto';
 import { UpdateAdsTxtDto } from './dto/update-ads-txt.dto';
 import { WebchatDomainsService } from './webchat-domains.service';
@@ -30,7 +32,10 @@ import { WebchatDomainsService } from './webchat-domains.service';
 export class WebchatDomainsController {
   constructor(private readonly webchatDomainsService: WebchatDomainsService) {}
 
+  // Cadastrar/remover domínio: só OWNER/ADMIN (A-07). Leitura para todos.
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Cadastrar domínio para publicação de webchat' })
   @ApiCreatedResponse({ description: 'Domínio de webchat cadastrado com sucesso' })
   create(@Req() req: any, @Body() dto: CreateWebchatDomainDto) {
@@ -68,7 +73,11 @@ export class WebchatDomainsController {
     );
   }
 
+  // Reescreve os vhosts do servidor (mexe em SSL de TODOS os domínios) —
+  // operação de plataforma, só SUPER_ADMIN (A-20).
   @Post('regenerate-nginx')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('SUPER_ADMIN')
   @ApiOperation({
     summary:
       'Re-aplica o template nginx em todos os domínios da organização (idempotente).',
@@ -81,6 +90,8 @@ export class WebchatDomainsController {
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Remover domínio de webchat' })
   @ApiParam({ name: 'id', type: String, format: 'uuid' })
   remove(@Req() req: any, @Param('id', new ParseUUIDPipe()) id: string) {

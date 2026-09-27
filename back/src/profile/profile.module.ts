@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ProfileController } from './profile.controller';
 import { ProfileService } from './profile.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 @Module({
   controllers: [ProfileController],
-  providers: [ProfileService, PrismaService],
+  // PrismaService vem do PrismaModule (@Global) — não instanciar outro pool (A-79).
+  providers: [ProfileService],
 })
 export class ProfileModule {}

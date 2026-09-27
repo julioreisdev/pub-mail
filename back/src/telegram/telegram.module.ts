@@ -55,6 +55,6 @@ import { TelegramPaymentsRunner } from './telegram-payments.runner';
     TelegramPaymentsRuntimeService,
     TelegramPaymentsRunner,
   ],
-  exports: [TelegramBotsService, TelegramChatService, TelegramFlowsService, TelegramFlowRuntimeService],
+  exports: [TelegramBotsService, TelegramChatService, TelegramFlowsService, TelegramFlowRuntimeService, TelegramPaymentsService],
 })
 export class TelegramModule {}

@@ -406,7 +406,19 @@ export class SocialPostSchedulesService {
     };
   }
 
+  // A-78: só o TikTok tem disparo implementado. YouTube/Instagram eram aceitos
+  // (e cobrados) e o runner falhava com "não implementado" sem estorno.
+  private assertNetworkSupported(socialNetwork: string) {
+    const net = String(socialNetwork || '').toUpperCase();
+    if (net === 'YOUTUBE' || net === 'INSTAGRAM') {
+      throw new BadRequestException(
+        `Agendamento para ${net} ainda não está disponível. Por enquanto só o TikTok é suportado.`,
+      );
+    }
+  }
+
   async create(organizationId: string, dto: CreateSocialPostScheduleDto) {
+    this.assertNetworkSupported(dto.social_network);
     const prepared = await this.prepareCreateSchedulePayload(organizationId, dto);
 
     return this.prisma.social_post_schedules.create({
@@ -435,6 +447,7 @@ export class SocialPostSchedulesService {
       );
     }
 
+    this.assertNetworkSupported(dto.social_network);
     const prepared = await this.prepareCreateSchedulePayload(organizationId, dto, {
       excludeScheduleId: existing.id,
     });

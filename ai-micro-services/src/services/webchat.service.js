@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const DEFAULT_MODEL = process.env.WEBCHAT_DEFAULT_MODEL || 'llama-3.3-70b-versatile';
+const DEFAULT_MODEL = process.env.WEBCHAT_DEFAULT_MODEL || 'openai/gpt-oss-120b';
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_HISTORY_LIMIT = 12;
 // Ordem RÍGIDA: nome → telefone → e-mail. Não mexer sem alinhar com getLeadConversationStage.
@@ -822,6 +822,8 @@ export const generateWebchatReply = async ({
   providerKeys,
   // Legado (manter por backward-compat): array só de Groq
   apiKeys,
+  // Prazo total (ms) pra todas as tentativas de provider/chave (A-69).
+  deadlineMs,
 }) => {
   // Resolve providerKeys: aceita formato novo ou converte legado pra ele.
   const normalizedProviderKeys = providerKeys && typeof providerKeys === 'object'
@@ -902,6 +904,7 @@ export const generateWebchatReply = async ({
     const routed = await callAi({
       providerKeys: normalizedProviderKeys,
       payload: effectivePayload,
+      deadlineMs,
     });
     return {
       chatCompletion: routed.data,
@@ -915,12 +918,37 @@ export const generateWebchatReply = async ({
   // (cobre o caso de finish_reason='length' truncando JSON antes do reply).
   // Se mesmo assim falhar, retorna fallback gracioso ao invés de 502 — o lead
   // recebe uma mensagem cordial em vez de erro técnico.
+  // Alguns modelos (gpt-oss em respostas longas, ex.: receita) devolvem "reply"
+  // como OBJETO/ARRAY estruturado em vez de string — toSafeString daria '' e o
+  // fluxo cairia no retry. Achata pra texto legível em vez de descartar.
+  const replyValueToText = (value, depth = 0) => {
+    if (value == null || depth > 4) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) {
+      return value.map((v) => replyValueToText(v, depth + 1)).filter(Boolean).join('\n');
+    }
+    if (typeof value === 'object') {
+      return Object.entries(value)
+        .map(([k, v]) => {
+          const text = replyValueToText(v, depth + 1);
+          if (!text) return '';
+          return typeof v === 'object' ? `${k}:\n${text}` : `${k}: ${text}`;
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    return '';
+  };
+
   const extractReply = (completion) => {
     const content = completion?.choices?.[0]?.message?.content || '';
     const finishReason = completion?.choices?.[0]?.finish_reason || '';
     const parsed = parseJsonResponse(content);
     const replyRaw = sanitizeUserFacingText(
-      toSafeString(parsed.reply || parsed.resposta || parsed.message),
+      replyValueToText(
+        parsed.reply ?? parsed.resposta ?? parsed.message ?? parsed.mensagem ?? parsed.answer ?? parsed.text ?? parsed.texto ?? parsed.content,
+      ),
     );
     return { content, finishReason, parsed, replyRaw };
   };
@@ -968,7 +996,7 @@ export const generateWebchatReply = async ({
     while (!reply && attempt <= 2) {
       const retryPayload = buildRetryPayload(lastPayload, finishReason, rawContent, attempt);
       console.warn(
-        `[ia-webchat] reply vazio (attempt=${attempt} provider=${usedProvider} model=${usedModel} finish=${finishReason} content_len=${rawContent.length}). Retentando com max_tokens=${retryPayload.maxTokens}.`,
+        `[ia-webchat] reply vazio (attempt=${attempt} provider=${usedProvider} model=${usedModel} finish=${finishReason} content_len=${rawContent.length} content_snippet=${JSON.stringify(rawContent.slice(0, 300))}). Retentando com max_tokens=${retryPayload.maxTokens}.`,
       );
       try {
         const retryRun = await runCompletion(retryPayload);

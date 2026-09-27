@@ -291,8 +291,42 @@ export class TelegramBotsService {
     const bot = await this.findOwned(organizationId, id);
     // Best-effort: remove o webhook no Telegram antes de apagar.
     await tg.deleteWebhook(bot.token).catch(() => undefined);
-    // Cascade das entidades filhas (grupos/links/broadcasts) pluga aqui quando existirem.
-    await this.prisma.telegram_bots.delete({ where: { id: bot.id } });
+
+    // Cascade EXPLÍCITO das entidades filhas numa transação (não depende das FKs do banco —
+    // sends/broadcasts não têm FK pro bot). Ordem: netas → filhas → bot.
+    await this.prisma.$transaction(
+      async (tx) => {
+        const botId = bot.id;
+        // fila de broadcast deste bot (as runs/copies pertencem ao broadcast, não ao bot)
+        await tx.telegram_broadcast_sends.deleteMany({ where: { bot_id: botId } });
+        // broadcasts: tira o bot de `bot_ids`; broadcast que fica sem bot é apagado (cascade copies/runs)
+        const bcs = await tx.telegram_broadcasts.findMany({
+          where: { organization_id: organizationId },
+          select: { id: true, bot_ids: true },
+        });
+        for (const b of bcs) {
+          const ids = Array.isArray(b.bot_ids) ? (b.bot_ids as any[]).map(String) : [];
+          if (!ids.includes(botId)) continue;
+          const rest = ids.filter((x) => x !== botId);
+          if (rest.length) await tx.telegram_broadcasts.update({ where: { id: b.id }, data: { bot_ids: rest } });
+          else await tx.telegram_broadcasts.delete({ where: { id: b.id } });
+        }
+        await tx.telegram_messages.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_flow_enrollments.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_flows.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_automation_enrollments.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_automations.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_rotators.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_subscriptions.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_payments.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_plans.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_groups.deleteMany({ where: { bot_id: botId } });
+        // Opção 1 p/ leads: apaga o VÍNCULO (contato é por bot); o mesmo tg_user_id em outro bot permanece.
+        await tx.telegram_contacts.deleteMany({ where: { bot_id: botId } });
+        await tx.telegram_bots.delete({ where: { id: botId } });
+      },
+      { timeout: 60_000 },
+    );
     return { ok: true, id: bot.id };
   }
 
@@ -432,22 +466,5 @@ export class TelegramBotsService {
       where: { id },
       select: { id: true, organization_id: true, webhook_secret: true },
     });
-  }
-
-  // Captura o chat_id privado de quem conversou com o bot (base p/ msg de teste).
-  // Best-effort: nunca lança (o webhook precisa ACKar 200 sempre).
-  async captureFromUpdate(botId: string, update: any): Promise<void> {
-    try {
-      const msg = update?.message || update?.edited_message;
-      const chat = msg?.chat;
-      if (chat && chat.type === 'private' && chat.id != null) {
-        await this.prisma.telegram_bots.update({
-          where: { id: botId },
-          data: { test_chat_id: BigInt(chat.id) },
-        });
-      }
-    } catch {
-      /* ignore */
-    }
   }
 }

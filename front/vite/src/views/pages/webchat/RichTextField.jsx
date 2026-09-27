@@ -18,10 +18,27 @@ const STYLE_FORMATS = [
   { tag: 'u', regex: /text-decoration[\w-]*\s*:[^;"]*\bunderline\b/i }
 ];
 
+// Elementos de bloco que o contentEditable gera ao dar Enter (Chrome: <div>,
+// Firefox/Safari: <p>/<div>). Ao desempacotar, viram <br> pra não perder a
+// quebra de linha ("linha1⏎linha2" → "linha1<br>linha2").
+const BLOCK_TAGS = new Set([
+  'DIV', 'P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE',
+  'UL', 'OL', 'TABLE', 'TR', 'SECTION', 'ARTICLE', 'HEADER', 'FOOTER'
+]);
+
+const isBrElement = (node) => Boolean(node && node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR');
+
+// Parse INERTE: o HTML é lido num documento separado (DOMParser) — nada roda
+// (sem scripts, sem `onerror` de <img>, sem carregar recursos) enquanto o
+// whitelist ainda não foi aplicado.
+function parseInert(html) {
+  const doc = new DOMParser().parseFromString(`<body>${String(html)}</body>`, 'text/html');
+  return doc.body;
+}
+
 export function sanitizeRichText(unsafeHtml) {
   if (typeof document === 'undefined' || !unsafeHtml) return '';
-  const wrapper = document.createElement('div');
-  wrapper.innerHTML = String(unsafeHtml);
+  const wrapper = parseInert(unsafeHtml);
 
   // Pass 1: para cada elemento com `style`, se o estilo indica B/I/U,
   // envolve o conteúdo em tags semânticas e remove o elemento original.
@@ -64,6 +81,13 @@ export function sanitizeRichText(unsafeHtml) {
       } else {
         cleanNode(child);
         const parent = child.parentNode;
+        if (BLOCK_TAGS.has(tag)) {
+          // Preserva a quebra de linha do bloco: <br> antes (se há algo antes
+          // que não termina em <br>) e depois (se há algo depois).
+          const prev = child.previousSibling;
+          if (prev && !isBrElement(prev)) parent.insertBefore(document.createElement('br'), child);
+          if (child.nextSibling && !isBrElement(child.lastChild)) child.appendChild(document.createElement('br'));
+        }
         while (child.firstChild) parent.insertBefore(child.firstChild, child);
         parent.removeChild(child);
       }
@@ -119,7 +143,9 @@ export default function RichTextField({
     if (!editorRef.current) return;
     const incoming = String(value || '');
     if (incoming !== lastEmittedRef.current) {
-      editorRef.current.innerHTML = incoming;
+      // Valor salvo/importado nunca entra cru no contentEditable (documento
+      // ativo) — passa pelo mesmo whitelist do que emitimos.
+      editorRef.current.innerHTML = sanitizeRichText(incoming);
       lastEmittedRef.current = incoming;
     }
   }, [value]);

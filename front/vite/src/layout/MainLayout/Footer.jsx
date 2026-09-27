@@ -1,4 +1,4 @@
-// import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink } from 'react-router-dom';
 
 // material-ui
 import Link from '@mui/material/Link';
@@ -10,9 +10,9 @@ export default function Footer() {
     <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', pt: 3, mt: 'auto' }}>
       <Typography variant="caption">
         Todos os direitos reservados{' '}
-        <Typography component={Link} href="/login" underline="hover" target="_blank" sx={{ color: 'secondary.main' }}>
+        <Link component={RouterLink} to="/" underline="hover" variant="caption" sx={{ color: 'secondary.main' }}>
           Pub Mail
-        </Typography>
+        </Link>
       </Typography>
 
       {/* Comentado: links extras (GitHub / Figma) */}

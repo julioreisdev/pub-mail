@@ -1,9 +1,11 @@
 import { Body, Controller, HttpCode, Post, Req } from '@nestjs/common';
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ResendWebhooksService } from './resend-webhooks.service';
 
 // Endpoint público que recebe os eventos do Resend (entrega/bounce/reclamação).
 // A autenticidade é garantida pela assinatura Svix (não usa JWT).
+@SkipThrottle() // webhook (assinado pelo Svix) — sem rate limit (A-13)
 @Controller('webhooks')
 export class ResendWebhooksController {
   constructor(private readonly service: ResendWebhooksService) {}

@@ -4,7 +4,10 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { getUnopeners } from '../email-marketing/resend/unopeners.util';
+import {
+  getUnopeners,
+  sentNotResendableReason,
+} from '../email-marketing/resend/unopeners.util';
 
 @Injectable()
 export class ProjectSchedulesSentService {
@@ -145,6 +148,16 @@ export class ProjectSchedulesSentService {
   // Quantos inscritos ativos NÃO abriram este disparo (para o reenvio).
   async unopenedCount(organizationId: string, projectId: string, sentId: string) {
     await this.assertProjectFromOrg(organizationId, projectId);
+
+    // Mesma regra do reenvio (A-28): só disparos normais.
+    const sent = await this.prisma.email_projects_schedules_sent.findFirst({
+      where: { id: sentId, organization_id: organizationId, project_id: projectId },
+      select: { id: true, flow_step_id: true, recycle: true, total_leads: true },
+    });
+    if (!sent) throw new NotFoundException('Sent record not found');
+    const blocked = await sentNotResendableReason(this.prisma, sent);
+    if (blocked) throw new BadRequestException(blocked);
+
     const { nonOpeners, totalActive } = await getUnopeners(
       this.prisma,
       organizationId,

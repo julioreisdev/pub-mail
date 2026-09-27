@@ -9,6 +9,7 @@ import {
   clampWebchatFontSize
 } from './webchatFontCatalog';
 import { sanitizeRichText } from './RichTextField';
+import { formatBRL } from './funnel-utils';
 import {
   normalizeFunil,
   substituteVariables,
@@ -32,7 +33,25 @@ const DEFAULT_REQUIRED_LEAD_FIELDS = [
     required: true
   }
 ];
-const FORBIDDEN_TAGS = ['script', 'iframe', 'object', 'embed', 'style', 'meta', 'link', 'form'];
+const FORBIDDEN_TAGS = [
+  'script', 'iframe', 'object', 'embed', 'style', 'meta', 'link', 'form', 'base',
+  // SVG: animações podem reescrever atributos (href) depois da sanitização.
+  'animate', 'set', 'animatetransform', 'animatemotion'
+];
+// Atributos que carregam URL — só http(s):, mailto:, tel:, relativo ou #.
+const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'formaction', 'action', 'poster', 'background', 'dynsrc', 'lowsrc']);
+// Controle + espaços (inclusive os que o parser HTML preserva) — removidos
+// ANTES de olhar o esquema, senão `java\tscript:` passa.
+const URL_CONTROL_WS_RE = /[\s\u0000-\u001f\u007f-\u009f]+/g;
+function isSafeUrlAttr(value) {
+  const probe = String(value || '').replace(URL_CONTROL_WS_RE, '').toLowerCase();
+  if (!probe) return true;
+  if (/^(https?:|mailto:|tel:)/.test(probe)) return true;
+  if (/^[#/?.]/.test(probe)) return true;
+  // Sem esquema = relativo (ok). Qualquer outro esquema (javascript:, data:,
+  // vbscript:, blob:…) é rejeitado.
+  return !/^[a-z][a-z0-9+.-]*:/.test(probe);
+}
 const AD_EVENT_NAMES = new Set([
   'requested',
   'rendered',
@@ -96,6 +115,18 @@ function normalizeQuickReply(rawItem) {
   if (item.__funnelOptionId) {
     out.__funnelOptionId = String(item.__funnelOptionId);
   }
+  // Texto já é HTML seguro (label do funil sanitizado + variáveis escapadas):
+  // o render não deve escapar de novo.
+  if (item.__html === true) {
+    out.__html = true;
+  }
+  // Botões da bolha PIX (copiar / validar / gerar novo): despachados pra
+  // engine de pagamento, nunca pra IA.
+  if (item.__payAction) {
+    out.__payAction = String(item.__payAction);
+    out.__paymentId = String(item.__paymentId || '');
+    out.__seqId = String(item.__seqId || '');
+  }
   return out;
 }
 
@@ -111,6 +142,8 @@ function normalizeQuickReplies(rawQuickReplies) {
     // Inclui o id no key pra não fazer merge indevido.
     const key = normalized.__funnelOptionId
       ? `funnel::${normalized.__funnelOptionId}`
+      : normalized.__payAction
+      ? `pay::${normalized.__payAction}::${normalized.__paymentId}`
       : `${normalized.text.toLowerCase()}::${normalized.href.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -250,13 +283,21 @@ function createId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Fallback em memória: localStorage bloqueado (modo privado/iframe com
+// cookies bloqueados) lança e derrubava o chat inteiro (tela branca).
+const memoryStorageFallback = new Map();
 function getOrCreateLocalStorage(key, prefix) {
   if (typeof window === 'undefined') return createId(prefix);
-  const current = localStorage.getItem(key);
-  if (current) return current;
-  const created = createId(prefix);
-  localStorage.setItem(key, created);
-  return created;
+  try {
+    const current = window.localStorage.getItem(key);
+    if (current) return current;
+    const created = createId(prefix);
+    window.localStorage.setItem(key, created);
+    return created;
+  } catch {
+    if (!memoryStorageFallback.has(key)) memoryStorageFallback.set(key, createId(prefix));
+    return memoryStorageFallback.get(key);
+  }
 }
 
 function escapeHtml(input) {
@@ -282,15 +323,12 @@ function sanitizeHtml(unsafeHtml) {
     [...el.attributes].forEach((attr) => {
       const name = attr.name.toLowerCase();
       const value = String(attr.value || '');
-      if (name.startsWith('on') || name === 'style') {
+      if (name.startsWith('on') || name === 'style' || name === 'srcdoc') {
         el.removeAttribute(attr.name);
         return;
       }
-      if (name === 'href' || name === 'src') {
-        const normalized = value.trim().toLowerCase();
-        if (normalized.startsWith('javascript:') || normalized.startsWith('data:')) {
-          el.removeAttribute(attr.name);
-        }
+      if (URL_ATTRS.has(name) && !isSafeUrlAttr(value)) {
+        el.removeAttribute(attr.name);
       }
     });
   });
@@ -311,11 +349,49 @@ function markdownToSimpleHtml(value) {
   return html;
 }
 
+// Transforma URLs "soltas" (https://… ou www.…) em links clicáveis, só em nós
+// de texto que NÃO estão dentro de um <a> — vale pro HTML do RichTextField
+// (funil) e pra qualquer mensagem do bot. Abre em nova aba.
+const BARE_URL_RE = /((?:https?:\/\/|www\.)[^\s<>"']+[^\s<>"'.,;:!?)\]])/gi;
+function linkifyHtml(html) {
+  const source = String(html || '');
+  if (!source || typeof document === 'undefined' || !/https?:\/\/|www\./i.test(source)) return source;
+  const template = document.createElement('template');
+  template.innerHTML = source;
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    if (!node.parentElement?.closest('a') && BARE_URL_RE.test(node.nodeValue || '')) textNodes.push(node);
+    BARE_URL_RE.lastIndex = 0;
+    node = walker.nextNode();
+  }
+  textNodes.forEach((textNode) => {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    const text = textNode.nodeValue || '';
+    text.replace(BARE_URL_RE, (match, url, offset) => {
+      if (offset > last) frag.appendChild(document.createTextNode(text.slice(last, offset)));
+      const a = document.createElement('a');
+      a.href = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = url;
+      frag.appendChild(a);
+      last = offset + match.length;
+      return match;
+    });
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  });
+  return template.innerHTML;
+}
+
 function formatAssistantHtml(text) {
   const source = safeText(text);
   if (!source) return '';
   const hasHtml = /<\/?[a-z][\s\S]*>/i.test(source);
-  return sanitizeHtml(hasHtml ? source : markdownToSimpleHtml(source));
+  return linkifyHtml(sanitizeHtml(hasHtml ? source : markdownToSimpleHtml(source)));
 }
 
 // Constrói uma mensagem do bot a partir de um nó de mensagem do funil.
@@ -328,7 +404,7 @@ function buildFunnelBotMessage(msg, variables) {
       type: 'bot',
       mediaType: 'image',
       mediaUrl: String(msg.dataUrl || ''),
-      caption: substituteVariables(msg.caption || '', variables),
+      caption: linkifyHtml(sanitizeHtml(substituteVariables(msg.caption || '', variables))),
       mediaLinkUrl: String(msg.linkUrl || '').trim(),
       text: '',
       html: '',
@@ -345,6 +421,26 @@ function buildFunnelBotMessage(msg, variables) {
       html: '',
     };
   }
+  // Arquivo / vídeo protegido: só existe URL quando veio da ENTREGA
+  // (servidor gera link assinado após o pagamento).
+  if (msg.type === 'file' || msg.type === 'video') {
+    return {
+      id,
+      type: 'bot',
+      mediaType: msg.type,
+      mediaUrl: String(msg.url || ''),
+      downloadUrl: String(msg.download_url || msg.url || ''),
+      fileName: String(msg.label || msg.name || 'arquivo'),
+      fileSize: Number(msg.size) || 0,
+      fileMime: String(msg.mime || ''),
+      // PDF/imagem abrem no visualizador (inline); outros formatos baixam.
+      fileInline: /^(application\/pdf|image\/)/i.test(String(msg.mime || '')),
+      missing: Boolean(msg.missing) || !msg.url,
+      caption: linkifyHtml(sanitizeHtml(substituteVariables(msg.caption || '', variables))),
+      text: '',
+      html: '',
+    };
+  }
   // texto (default)
   const html = substituteVariables(formatAssistantHtml(msg.html || ''), variables);
   return {
@@ -353,6 +449,187 @@ function buildFunnelBotMessage(msg, variables) {
     text: '',
     html,
   };
+}
+
+// ===== PAGAMENTO PIX NO FUNIL — helpers =====
+const PAYMENT_STORAGE_TTL_MS = 24 * 60 * 60 * 1000; // 1 dia: retoma PIX pendente / reentrega se já pagou
+const PAYMENT_POLL_MS = 5000;
+
+function paymentStorageKey(domain, slug, seqId) {
+  return `webchat_pay:${domain}:${slug}:${seqId}`;
+}
+function readStoredPayment(domain, slug, seqId) {
+  try {
+    const raw = window.localStorage.getItem(paymentStorageKey(domain, slug, seqId));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data?.id || !data?.at || Date.now() - Number(data.at) > PAYMENT_STORAGE_TTL_MS) {
+      window.localStorage.removeItem(paymentStorageKey(domain, slug, seqId));
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+function writeStoredPayment(domain, slug, seqId, data) {
+  try {
+    if (!data) window.localStorage.removeItem(paymentStorageKey(domain, slug, seqId));
+    else window.localStorage.setItem(paymentStorageKey(domain, slug, seqId), JSON.stringify({ ...data, at: Date.now() }));
+  } catch {
+    /* storage indisponível — segue sem retomada */
+  }
+}
+function pushDataLayer(event, payload) {
+  try {
+    window.dataLayer = window.dataLayer || [];
+    window.dataLayer.push({ event, ...payload });
+  } catch {
+    /* noop */
+  }
+}
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fallback abaixo */
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+// Contador regressivo do PIX (mm:ss). Avisa o pai quando zera.
+// `expiresAt` ausente/inválido conta como expirado (antes mostrava NaN:NaN).
+// onExpire dispara UMA vez por expiresAt (o pai confere no servidor).
+function PixCountdown({ expiresAt, onExpire, color }) {
+  const expiresMs = expiresAt ? new Date(expiresAt).getTime() : NaN;
+  const valid = Number.isFinite(expiresMs) && expiresMs > 0;
+  const [left, setLeft] = useState(() => (valid ? Math.max(0, expiresMs - Date.now()) : 0));
+  const onExpireRef = useRef(onExpire);
+  onExpireRef.current = onExpire;
+  useEffect(() => {
+    let fired = false;
+    const fire = () => {
+      if (fired) return;
+      fired = true;
+      onExpireRef.current?.();
+    };
+    if (!valid) {
+      setLeft(0);
+      fire();
+      return undefined;
+    }
+    const id = window.setInterval(() => {
+      const ms = Math.max(0, expiresMs - Date.now());
+      setLeft(ms);
+      if (ms <= 0) {
+        window.clearInterval(id);
+        fire();
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [expiresMs, valid]);
+  const total = Math.floor(left / 1000);
+  const mm = String(Math.floor(total / 60)).padStart(2, '0');
+  const ss = String(total % 60).padStart(2, '0');
+  return (
+    <span style={{ fontVariantNumeric: 'tabular-nums', color, fontWeight: 600 }}>
+      ⏱ expira em {mm}:{ss}
+    </span>
+  );
+}
+
+// Painel do PIX dentro da bolha do bot: valor, QR, código copia-e-cola e estado.
+function PixPanel({ pix, isDark, primaryColor, onExpire, onCopy }) {
+  const paid = pix.status === 'PAID';
+  const expired = pix.status === 'EXPIRED' || pix.status === 'FAILED';
+  const border = paid ? '#2e7d32' : expired ? '#9e9e9e' : primaryColor || '#2979ff';
+  return (
+    <div
+      className="pubmail-pix"
+      style={{
+        marginTop: 10,
+        border: `1.5px solid ${border}`,
+        borderRadius: 14,
+        padding: '12px 12px 10px',
+        background: isDark ? 'rgba(255,255,255,0.04)' : '#ffffff',
+        opacity: expired ? 0.7 : 1,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div style={{ fontWeight: 800, fontSize: 18 }}>{pix.amountLabel}</div>
+        <div style={{ fontSize: 12 }}>
+          {paid ? (
+            <span style={{ color: '#2e7d32', fontWeight: 700 }}>✅ Pago</span>
+          ) : expired ? (
+            <span style={{ color: '#9e9e9e', fontWeight: 700 }}>⌛ Expirado</span>
+          ) : (
+            <PixCountdown expiresAt={pix.expiresAt} onExpire={onExpire} color={isDark ? '#cbd5e1' : '#475569'} />
+          )}
+        </div>
+      </div>
+      {!paid && !expired && pix.showQr && pix.qrBase64 ? (
+        <div style={{ textAlign: 'center', marginBottom: 8 }}>
+          <img
+            src={`data:image/png;base64,${pix.qrBase64}`}
+            alt="QR code PIX"
+            style={{ width: 168, height: 168, borderRadius: 10, background: '#fff', padding: 6, display: 'inline-block' }}
+          />
+        </div>
+      ) : null}
+      {!paid && !expired && pix.code ? (
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => onCopy?.()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') onCopy?.();
+          }}
+          title="Clique para copiar"
+          style={{
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontSize: 11.5,
+            lineHeight: 1.35,
+            wordBreak: 'break-all',
+            background: isDark ? 'rgba(0,0,0,0.35)' : '#f1f5f9',
+            border: `1px dashed ${isDark ? '#475569' : '#cbd5e1'}`,
+            borderRadius: 10,
+            padding: '8px 10px',
+            maxHeight: 76,
+            overflow: 'hidden',
+            cursor: 'pointer',
+            color: isDark ? '#e2e8f0' : '#0f172a',
+          }}
+        >
+          {pix.code}
+        </div>
+      ) : null}
+      {!paid && !expired ? (
+        <div style={{ fontSize: 11.5, marginTop: 6, opacity: 0.75 }}>Pague no app do seu banco e depois valide aqui mesmo.</div>
+      ) : null}
+    </div>
+  );
 }
 
 // Quick reply: aceita texto puro (escapa) ou HTML rico (sanitiza com whitelist
@@ -431,11 +708,16 @@ function normalizeConfig(raw) {
   };
 }
 
+// Em produção o domínio é SEMPRE o hostname real: `?domain=` só vale em DEV
+// (sem isso, o webchat de qualquer org poderia ser aberto na origem do painel
+// e seus header_scripts rodariam onde o JWT está guardado).
 function resolvePublicDomain() {
   if (typeof window === 'undefined') return '';
-  const params = new URLSearchParams(window.location.search);
-  const fromQuery = safeText(params.get('domain'));
-  if (fromQuery) return fromQuery.toLowerCase();
+  if (import.meta.env.DEV) {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = safeText(params.get('domain'));
+    if (fromQuery) return fromQuery.toLowerCase();
+  }
   return safeText(window.location.hostname).toLowerCase();
 }
 
@@ -1618,6 +1900,12 @@ export default function PublicWebchat() {
     leadCaptureActive: false,
     leadCaptureFields: [],
     leadCaptureNextSeq: '',
+    //   leadCaptureResume: '' | 'ending' | 'end' — o que fazer ao terminar a
+    //     captação quando ela foi disparada ANTES de um fim de sequência
+    //     (cobrança/end): 'ending' retoma só o finalizer da sequência
+    //     leadCaptureResumeSeq; 'end' encerra o funil.
+    leadCaptureResume: '',
+    leadCaptureResumeSeq: '',
     leadCaptureDone: false,
   });
   const funnelStateRef = useRef(funnelState);
@@ -1633,6 +1921,21 @@ export default function PublicWebchat() {
   // Ref pra triggerFunnelEnd (declarado depois de playFunnelSequence,
   // que precisa chamá-lo no finalizer pra sequências type='end').
   const triggerFunnelEndRef = useRef(null);
+  // Ref pra tryStartLeadCapture (declarado depois): o finalizer de
+  // playFunnelSequence dispara a captação antes de cobrança/fim.
+  const tryStartLeadCaptureRef = useRef(null);
+  // Pagamento PIX: mensagens de ENTREGA recebidas do servidor (por sequência),
+  // cobrança ativa (polling) e ref pro startCharge (chamado pelo finalizer do
+  // playFunnelSequence, declarado antes).
+  const deliveriesRef = useRef({});
+  const startChargeRef = useRef(null);
+  const [activePayment, setActivePayment] = useState(null); // { id, seqId }
+  // Pagamentos já finalizados (PAID/EXPIRED) nesta sessão: polling, "Validar"
+  // e o contador podem chegar ao mesmo tempo — só o primeiro age.
+  const finalizedPaymentsRef = useRef(new Set());
+  // Validar/gerar novo em andamento: desabilita os botões da bolha PIX.
+  const [payBusy, setPayBusy] = useState(false);
+  const payBusyRef = useRef(false);
   useEffect(() => {
     funnelStateRef.current = funnelState;
   }, [funnelState]);
@@ -1747,19 +2050,19 @@ export default function PublicWebchat() {
     funnelTimersRef.current = [];
   }, []);
 
-  // Persiste lead no back quando temos dados mínimos (nome + email/telefone).
-  // Reusa o endpoint existente captureLead — back faz upsert.
+  // Persiste lead no back quando temos um contato (e-mail OU telefone; nome é
+  // opcional). Reusa o endpoint existente captureLead — back faz upsert.
   const persistFunnelLead = useCallback(
     async (variables) => {
       const nome = String(variables.nome || '').trim();
       const email = String(variables.email || '').trim();
       const telefone = String(variables.telefone || '').trim();
-      if (!nome || (!email && !telefone)) return;
+      if (!email && !telefone) return;
       try {
         await post(
           `/public/webchat/${slug}/leads?domain=${encodeURIComponent(domain)}`,
           {
-            name: nome,
+            name: nome || undefined,
             email: email || undefined,
             phone: telefone || undefined,
             source: 'webchat-funil',
@@ -1779,8 +2082,10 @@ export default function PublicWebchat() {
   // Lê config via ref pra ESTABILIZAR a referência do callback — sem isso,
   // toda mudança de config recriaria essa fn, recriaria loadConfig, e
   // dispararia loop infinito no useEffect que chama loadConfig.
+  // playOpts.onlyEnding: pula as mensagens e roda só o finalizer — usado pra
+  // retomar a bolha PIX após a captação intermediária ou após reload.
   const playFunnelSequence = useCallback(
-    (sequenceId) => {
+    (sequenceId, playOpts = {}) => {
       if (typeof window === 'undefined') return;
       const funil = configRef.current?.personalizacao?.funil;
       if (!funil?.sequences) return;
@@ -1788,6 +2093,15 @@ export default function PublicWebchat() {
       if (!seq) return;
 
       clearFunnelTimers();
+      // Atualiza a ref na hora: o finalizer (tryStartLeadCapture) compara
+      // currentSequenceId antes do próximo render sincronizar a ref.
+      funnelStateRef.current = {
+        ...funnelStateRef.current,
+        currentSequenceId: sequenceId,
+        awaitingInput: false,
+        awaitingInputVariable: '',
+        awaitingInputNextSeq: '',
+      };
       setFunnelState((prev) => ({
         ...prev,
         currentSequenceId: sequenceId,
@@ -1799,8 +2113,17 @@ export default function PublicWebchat() {
       const variables = funnelStateRef.current.variables || {};
 
       // Renderiza mensagens uma após a outra com typing entre.
+      // Sequência de ENTREGA: o config público vem sem mensagens; usa as que o
+      // servidor mandou após o pagamento (com URLs assinadas dos arquivos).
       let cursorMs = 0;
-      const messages = Array.isArray(seq.messages) ? seq.messages : [];
+      const delivered = deliveriesRef.current[sequenceId];
+      const messages = playOpts.onlyEnding
+        ? []
+        : Array.isArray(delivered?.messages)
+        ? delivered.messages
+        : Array.isArray(seq.messages)
+        ? seq.messages
+        : [];
 
       messages.forEach((msg) => {
         const typingMs = Math.max(0, Number(msg.typingDurationMs) || 0);
@@ -1840,7 +2163,10 @@ export default function PublicWebchat() {
           const opts = (ending.options || []).filter((o) => o.label?.trim());
           if (opts.length > 0) {
             const quickReplies = opts.map((o) => ({
-              text: substituteVariables(o.label, variables),
+              // Label vira HTML seguro ANTES da substituição (os valores já
+              // saem escapados) → __html avisa o render pra não escapar de novo.
+              text: substituteVariables(quickReplyHtml(o.label), variables),
+              __html: true,
               href: o.action?.type === 'redirect' ? String(o.action.url || '') : '',
               cssClass: o.cssClass,
               __funnelOptionId: o.id,
@@ -1870,7 +2196,14 @@ export default function PublicWebchat() {
             awaitingInputVariable: ending.captureVariable || '',
             awaitingInputNextSeq: ending.nextSequenceId || '',
           }));
+        } else if (ending.type === 'charge') {
+          setFunnelState((prev) => ({ ...prev, awaitingInput: false }));
+          // Captação intermediária configurada nesta sequência? Pede os dados
+          // primeiro e depois retoma só o finalizer (bolha PIX).
+          if (tryStartLeadCaptureRef.current?.('', { resume: 'ending', resumeSeq: sequenceId })) return;
+          startChargeRef.current?.(seq);
         } else if (ending.type === 'end') {
+          if (tryStartLeadCaptureRef.current?.('', { resume: 'end' })) return;
           triggerFunnelEndRef.current?.();
         }
       }, cursorMs + 50);
@@ -1889,28 +2222,33 @@ export default function PublicWebchat() {
   };
 
   // Resolve o texto da pergunta usando prompts custom do admin (se houver),
-  // com substituição de variáveis ({{nome}} etc) e fallback pro default.
-  const resolveLeadCapturePrompt = useCallback((field, prompts, variables) => {
+  // com fallback pro default. As variáveis ({{nome}} etc) são substituídas
+  // no emitBotMessageWithTyping (DEPOIS da sanitização, valores escapados).
+  const resolveLeadCapturePrompt = useCallback((field, prompts) => {
     const custom = prompts && typeof prompts === 'object' ? String(prompts[field] || '').trim() : '';
-    const raw = custom || LEAD_CAPTURE_DEFAULT_PROMPTS[field] || `Qual seu ${field}?`;
-    return substituteVariables(raw, variables || {});
+    return custom || LEAD_CAPTURE_DEFAULT_PROMPTS[field] || `Qual seu ${field}?`;
   }, []);
 
   // Emite uma mensagem do bot precedida por typing indicator.
   // Reutilizada nas mensagens da captação intermediária pra dar UX
   // consistente com o resto do funil.
-  const emitBotMessageWithTyping = useCallback((textOrHtml, typingMs = 800) => {
+  // O texto passa por formatAssistantHtml (sanitize + markdown + links) e SÓ
+  // DEPOIS recebe as variáveis (valores escapados) — mesma ordem do
+  // buildFunnelBotMessage. Nunca passar texto já substituído aqui.
+  const emitBotMessageWithTyping = useCallback((textOrHtml, typingMs = 800, variables = null) => {
     if (typeof window === 'undefined') return;
     // Mostra typing imediatamente (substitui qualquer typing pendente)
     const typingMsg = { id: createId('typing'), type: 'typing' };
     setMessages((prev) => [...prev.filter((m) => m?.type !== 'typing'), typingMsg]);
     // Após delay, troca pelo bubble real
     const t = window.setTimeout(() => {
+      const safeHtml = formatAssistantHtml(String(textOrHtml || ''));
+      const html = variables ? substituteVariables(safeHtml, variables) : safeHtml;
       const botMsg = {
         id: createId('msg'),
         type: 'bot',
-        text: String(textOrHtml || ''),
-        html: String(textOrHtml || ''),
+        text: quickReplyPlainText(html) || String(textOrHtml || ''),
+        html,
       };
       setMessages((prev) => [...prev.filter((m) => m?.type !== 'typing'), botMsg]);
     }, Math.max(0, typingMs));
@@ -1929,8 +2267,7 @@ export default function PublicWebchat() {
     // deixar HTML residual (ex.: <p></p>, <br>) que renderiza bolha em branco.
     const hasMessage = Boolean(quickReplyPlainText(cfg.message || ''));
     if (hasMessage) {
-      const text = substituteVariables(String(cfg.message), variables);
-      emitBotMessageWithTyping(text, 700);
+      emitBotMessageWithTyping(String(cfg.message), 700, variables);
     }
     setFunnelState((prev) => ({
       ...prev,
@@ -1968,10 +2305,12 @@ export default function PublicWebchat() {
   // Inicia uma captação intermediária de lead. Mostra um bubble de
   // intro + pergunta o primeiro campo (com typing entre cada msg),
   // habilita input e marca o estado.
+  // opts.resume: 'ending' (após capturar, roda só o finalizer da sequência
+  // opts.resumeSeq — ex.: bolha PIX) | 'end' (encerra o funil).
   const tryStartLeadCapture = useCallback(
-    (targetSequenceId) => {
+    (targetSequenceId, opts = {}) => {
       const stateNow = funnelStateRef.current;
-      if (stateNow.leadCaptureDone) return false;
+      if (stateNow.leadCaptureDone || stateNow.leadCaptureActive) return false;
       const cfg = configRef.current?.personalizacao?.funil?.leadCapture;
       if (!cfg?.triggerSequenceId || !cfg?.fields) return false;
       if (cfg.triggerSequenceId !== stateNow.currentSequenceId) return false;
@@ -1980,14 +2319,18 @@ export default function PublicWebchat() {
 
       const firstField = fields[0];
       const variables = stateNow.variables || {};
-      const introText = resolveLeadCapturePrompt('intro', cfg.prompts, variables);
-      const promptText = resolveLeadCapturePrompt(firstField, cfg.prompts, variables);
+      const introText = resolveLeadCapturePrompt('intro', cfg.prompts);
+      const promptText = resolveLeadCapturePrompt(firstField, cfg.prompts);
+
+      // Marca "ativa" já na ref: o finalizer/clique pode tentar disparar de
+      // novo antes do state propagar.
+      funnelStateRef.current = { ...stateNow, leadCaptureActive: true };
 
       // Sequência: typing → intro custom → typing → pergunta
       // Cada msg vem com seu próprio typing pra simular conversa real.
-      emitBotMessageWithTyping(introText, 700);
+      emitBotMessageWithTyping(introText, 700, variables);
       const t = window.setTimeout(() => {
-        emitBotMessageWithTyping(promptText, 700);
+        emitBotMessageWithTyping(promptText, 700, variables);
       }, 1100);
       funnelTimersRef.current.push(t);
 
@@ -2000,6 +2343,8 @@ export default function PublicWebchat() {
           leadCaptureActive: true,
           leadCaptureFields: fields,
           leadCaptureNextSeq: targetSequenceId || '',
+          leadCaptureResume: opts.resume === 'ending' || opts.resume === 'end' ? opts.resume : '',
+          leadCaptureResumeSeq: opts.resume === 'ending' ? String(opts.resumeSeq || stateNow.currentSequenceId || '') : '',
           awaitingInput: true,
           awaitingInputVariable: firstField,
           awaitingInputNextSeq: '',
@@ -2010,6 +2355,274 @@ export default function PublicWebchat() {
     },
     [emitBotMessageWithTyping, resolveLeadCapturePrompt],
   );
+  useEffect(() => {
+    tryStartLeadCaptureRef.current = tryStartLeadCapture;
+  }, [tryStartLeadCapture]);
+
+  // ===== PAGAMENTO PIX (ending.type = 'charge') =====
+  const apiQs = `?domain=${encodeURIComponent(domain)}`;
+
+  const chargeConfigOf = useCallback((seqId) => {
+    const seq = configRef.current?.personalizacao?.funil?.sequences?.[seqId];
+    return { seq, charge: seq?.ending?.charge || {} };
+  }, []);
+
+  // Substitui os botões da bolha PIX de uma cobrança (ou remove, se null).
+  const setPixButtons = useCallback((paymentId, buttons, pixPatch) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m?.mediaType === 'pix' && m.pix?.paymentId === paymentId
+          ? { ...m, quickReplies: buttons, pix: pixPatch ? { ...m.pix, ...pixPatch } : m.pix }
+          : m,
+      ),
+    );
+  }, []);
+
+  const pixButtons = useCallback((seqId, paymentId, kind) => {
+    const { charge } = chargeConfigOf(seqId);
+    if (kind === 'regen') {
+      return [{ text: charge.newPixButtonLabel || 'Gerar novo PIX', href: '', __payAction: 'regen', __paymentId: paymentId, __seqId: seqId }];
+    }
+    return [
+      { text: charge.copyButtonLabel || 'Clique para copiar o PIX', href: '', __payAction: 'copy', __paymentId: paymentId, __seqId: seqId },
+      { text: charge.validateButtonLabel || 'Validar pagamento', href: '', __payAction: 'validate', __paymentId: paymentId, __seqId: seqId },
+    ];
+  }, [chargeConfigOf]);
+
+  // Renderiza a bolha PIX (mensagem configurada + painel + botões).
+  const renderPixBubble = useCallback(
+    (seqId, payment) => {
+      const { charge } = chargeConfigOf(seqId);
+      const variables = funnelStateRef.current.variables || {};
+      const html = substituteVariables(formatAssistantHtml(charge.pixMessage || ''), variables);
+      const bubble = {
+        id: createId('pix'),
+        type: 'bot',
+        mediaType: 'pix',
+        text: '',
+        html,
+        pix: {
+          paymentId: payment.id,
+          seqId,
+          code: payment.pix_code || '',
+          qrBase64: payment.qr_base64 || '',
+          amountLabel: payment.amount_label || formatBRL(payment.amount_cents || 0),
+          expiresAt: payment.expires_at,
+          status: payment.status,
+          showQr: charge.showQr !== false,
+        },
+        quickReplies: payment.status === 'PENDING' ? pixButtons(seqId, payment.id, 'main') : null,
+      };
+      setMessages((prev) => [...prev.filter((m) => m?.type !== 'typing'), bubble]);
+      if (payment.status === 'PENDING') {
+        writeStoredPayment(domain, slug, seqId, { id: payment.id, status: 'PENDING' });
+        setActivePayment({ id: payment.id, seqId });
+      }
+      const t = window.setTimeout(() => scrollMessagesContainerToBottom(), 120);
+      funnelTimersRef.current.push(t);
+    },
+    [chargeConfigOf, pixButtons, domain, slug],
+  );
+
+  // Pagamento confirmado: fecha a bolha, agradece, avisa que está enviando e
+  // toca a sequência de entrega com as mensagens vindas do servidor.
+  // opts.force: reentrega intencional (PIX já pago guardado no storage) —
+  // ignora a trava de "já finalizado".
+  const onPaymentPaid = useCallback(
+    (seqId, paymentId, data, opts = {}) => {
+      if (!opts.force && finalizedPaymentsRef.current.has(paymentId)) return;
+      finalizedPaymentsRef.current.add(paymentId);
+      setActivePayment(null);
+      const { charge } = chargeConfigOf(seqId);
+      const variables = funnelStateRef.current.variables || {};
+      setPixButtons(paymentId, null, { status: 'PAID' });
+      writeStoredPayment(domain, slug, seqId, { id: paymentId, status: 'PAID' });
+      pushDataLayer('webchat_paid', { payment_id: paymentId, sequence_id: seqId, amount_cents: data?.amount_cents || 0 });
+      const paidText = quickReplyPlainText(charge.paidMessage || '') ? String(charge.paidMessage) : '';
+      const sendingText = quickReplyPlainText(charge.sendingMessage || '') ? String(charge.sendingMessage) : '';
+      let cursor = 0;
+      if (paidText) {
+        emitBotMessageWithTyping(paidText, 600, variables);
+        cursor += 900;
+      }
+      if (sendingText) {
+        const t = window.setTimeout(() => emitBotMessageWithTyping(sendingText, 700, variables), cursor);
+        funnelTimersRef.current.push(t);
+        cursor += 1100;
+      }
+      const targetId = String(data?.delivery?.sequence_id || charge.onPaidSequenceId || '');
+      if (data?.delivery?.messages && targetId) {
+        deliveriesRef.current[targetId] = data.delivery;
+      }
+      const go = window.setTimeout(() => {
+        if (targetId && configRef.current?.personalizacao?.funil?.sequences?.[targetId]) {
+          playFunnelSequence(targetId);
+        } else {
+          triggerFunnelEnd();
+        }
+      }, cursor + 400);
+      funnelTimersRef.current.push(go);
+    },
+    [chargeConfigOf, setPixButtons, domain, slug, emitBotMessageWithTyping, playFunnelSequence, triggerFunnelEnd],
+  );
+
+  const onPaymentExpired = useCallback(
+    (seqId, paymentId, silent) => {
+      if (finalizedPaymentsRef.current.has(paymentId)) return;
+      finalizedPaymentsRef.current.add(paymentId);
+      setActivePayment((cur) => (cur?.id === paymentId ? null : cur));
+      const { charge } = chargeConfigOf(seqId);
+      const variables = funnelStateRef.current.variables || {};
+      setPixButtons(paymentId, pixButtons(seqId, paymentId, 'regen'), { status: 'EXPIRED' });
+      writeStoredPayment(domain, slug, seqId, null);
+      if (!silent && quickReplyPlainText(charge.expiredMessage || '')) {
+        emitBotMessageWithTyping(String(charge.expiredMessage), 500, variables);
+      }
+    },
+    [chargeConfigOf, setPixButtons, pixButtons, domain, slug, emitBotMessageWithTyping],
+  );
+
+  // Cria (ou retoma) a cobrança quando a sequência de cobrança termina.
+  const startCharge = useCallback(
+    async (seq) => {
+      const seqId = seq?.id;
+      const { charge } = chargeConfigOf(seqId);
+      const amount = Number(charge.amountCents) || 0;
+      if (!seqId || amount <= 0) {
+        emitBotMessageWithTyping('Pagamento indisponível no momento. Tente novamente mais tarde.', 400);
+        return false;
+      }
+      const stored = readStoredPayment(domain, slug, seqId);
+      const typing = { id: createId('typing'), type: 'typing' };
+      setMessages((prev) => [...prev.filter((m) => m?.type !== 'typing'), typing]);
+      try {
+        // Já pagou hoje? Entrega de novo sem cobrar. PIX pendente? Retoma.
+        if (stored?.id) {
+          const st = await get(`/public/webchat/${slug}/payments/${stored.id}${apiQs}&session_id=${encodeURIComponent(sessionId)}`);
+          if (st?.status === 'PAID') {
+            setMessages((prev) => prev.filter((m) => m?.type !== 'typing'));
+            // Reentrega intencional (já pago) → força mesmo se já finalizado.
+            onPaymentPaid(seqId, stored.id, st, { force: true });
+            return true;
+          }
+          if (st?.status === 'PENDING') {
+            renderPixBubble(seqId, st);
+            return true;
+          }
+          writeStoredPayment(domain, slug, seqId, null);
+        }
+        const created = await post(`/public/webchat/${slug}/payments${apiQs}`, {
+          sequence_id: seqId,
+          session_id: sessionId,
+          page_url: window.location.href,
+        });
+        pushDataLayer('webchat_checkout_start', { payment_id: created?.id, sequence_id: seqId, amount_cents: created?.amount_cents || 0 });
+        renderPixBubble(seqId, created);
+        return true;
+      } catch (err) {
+        setMessages((prev) => prev.filter((m) => m?.type !== 'typing'));
+        const m = err?.response?.data?.message;
+        const text = Array.isArray(m) ? m.join(' ') : typeof m === 'string' && m ? m : 'Não consegui gerar o PIX agora. Tente novamente em instantes.';
+        emitBotMessageWithTyping(text, 400);
+        return false;
+      }
+    },
+    [chargeConfigOf, domain, slug, sessionId, apiQs, emitBotMessageWithTyping, onPaymentPaid, renderPixBubble],
+  );
+  useEffect(() => {
+    startChargeRef.current = startCharge;
+  }, [startCharge]);
+
+  // Botões da bolha PIX.
+  const handlePayAction = useCallback(
+    async (reply) => {
+      const seqId = reply.__seqId;
+      const paymentId = reply.__paymentId;
+      const { charge } = chargeConfigOf(seqId);
+      const variables = funnelStateRef.current.variables || {};
+      if (reply.__payAction === 'copy') {
+        const bubble = messagesRef.current.find((m) => m?.mediaType === 'pix' && m.pix?.paymentId === paymentId);
+        const ok = bubble?.pix?.code ? await copyToClipboard(bubble.pix.code) : false;
+        if (ok) emitBotMessageWithTyping(String(charge.copiedMessage || 'Código PIX copiado! ✅'), 350, variables);
+        else emitBotMessageWithTyping('Não consegui copiar automaticamente — toque e segure no código acima para copiar.', 350);
+        return;
+      }
+      // Validar / gerar novo: uma requisição por vez (sem POST duplo).
+      if (payBusyRef.current) return;
+      payBusyRef.current = true;
+      setPayBusy(true);
+      try {
+        if (reply.__payAction === 'regen') {
+          const { seq } = chargeConfigOf(seqId);
+          setPixButtons(paymentId, null);
+          writeStoredPayment(domain, slug, seqId, null);
+          const ok = seq ? await startCharge(seq) : false;
+          // Falhou ao gerar o novo PIX → devolve o botão (lead não fica sem ação).
+          if (!ok) setPixButtons(paymentId, pixButtons(seqId, paymentId, 'regen'));
+          return;
+        }
+        if (reply.__payAction === 'validate') {
+          try {
+            const st = await post(`/public/webchat/${slug}/payments/${paymentId}/check${apiQs}`, { session_id: sessionId });
+            if (st?.status === 'PAID') {
+              onPaymentPaid(seqId, paymentId, st);
+            } else if (st?.status === 'EXPIRED' || st?.status === 'FAILED') {
+              onPaymentExpired(seqId, paymentId, false);
+            } else {
+              emitBotMessageWithTyping(String(charge.notPaidMessage || 'Ainda não identifiquei o pagamento.'), 450, variables);
+            }
+          } catch {
+            emitBotMessageWithTyping('Não consegui verificar agora. Tente novamente em alguns segundos.', 350);
+          }
+        }
+      } finally {
+        payBusyRef.current = false;
+        setPayBusy(false);
+      }
+    },
+    [chargeConfigOf, emitBotMessageWithTyping, setPixButtons, pixButtons, domain, slug, sessionId, apiQs, startCharge, onPaymentPaid, onPaymentExpired],
+  );
+
+  // Contador zerou: quem decide é o SERVIDOR (relógio do cliente pode estar
+  // errado). PAID → entrega; EXPIRED/FAILED → expira; PENDING → o polling e
+  // o cron do servidor resolvem.
+  const onCountdownZero = useCallback(
+    async (seqId, paymentId) => {
+      if (!paymentId || finalizedPaymentsRef.current.has(paymentId)) return;
+      try {
+        const st = await post(`/public/webchat/${slug}/payments/${paymentId}/check${apiQs}`, { session_id: sessionId });
+        if (st?.status === 'PAID') onPaymentPaid(seqId, paymentId, st);
+        else if (st?.status === 'EXPIRED' || st?.status === 'FAILED') onPaymentExpired(seqId, paymentId, false);
+      } catch {
+        /* polling continua */
+      }
+    },
+    [slug, apiQs, sessionId, onPaymentPaid, onPaymentExpired],
+  );
+
+  // Polling: enquanto há PIX pendente, confere o status a cada 5s (webhook +
+  // cron confirmam no servidor; aqui só refletimos na tela sem o lead clicar).
+  useEffect(() => {
+    if (!activePayment?.id) return undefined;
+    let stopped = false;
+    const { id, seqId } = activePayment;
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const st = await get(`/public/webchat/${slug}/payments/${id}${apiQs}&session_id=${encodeURIComponent(sessionId)}`);
+        if (stopped) return;
+        if (st?.status === 'PAID') onPaymentPaid(seqId, id, st);
+        else if (st?.status === 'EXPIRED' || st?.status === 'FAILED') onPaymentExpired(seqId, id, false);
+      } catch {
+        /* tenta no próximo tick */
+      }
+    };
+    const timer = window.setInterval(tick, PAYMENT_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activePayment, slug, apiQs, sessionId, onPaymentPaid, onPaymentExpired]);
 
   // Calcula e dispara um possível anúncio inline (entre-mensagens) após
   // uma ação do user no funil. Retorna o objeto de mensagem 'ad' a ser
@@ -2078,7 +2691,9 @@ export default function PublicWebchat() {
       // Adiciona a "fala" do user com o texto da opção (extrai plain
       // do HTML rico — option.label pode conter <b>/<i>/<u> e emojis;
       // user bubble renderiza só text, então decapamos a marcação).
-      const labelPlain = quickReplyPlainText(option.label || '') || option.label || '';
+      const variablesNow = funnelStateRef.current.variables || {};
+      const labelPlain =
+        quickReplyPlainText(substituteVariables(option.label || '', variablesNow)) || option.label || '';
       const userMsg = {
         id: createId('msg'),
         type: 'user',
@@ -2113,7 +2728,9 @@ export default function PublicWebchat() {
         playFunnelSequence(action.sequenceId);
         return;
       }
-      // 'end' ou inválida → encerra o funil (mensagem final + aiTakeover)
+      // 'end' ou inválida → encerra o funil (mensagem final + aiTakeover).
+      // Captação intermediária configurada aqui? Pede os dados antes de encerrar.
+      if (tryStartLeadCapture('', { resume: 'end' })) return;
       triggerFunnelEnd();
     },
     [playFunnelSequence, clearFunnelTimers, pickFunnelInlineAd, tryStartLeadCapture, triggerFunnelEnd],
@@ -2185,11 +2802,7 @@ export default function PublicWebchat() {
         const customPrompts = cfg?.prompts || {};
         if (remaining.length > 0) {
           const nextField = remaining[0];
-          const promptText = resolveLeadCapturePrompt(
-            nextField,
-            customPrompts,
-            nextVariables,
-          );
+          const promptText = resolveLeadCapturePrompt(nextField, customPrompts);
           // Desabilita input enquanto typing está rolando, reabilita após.
           setFunnelState((prev) => ({
             ...prev,
@@ -2198,7 +2811,7 @@ export default function PublicWebchat() {
             awaitingInput: false,
             awaitingInputVariable: nextField,
           }));
-          emitBotMessageWithTyping(promptText, 700);
+          emitBotMessageWithTyping(promptText, 700, nextVariables);
           const enableT = window.setTimeout(() => {
             setFunnelState((prev) => ({
               ...prev,
@@ -2211,9 +2824,10 @@ export default function PublicWebchat() {
         }
         // Última captura concluída — persiste e avança.
         const targetSeqId = stateNow.leadCaptureNextSeq;
-        const closingText = resolveLeadCapturePrompt('closing', customPrompts, nextVariables);
-        setFunnelState((prev) => ({
-          ...prev,
+        const resume = stateNow.leadCaptureResume;
+        const resumeSeq = stateNow.leadCaptureResumeSeq;
+        const closingText = resolveLeadCapturePrompt('closing', customPrompts);
+        const doneState = {
           variables: nextVariables,
           awaitingInput: false,
           awaitingInputVariable: '',
@@ -2221,11 +2835,24 @@ export default function PublicWebchat() {
           leadCaptureActive: false,
           leadCaptureFields: [],
           leadCaptureNextSeq: '',
+          leadCaptureResume: '',
+          leadCaptureResumeSeq: '',
           leadCaptureDone: true,
-        }));
-        emitBotMessageWithTyping(closingText, 600);
+        };
+        // Ref na hora: o finalizer retomado checa leadCaptureDone antes do render.
+        funnelStateRef.current = { ...funnelStateRef.current, ...doneState };
+        setFunnelState((prev) => ({ ...prev, ...doneState }));
+        emitBotMessageWithTyping(closingText, 600, nextVariables);
         void persistFunnelLead(nextVariables);
-        if (targetSeqId) {
+        if (resume === 'ending' && resumeSeq) {
+          // Captação disparada antes da cobrança: retoma só o fim da
+          // sequência (bolha PIX), sem repetir as mensagens.
+          const t = window.setTimeout(() => playFunnelSequence(resumeSeq, { onlyEnding: true }), 1500);
+          funnelTimersRef.current.push(t);
+        } else if (resume === 'end') {
+          const t = window.setTimeout(() => triggerFunnelEnd(), 1500);
+          funnelTimersRef.current.push(t);
+        } else if (targetSeqId) {
           // Espera typing + thanks msg renderizar antes de avançar.
           const t = window.setTimeout(() => playFunnelSequence(targetSeqId), 1500);
           funnelTimersRef.current.push(t);
@@ -2259,7 +2886,9 @@ export default function PublicWebchat() {
         const t = window.setTimeout(() => playFunnelSequence(nextId), 300);
         funnelTimersRef.current.push(t);
       } else {
-        // wait_input sem próxima sequência → fim do funil
+        // wait_input sem próxima sequência → fim do funil (captação
+        // intermediária configurada aqui roda antes de encerrar).
+        if (tryStartLeadCapture('', { resume: 'end' })) return;
         const t = window.setTimeout(() => triggerFunnelEnd(), 300);
         funnelTimersRef.current.push(t);
       }
@@ -2412,7 +3041,8 @@ export default function PublicWebchat() {
   useEffect(() => () => {
     clearDeliveryStatusTimers();
     clearWelcomeSequenceTimers();
-  }, [clearDeliveryStatusTimers, clearWelcomeSequenceTimers]);
+    clearFunnelTimers();
+  }, [clearDeliveryStatusTimers, clearWelcomeSequenceTimers, clearFunnelTimers]);
 
   useEffect(() => {
     ensureGptScript();
@@ -2623,6 +3253,30 @@ export default function PublicWebchat() {
       // começa do início.
       const funilCfg = normalized?.personalizacao?.funil;
       if (funilCfg?.enabled === true && funilCfg.startSequenceId) {
+        // Retomada de pagamento: se há PIX pendente/pago (≤1 dia) de uma
+        // sequência de cobrança deste webchat, começa direto nela — só o fim
+        // (bolha PIX ou reentrega), sem tocar o funil inteiro de novo.
+        let resumeSeqId = '';
+        try {
+          const prefix = `webchat_pay:${domain}:${slug}:`;
+          const keys = [];
+          for (let i = 0; i < window.localStorage.length; i += 1) {
+            const key = window.localStorage.key(i);
+            if (key && key.startsWith(prefix)) keys.push(key);
+          }
+          let best = null;
+          keys.forEach((key) => {
+            const seqId = key.slice(prefix.length);
+            if (funilCfg.sequences?.[seqId]?.ending?.type !== 'charge') return;
+            const stored = readStoredPayment(domain, slug, seqId);
+            if (!stored) return;
+            if (!best || Number(stored.at) > Number(best.at)) best = { ...stored, seqId };
+          });
+          if (best) resumeSeqId = best.seqId;
+        } catch {
+          /* storage indisponível — começa do início */
+        }
+
         setConfig(normalized);
         applyThemeVariables(normalized.personalizacao);
         setLeadState(restoredLeadState);
@@ -2636,11 +3290,15 @@ export default function PublicWebchat() {
           leadCaptureActive: false,
           leadCaptureFields: [],
           leadCaptureNextSeq: '',
-          leadCaptureDone: false,
+          leadCaptureResume: '',
+          leadCaptureResumeSeq: '',
+          // Retomando um PIX: não pede a captação de novo antes da bolha.
+          leadCaptureDone: Boolean(resumeSeqId),
         });
         setFunnelExited(false);
         const t = window.setTimeout(() => {
-          playFunnelSequence(funilCfg.startSequenceId);
+          if (resumeSeqId) playFunnelSequence(resumeSeqId, { onlyEnding: true });
+          else playFunnelSequence(funilCfg.startSequenceId);
         }, 150);
         funnelTimersRef.current.push(t);
         return;
@@ -3451,6 +4109,7 @@ export default function PublicWebchat() {
             }
             .pubmail-msg-wrap { min-width: 52%; max-width: 80%; }
             .pubmail-bot-bubble { min-width: 100%; box-sizing: border-box; }
+            .pubmail-bot-bubble a { color: var(--pubmail-primary, #2979ff); text-decoration: underline; font-weight: 600; word-break: break-all; }
             .pubmail-qr-btn {
               font-size: ${Math.max(15, baseFontSize + 1)}px !important;
               padding-top: 15px !important;
@@ -3652,13 +4311,88 @@ export default function PublicWebchat() {
                         ? '1px solid transparent'
                         : '1px solid var(--pubmail-primary, #2979ff)',
                     maxWidth: '100%',
-                    padding: msg.mediaType ? '6px 6px 8px 6px' : '12px 16px',
+                    padding: msg.mediaType && !['pix', 'file'].includes(msg.mediaType) ? '6px 6px 8px 6px' : '12px 16px',
                     borderRadius: layoutStyles.bubbleRadius,
                     boxShadow: bubbleShadow,
                     wordBreak: 'break-word',
                   }}
                 >
-                  {msg.mediaType === 'image' && msg.mediaUrl ? (
+                  {msg.mediaType === 'pix' && msg.pix ? (
+                    <>
+                      {msg.html ? <div dangerouslySetInnerHTML={{ __html: msg.html }} /> : null}
+                      <PixPanel
+                        pix={msg.pix}
+                        isDark={isDark}
+                        primaryColor={theme.primaryColor}
+                        onExpire={() => onCountdownZero(msg.pix.seqId, msg.pix.paymentId)}
+                        onCopy={() => handlePayAction({ __payAction: 'copy', __paymentId: msg.pix.paymentId, __seqId: msg.pix.seqId })}
+                      />
+                    </>
+                  ) : msg.mediaType === 'file' ? (
+                    <div>
+                      <a
+                        href={msg.missing ? '#' : msg.fileInline ? msg.mediaUrl : msg.downloadUrl || msg.mediaUrl}
+                        target={msg.missing ? undefined : '_blank'}
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          if (msg.missing) e.preventDefault();
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                          textDecoration: 'none',
+                          color: 'inherit',
+                          padding: '10px 12px',
+                          borderRadius: 12,
+                          border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
+                          background: isDark ? 'rgba(255,255,255,0.05)' : '#f8fafc',
+                        }}
+                      >
+                        <span style={{ fontSize: 28, lineHeight: 1 }}>{/^image\//i.test(msg.fileMime || '') ? '🖼️' : '📄'}</span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ display: 'block', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {msg.fileName}
+                          </span>
+                          <span style={{ display: 'block', fontSize: 12, opacity: 0.7 }}>
+                            {msg.missing ? 'Arquivo indisponível' : formatFileSize(msg.fileSize)}
+                          </span>
+                        </span>
+                        {!msg.missing ? (
+                          <span
+                            style={{
+                              padding: '8px 12px',
+                              borderRadius: 999,
+                              background: 'var(--pubmail-primary, #2979ff)',
+                              color: '#fff',
+                              fontWeight: 700,
+                              fontSize: 13,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {msg.fileInline ? '📖 Abrir' : '⬇ Baixar'}
+                          </span>
+                        ) : null}
+                      </a>
+                      {msg.caption ? <div style={{ padding: '8px 4px 0 4px', fontSize: 14 }} dangerouslySetInnerHTML={{ __html: msg.caption }} /> : null}
+                    </div>
+                  ) : msg.mediaType === 'video' ? (
+                    <>
+                      {msg.missing ? (
+                        <div style={{ padding: '8px 10px', fontSize: 14 }}>🎬 Vídeo indisponível</div>
+                      ) : (
+                        <video
+                          controls
+                          playsInline
+                          preload="metadata"
+                          controlsList="nodownload"
+                          src={msg.mediaUrl}
+                          style={{ width: '100%', maxHeight: 420, borderRadius: 10, display: 'block', background: '#000' }}
+                        />
+                      )}
+                      {msg.caption ? <div style={{ padding: '6px 8px 0 8px', fontSize: 14 }} dangerouslySetInnerHTML={{ __html: msg.caption }} /> : null}
+                    </>
+                  ) : msg.mediaType === 'image' && msg.mediaUrl ? (
                     <>
                       {msg.mediaLinkUrl ? (
                         <a
@@ -3721,14 +4455,18 @@ export default function PublicWebchat() {
                     width: '100%'
                   }}
                 >
-                  {messageQuickReplies.map((reply, replyIndex) => (
+                  {messageQuickReplies.map((reply, replyIndex) => {
+                    // Botões do PIX ficam travados enquanto validar/gerar novo
+                    // está em andamento (sem POST duplo).
+                    const replyDisabled = sending || (Boolean(reply.__payAction) && payBusy);
+                    return (
                     <a
                       key={`${key}-quick-${replyIndex}`}
                       className={reply.cssClass ? `pubmail-qr-btn ${reply.cssClass}` : 'pubmail-qr-btn'}
                       href={reply.href || '#'}
-                      aria-disabled={sending ? 'true' : 'false'}
+                      aria-disabled={replyDisabled ? 'true' : 'false'}
                       onClick={(event) => {
-                        if (sending) {
+                        if (replyDisabled) {
                           event.preventDefault();
                           return;
                         }
@@ -3739,6 +4477,13 @@ export default function PublicWebchat() {
                         // interceptar o clique, exibir o anúncio e só então
                         // redirecionar. Qualquer JS aqui quebraria esse fluxo.
                         if (reply.href) return;
+
+                        // Botões da bolha PIX (copiar / validar / gerar novo).
+                        if (reply.__payAction) {
+                          event.preventDefault();
+                          handlePayAction(reply);
+                          return;
+                        }
 
                         // Modo Funil (sem URL): despacha pra engine local.
                         if (funnelMode && reply.__funnelOptionId) {
@@ -3803,10 +4548,10 @@ export default function PublicWebchat() {
                             : '0 4px 12px rgba(37, 99, 235, 0.18)',
                         transition: 'transform 0.12s ease, box-shadow 0.15s ease'
                       }}
-                      dangerouslySetInnerHTML={{ __html: quickReplyHtml(reply.text) }}
+                      dangerouslySetInnerHTML={{ __html: reply.__html ? sanitizeRichText(reply.text) : quickReplyHtml(reply.text) }}
                     />
-
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
             </div>

@@ -176,6 +176,32 @@ export function sendMediaUrl(
   });
 }
 
+// Limite de legenda de mídia da Bot API (texto de mensagem vai até 4096).
+export const CAPTION_MAX = 1024;
+
+// Envia mídia + texto respeitando o limite de legenda: se o texto cabe (≤1024), vai como caption
+// (com `extra` = botões etc.). Se passa, manda a mídia SEM legenda e o texto numa mensagem
+// separada — que é a que carrega o `extra`/reply_markup (botões sempre chegam).
+// Devolve o resultado da ÚLTIMA mensagem (a dos botões) + `media` = resultado do envio da mídia.
+export async function sendMediaWithText(
+  token: string,
+  chatId: string | number,
+  type: string,
+  url: string,
+  text?: string,
+  extra?: Record<string, any>,
+): Promise<TgResult<any> & { media?: TgResult<any> }> {
+  const t = String(text || '');
+  if (t.length <= CAPTION_MAX) {
+    const r = await sendMediaUrl(token, chatId, type, url, t || undefined, extra);
+    return { ...r, media: r };
+  }
+  const m = await sendMediaUrl(token, chatId, type, url, undefined, {});
+  if (!m.ok) return { ...m, media: m };
+  const r = await sendMessage(token, chatId, t, extra);
+  return { ...r, media: m };
+}
+
 export function getUserProfilePhotos(token: string, userId: string | number): Promise<TgResult<any>> {
   return call<any>(token, 'getUserProfilePhotos', { user_id: userId, limit: 1 });
 }
@@ -288,7 +314,13 @@ export async function sendPhoto(
     const json: any = await res.json().catch(() => ({}));
     if (json && json.ok) return { ok: true, result: json.result };
     const code = Number(json?.error_code || res.status);
-    return { ok: false, error_code: code, description: String(json?.description || `HTTP ${res.status}`), unauthorized: code === 401 || code === 404 };
+    return {
+      ok: false,
+      error_code: code,
+      description: String(json?.description || `HTTP ${res.status}`),
+      unauthorized: code === 401 || code === 404,
+      parameters: json?.parameters || undefined, // retry_after no 429 (igual ao call())
+    };
   } catch (err: any) {
     return { ok: false, network_error: true, description: String(err?.message || err) };
   } finally {

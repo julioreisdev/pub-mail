@@ -36,6 +36,7 @@ import * as XLSX from 'xlsx';
 
 import MainCard from 'ui-component/cards/MainCard';
 import { get, patch, post } from '../../../api/api';
+import useAccess from 'hooks/useAccess';
 import useWebchats from '../../../hooks/useWebchats';
 import useQuizzes from '../../../hooks/useQuizzes';
 import useEmailProjects from '../../../hooks/useEmailProjects';
@@ -196,12 +197,16 @@ function TagsCell({ lead, onSave, disabled }) {
     );
 }
 
+// Origem "Todos": teto de leads carregados por fonte (agregação client-side).
+const ALL_CAP = 300;
+
 export default function Leads({ lockedOrigin = null, embedded = false }) {
+    const { has: hasModule, modules: userModules } = useAccess();
     const { webchats, isLoading: isLoadingWebchats } = useWebchats();
     const { quizzes, isLoading: isLoadingQuizzes } = useQuizzes();
     const { emailProjects, isLoading: isLoadingProjects } = useEmailProjects();
 
-    const [origin, setOrigin] = useState(lockedOrigin || 'webchat'); // 'webchat' | 'quiz' | 'email'
+    const [origin, setOrigin] = useState(lockedOrigin || ['webchat', 'quiz', 'email'].find((m) => userModules.includes(m)) || 'webchat'); // 'webchat' | 'quiz' | 'email'
     const [items, setItems] = useState([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
@@ -213,6 +218,10 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
     const [error, setError] = useState('');
     const [isExporting, setIsExporting] = useState(false);
     const [allRaw, setAllRaw] = useState([]); // agregado das 3 origens (origem "Todos")
+    const [allWarnings, setAllWarnings] = useState([]); // origem "Todos": fontes truncadas (cap 300) ou com erro
+    // A-75: contador de requests — respostas fora de ordem (filtro trocado
+    // antes da anterior voltar) são ignoradas.
+    const reqRef = useRef(0);
 
     // filtros por coluna (origem e-mail)
     const [fEngagement, setFEngagement] = useState('');
@@ -276,6 +285,7 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
     );
 
     const load = useCallback(async () => {
+        const seq = ++reqRef.current;
         setIsLoading(true);
         setError('');
         try {
@@ -286,15 +296,17 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
             if (debouncedSearch) params.set('q', debouncedSearch);
             buildFilterParams(params);
             const data = await get(`${endpointBase}?${params.toString()}`);
+            if (seq !== reqRef.current) return;
             setItems(Array.isArray(data?.items) ? data.items : []);
             setTotal(Number(data?.total || 0));
             setSelected(new Set());
         } catch (e) {
+            if (seq !== reqRef.current) return;
             setError(getErrorMessage(e, 'Não foi possível carregar os leads.'));
             setItems([]);
             setTotal(0);
         } finally {
-            setIsLoading(false);
+            if (seq === reqRef.current) setIsLoading(false);
         }
     }, [page, pageSize, webchatId, debouncedSearch, endpointBase, idParam, buildFilterParams]);
 
@@ -313,39 +325,70 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
         }
     }, []);
     useEffect(() => {
-        loadTags();
-    }, [loadTags]);
+        if (hasModule('email')) loadTags(); // tags são do módulo de e-mail
+    }, [loadTags, hasModule]);
+
+    // Origem selecionada de um módulo que o usuário não tem (ex.: sessão antiga) → troca.
+    useEffect(() => {
+        if (!lockedOrigin && origin !== 'all' && !hasModule(origin)) {
+            setOrigin(['webchat', 'quiz', 'email'].find((m) => hasModule(m)) || 'all');
+        }
+    }, [origin, lockedOrigin, hasModule]);
 
     // Origem "Todos": agrega as 3 fontes e pagina client-side sobre o agregado.
     const loadAll = useCallback(async () => {
+        const seq = ++reqRef.current;
         setIsLoading(true);
         setError('');
         try {
             const p = new URLSearchParams();
             p.set('page', '1');
-            p.set('page_size', '300');
+            p.set('page_size', String(ALL_CAP));
             if (debouncedSearch) p.set('q', debouncedSearch);
             const qs = p.toString();
             const tag = (res, o) => (Array.isArray(res?.items) ? res.items : []).map((x) => ({ ...x, __origin: o }));
-            const [w, q, e] = await Promise.all([
-                get(`/webchat-leads?${qs}`).catch(() => ({ items: [] })),
-                get(`/quiz-leads?${qs}`).catch(() => ({ items: [] })),
-                get(`/email-project-leads?${qs}`).catch(() => ({ items: [] }))
-            ]);
-            const merged = [...tag(w, 'webchat'), ...tag(q, 'quiz'), ...tag(e, 'email')].sort(
-                (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
-            );
+            const sources = [
+                { key: 'webchat', label: 'Webchats', url: `/webchat-leads?${qs}` },
+                { key: 'quiz', label: 'Quizzes', url: `/quiz-leads?${qs}` },
+                { key: 'email', label: 'Projetos de e-mail', url: `/email-project-leads?${qs}` }
+            ].filter((src) => hasModule(src.key)); // só os módulos liberados
+            const results = await Promise.allSettled(sources.map((src) => get(src.url)));
+            if (seq !== reqRef.current) return;
+            // Erros e truncamentos NÃO são engolidos: viram aviso visível.
+            const warnings = [];
+            const merged = [];
+            results.forEach((r, i) => {
+                const src = sources[i];
+                if (r.status !== 'fulfilled') {
+                    warnings.push({ key: src.key, kind: 'error', text: `${src.label}: falha ao carregar` });
+                    return;
+                }
+                const items = tag(r.value, src.key);
+                const total = Number(r.value?.total || 0);
+                if (items.length >= ALL_CAP || total > ALL_CAP) {
+                    warnings.push({
+                        key: src.key,
+                        kind: 'cap',
+                        text: `${src.label}: mostrando só os ${ALL_CAP} mais recentes${total > ALL_CAP ? ` de ${total}` : ''}`
+                    });
+                }
+                merged.push(...items);
+            });
+            merged.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
             setAllRaw(merged);
+            setAllWarnings(warnings);
             setTotal(merged.length);
             setSelected(new Set());
         } catch (err) {
+            if (seq !== reqRef.current) return;
             setError(getErrorMessage(err, 'Não foi possível carregar os leads.'));
             setAllRaw([]);
+            setAllWarnings([]);
             setTotal(0);
         } finally {
-            setIsLoading(false);
+            if (seq === reqRef.current) setIsLoading(false);
         }
-    }, [debouncedSearch]);
+    }, [debouncedSearch, hasModule]);
 
     useEffect(() => {
         if (isAll) loadAll();
@@ -535,9 +578,9 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
                                 sx={{ minWidth: 150 }}
                             >
                                 <MenuItem value="all">Todos</MenuItem>
-                                <MenuItem value="webchat">Webchats</MenuItem>
-                                <MenuItem value="quiz">Quizzes</MenuItem>
-                                <MenuItem value="email">Projetos de e-mail</MenuItem>
+                                {hasModule('webchat') && <MenuItem value="webchat">Webchats</MenuItem>}
+                                {hasModule('quiz') && <MenuItem value="quiz">Quizzes</MenuItem>}
+                                {hasModule('email') && <MenuItem value="email">Projetos de e-mail</MenuItem>}
                             </TextField>
                         )}
 
@@ -647,6 +690,24 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
                         <Alert severity="error" sx={{ borderRadius: 2, mb: 2 }}>
                             {error}
                         </Alert>
+                    ) : null}
+
+                    {isAll && allWarnings.length > 0 ? (
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
+                            {allWarnings.map((w) => (
+                                <Tooltip
+                                    key={w.key}
+                                    title={
+                                        w.kind === 'cap'
+                                            ? `A origem "Todos" carrega no máximo ${ALL_CAP} leads por fonte (e ignora os filtros por coluna). Selecione a origem específica para ver/exportar tudo.`
+                                            : 'A fonte respondeu com erro — a lista e a exportação estão incompletas.'
+                                    }
+                                    arrow
+                                >
+                                    <Chip size="small" color={w.kind === 'cap' ? 'warning' : 'error'} variant="outlined" label={w.text} sx={{ fontWeight: 700 }} />
+                                </Tooltip>
+                            ))}
+                        </Stack>
                     ) : null}
 
                     <TableContainer

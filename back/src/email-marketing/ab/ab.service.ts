@@ -9,6 +9,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemSettingsService } from '../../system-settings/system-settings.service';
+import { AccessService } from '../../platform-billing/access.service';
 import { CreateAbTestDto } from './dto/ab.dto';
 
 const LABELS = ['A', 'B', 'C', 'D'];
@@ -32,6 +33,7 @@ export class EmailAbService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly systemSettings: SystemSettingsService,
+    private readonly access: AccessService,
   ) {}
 
   private async assertProject(organizationId: string, projectId: string) {
@@ -232,28 +234,48 @@ export class EmailAbService {
       },
     });
 
+    // Envia fatia por fatia e PERSISTE os e-mails testados logo após cada
+    // envio (A-31): se uma fatia falhar no meio, quem já recebeu está gravado e
+    // o teste vira 'failed' (decidePending só pega 'testing' → não manda o
+    // vencedor pra quem já recebeu).
     const allEmails: string[] = [];
     for (let i = 0; i < variantsIn.length; i++) {
       const slice = slices[i];
       const r = resolved[i];
-      const sentId = await this.sendToLeads(project, slice, r.subject, r.html, (r.model as any)?.from_name);
-      await this.prisma.email_ab_variants.create({
-        data: {
-          ab_test_id: test.id,
-          label: LABELS[i],
-          subject: r.subject,
-          body_html: r.html,
-          builder_model: r.model ?? undefined,
-          test_sent_id: sentId,
-          recipients_count: slice.length,
-        },
-      });
-      for (const l of slice) allEmails.push(String(l.email || '').toLowerCase());
+      try {
+        const sentId = await this.sendToLeads(project, slice, r.subject, r.html, (r.model as any)?.from_name);
+        await this.prisma.email_ab_variants.create({
+          data: {
+            ab_test_id: test.id,
+            label: LABELS[i],
+            subject: r.subject,
+            body_html: r.html,
+            builder_model: r.model ?? undefined,
+            test_sent_id: sentId,
+            recipients_count: slice.length,
+          },
+        });
+        for (const l of slice) allEmails.push(String(l.email || '').toLowerCase());
+        await this.prisma.email_ab_tests.update({
+          where: { id: test.id },
+          data: { test_emails: allEmails as any },
+        });
+      } catch (e: any) {
+        const msg = String(e?.message ?? e).slice(0, 255);
+        this.logger.error(`A/B ${test.id}: falha na variante ${LABELS[i]}: ${msg}`);
+        await this.prisma.email_ab_tests.update({
+          where: { id: test.id },
+          data: {
+            status: 'failed',
+            test_emails: allEmails as any,
+            error_message: `Falha ao enviar a variante ${LABELS[i]}: ${msg}`.slice(0, 255),
+          },
+        });
+        throw new BadRequestException(
+          `Falha ao enviar a variante ${LABELS[i]}: ${msg}. O teste foi marcado como falho.`,
+        );
+      }
     }
-    await this.prisma.email_ab_tests.update({
-      where: { id: test.id },
-      data: { test_emails: allEmails as any },
-    });
 
     return this.getOne(organizationId, projectId, test.id);
   }
@@ -338,6 +360,11 @@ export class EmailAbService {
       include: { variants: true },
     });
     for (const t of due) {
+      // Org com assinatura vencida => não decide nem envia o vencedor (fica 'testing').
+      if (!(await this.access.isOrgActive(t.organization_id))) {
+        this.logger.debug(`pulando org=${t.organization_id}: acesso inativo (A/B ${t.id})`);
+        continue;
+      }
       try {
         await this.decideTest(t);
       } catch (e: any) {

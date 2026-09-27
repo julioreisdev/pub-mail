@@ -314,8 +314,33 @@ export class EmailLeadsService {
     return { inscribed_leads, unscribed_leads };
   }
 
+  // O Express já decodifica o :param uma vez. Decodificar de novo dava 500 num
+  // e-mail com `%` literal (A-12) — tenta e, se falhar, usa o valor como veio.
+  private decodeEmailParam(leadEmail: string): string {
+    const raw = String(leadEmail ?? '');
+    let decoded = raw;
+    if (/%[0-9a-fA-F]{2}/.test(raw)) {
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch {
+        decoded = raw;
+      }
+    }
+    return decoded.trim().toLowerCase();
+  }
+
+  // One-click (RFC 8058): idempotente, nunca lança — o provedor só quer 200.
+  async unsubscribeOneClick(projectId: string, leadEmail: string) {
+    try {
+      await this.unsubscribe(projectId, leadEmail);
+    } catch (e: any) {
+      if (!(e instanceof NotFoundException)) throw e;
+    }
+    return { ok: true };
+  }
+
   async unsubscribe(projectId: string, leadEmail: string): Promise<string> {
-    const email = decodeURIComponent(leadEmail).trim().toLowerCase();
+    const email = this.decodeEmailParam(leadEmail);
 
     // 1) valida project + pega orgId + settings
     const project = await this.prisma.email_projects.findUnique({

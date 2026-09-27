@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { TelegramPaymentsService } from './telegram-payments.service';
 
 @ApiTags('Telegram - Payments')
@@ -16,11 +18,16 @@ export class TelegramPaymentsController {
     return this.service.getSettings(req.user.organizationId);
   }
 
+  // Gateway da org: só OWNER/ADMIN (A-07). MEMBER continua lendo.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Put('settings')
   saveSettings(@Req() req: any, @Body() dto: any) {
     return this.service.saveSettings(req.user.organizationId, dto || {});
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Post('settings/test')
   testSettings(@Req() req: any) {
     return this.service.testSettings(req.user.organizationId);

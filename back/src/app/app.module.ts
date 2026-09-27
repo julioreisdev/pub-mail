@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 // import { AppController } from './app.controller';
 // import { AppService } from './app.service';
@@ -37,6 +39,8 @@ import { EmailAnalyticsModule } from 'src/email-marketing/analytics/analytics.mo
 import { EmailAbModule } from 'src/email-marketing/ab/ab.module';
 import { DashboardModule } from 'src/dashboard/dashboard.module';
 import { TelegramModule } from 'src/telegram/telegram.module';
+import { PaymentsModule } from 'src/payments/payments.module';
+import { PlatformBillingModule } from 'src/platform-billing/platform-billing.module';
 
 @Module({
   imports: [
@@ -44,6 +48,10 @@ import { TelegramModule } from 'src/telegram/telegram.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    // Rate limit global generoso por IP (A-13). Rotas sensíveis têm @Throttle
+    // próprio (login/register/webchat público/quiz/subscribe/pagamentos) e os
+    // webhooks têm @SkipThrottle. Precisa do `trust proxy` no main.ts.
+    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 600 }]),
     UsersModule,
     PrismaModule,
     OrganiztionsModule,
@@ -77,8 +85,10 @@ import { TelegramModule } from 'src/telegram/telegram.module';
     EmailAbModule,
     DashboardModule,
     TelegramModule,
+    PaymentsModule,
+    PlatformBillingModule, // assinaturas do Pub Mail + módulos por usuário (AccessInterceptor global)
   ],
   controllers: [],
-  providers: [],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule { }

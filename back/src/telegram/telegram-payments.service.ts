@@ -3,12 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as tg from './telegram-api.util';
 import { createPixCharge, getChargeStatus, testProvider, KNOWN_PROVIDERS } from './telegram-payment-providers';
 import { TelegramRotatorsRunner } from './telegram-rotators.runner';
+import { AccessService } from '../platform-billing/access.service';
 
 const BRL = (cents: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format((cents || 0) / 100);
 const esc = (s: string) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const maskToken = (t?: string | null) => (t ? `${t.slice(0, 4)}••••${t.slice(-4)}` : '');
 const fmtDate = (d: any) => new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(d));
 const DAY = 24 * 3600 * 1000;
+const DELIVERY_CLAIM_TTL_MS = 5 * 60 * 1000; // claim de entrega abandonado (crash no meio) → retomável após 5 min
 
 // Config editável das mensagens do checkout (com defaults).
 const DEFAULT_CHECKOUT = {
@@ -47,6 +49,7 @@ export class TelegramPaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly rotators: TelegramRotatorsRunner,
+    private readonly access: AccessService,
   ) {}
 
   private baseUrl() {
@@ -63,7 +66,8 @@ export class TelegramPaymentsService {
       token_masked: maskToken(s?.access_token),
       pix_key: s?.pix_key || '',
       checkout: mergeCheckout(s?.checkout_config),
-      webhook_url: `${this.baseUrl()}/telegram/payments/webhook/${s?.provider || 'mercadopago'}`,
+      // URL única da plataforma (Telegram + Webchat): /payments/webhook/:provider
+      webhook_url: `${this.baseUrl()}/payments/webhook/${s?.provider || 'mercadopago'}`,
     };
   }
 
@@ -277,6 +281,24 @@ export class TelegramPaymentsService {
 
     const contact = await this.prisma.telegram_contacts.findFirst({ where: { bot_id: bot.id, tg_user_id: BigInt(tgUserId) }, select: { id: true, first_name: true } });
     await tg.sendChatAction(token, chatId, 'typing').catch(() => undefined);
+    const cfg = mergeCheckout((settings as any).checkout_config);
+
+    // Já existe uma cobrança PENDING válida deste lead pra este plano? Reenvia o MESMO PIX
+    // (cada toque no botão não vira uma cobrança nova no gateway).
+    const existing = await this.prisma.telegram_payments.findFirst({
+      where: { bot_id: bot.id, plan_id: plan.id, tg_user_id: BigInt(tgUserId), status: 'PENDING', expires_at: { gt: new Date() }, pix_code: { not: null } },
+      orderBy: { created_at: 'desc' },
+    });
+    if (existing?.pix_code) {
+      const sent = await this.sendPixMessages(token, chatId, cfg, plan, existing.id, existing.pix_code, null);
+      if (sent.messageId) {
+        await this.prisma.telegram_payments
+          .update({ where: { id: existing.id }, data: { tg_message_id: BigInt(sent.messageId), tg_message_is_photo: sent.isPhoto } })
+          .catch(() => undefined);
+      }
+      await this.rotators.bumpForContact(bot.id, tgUserId).catch(() => undefined);
+      return;
+    }
 
     const charge = await createPixCharge(settings.provider, settings.access_token!, plan.price_cents, `${plan.name}`.slice(0, 200), {
       tgUserId,
@@ -305,20 +327,38 @@ export class TelegramPaymentsService {
       },
     });
 
-    const cfg = mergeCheckout((settings as any).checkout_config);
+    const { messageId, isPhoto } = await this.sendPixMessages(token, chatId, cfg, plan, payment.id, charge.pixCode, charge.qrBase64 || null);
+
+    if (messageId) {
+      await this.prisma.telegram_payments.update({ where: { id: payment.id }, data: { tg_message_id: BigInt(messageId), tg_message_is_photo: isPhoto } }).catch(() => undefined);
+    }
+
+    // empurra a mensagem rotativa (se houver) pra baixo do PIX recém-enviado
+    await this.rotators.bumpForContact(bot.id, tgUserId).catch(() => undefined);
+  }
+
+  // Envia as mensagens do checkout (instrução, QR opcional, código PIX, botões) conforme a config.
+  // Devolve o id da mensagem que carrega os botões (é a que vira "✅ Pago" na entrega).
+  private async sendPixMessages(
+    token: string,
+    chatId: number | string,
+    cfg: ReturnType<typeof mergeCheckout>,
+    plan: { name: string; price_cents: number },
+    paymentId: string,
+    pixCode: string,
+    qrBase64: string | null,
+  ): Promise<{ messageId: number | null; isPhoto: boolean }> {
     const interp = (t: string) => String(t || '').replace(/\{plano\}/g, esc(plan.name)).replace(/\{valor\}/g, BRL(plan.price_cents));
     const caption = interp(cfg.instruction_text);
     // <pre> renderiza o código num bloco com botão "copiar" nativo do Telegram (na própria bolha).
-    const pixLine = `<pre>${esc(charge.pixCode)}</pre>`;
+    const pixLine = `<pre>${esc(pixCode)}</pre>`;
     // botão copy_text (Bot API 8.0): copia o código ao toque, com rótulo próprio. Vazio ⇒ sem botão.
-    const copyRow = cfg.copy_button_text.trim()
-      ? [[{ text: cfg.copy_button_text, copy_text: { text: charge.pixCode } }]]
-      : [];
+    const copyRow = cfg.copy_button_text.trim() ? [[{ text: cfg.copy_button_text, copy_text: { text: pixCode } }]] : [];
     const markup = {
       inline_keyboard: [
         ...copyRow,
-        [{ text: cfg.paid_button, callback_data: `paycheck:${payment.id}` }],
-        [{ text: cfg.cancel_button, callback_data: `paycancel:${payment.id}` }],
+        [{ text: cfg.paid_button, callback_data: `paycheck:${paymentId}` }],
+        [{ text: cfg.cancel_button, callback_data: `paycancel:${paymentId}` }],
       ],
     };
 
@@ -326,9 +366,9 @@ export class TelegramPaymentsService {
     let isPhoto = false;
 
     // 1) QR code (opcional). Os botões ficam aqui só se o PIX NÃO vai em mensagem separada.
-    if (cfg.send_qr && charge.qrBase64) {
+    if (cfg.send_qr && qrBase64) {
       try {
-        const buf = Buffer.from(charge.qrBase64, 'base64');
+        const buf = Buffer.from(qrBase64, 'base64');
         const qrCap = cfg.send_pix_separate ? caption : `${caption}\n\n${pixLine}`;
         const kb = cfg.send_pix_separate ? {} : { reply_markup: markup };
         const res = await tg.sendPhoto(token, chatId, buf, 'pix.png', qrCap, { parse_mode: 'HTML', ...kb });
@@ -364,13 +404,15 @@ export class TelegramPaymentsService {
       const res = await tg.sendMessage(token, chatId, `${caption}\n\n${pixLine}`, { parse_mode: 'HTML', reply_markup: markup });
       messageId = res.ok ? res.result?.message_id || null : null;
     }
+    return { messageId, isPhoto };
+  }
 
-    if (messageId) {
-      await this.prisma.telegram_payments.update({ where: { id: payment.id }, data: { tg_message_id: BigInt(messageId), tg_message_is_photo: isPhoto } }).catch(() => undefined);
-    }
-
-    // empurra a mensagem rotativa (se houver) pra baixo do PIX recém-enviado
-    await this.rotators.bumpForContact(bot.id, tgUserId).catch(() => undefined);
+  // A cobrança pertence a este bot + este usuário? (paycheck:/paycancel: vêm do callback_data,
+  // que qualquer um pode forjar com o id de outra cobrança.)
+  async isOwner(paymentId: string, botId: string, tgUserId: number | string): Promise<boolean> {
+    if (!paymentId || tgUserId === undefined || tgUserId === null) return false;
+    const p = await this.prisma.telegram_payments.findUnique({ where: { id: paymentId }, select: { bot_id: true, tg_user_id: true } });
+    return !!p && p.bot_id === botId && p.tg_user_id === BigInt(tgUserId);
   }
 
   // Envia a mensagem de "ainda não caiu" (com botão de verificar de novo). Usado no /paycheck.
@@ -393,7 +435,10 @@ export class TelegramPaymentsService {
     if ((payment as any).nudge_message_id) {
       await tg.deleteMessage(token, String(payment.tg_user_id), Number((payment as any).nudge_message_id)).catch(() => undefined);
     }
-    const sent = await tg.sendMessage(token, String(payment.tg_user_id), text, { parse_mode: 'HTML', ...markup });
+    const sent = await tg.sendMessage(token, String(payment.tg_user_id), text, {
+      parse_mode: 'HTML',
+      ...(Object.keys(markup).length ? { reply_markup: markup } : {}),
+    });
     await this.prisma.telegram_payments
       .update({ where: { id: payment.id }, data: { nudge_message_id: sent.ok && sent.result?.message_id ? BigInt(sent.result.message_id) : null } })
       .catch(() => undefined);
@@ -429,29 +474,61 @@ export class TelegramPaymentsService {
   }
 
   private async markPaidAndDeliver(payment: any) {
-    // idempotência: marca PAID uma vez; entrega uma vez
+    // idempotência: marca PAID uma vez (só se ainda não estava)
     if (payment.status !== 'PAID') {
-      await this.prisma.telegram_payments.update({ where: { id: payment.id }, data: { status: 'PAID', paid_at: new Date() } }).catch(() => undefined);
+      await this.prisma.telegram_payments
+        .updateMany({ where: { id: payment.id, status: { not: 'PAID' } }, data: { status: 'PAID', paid_at: new Date() } })
+        .catch(() => undefined);
     }
+    // CLAIM ATÔMICO da entrega: webhook + "Já paguei" + poller podem chegar juntos; só quem
+    // "ganha" o updateMany (count===1) entrega — evita 2 convites / assinatura estendida 2×.
+    // Um claim abandonado (crash no meio) vence em DELIVERY_CLAIM_TTL_MS e o cron retoma.
+    const now = new Date();
+    const claimed = await this.prisma.telegram_payments.updateMany({
+      where: {
+        id: payment.id,
+        delivered: false,
+        OR: [{ delivering_at: null }, { delivering_at: { lt: new Date(now.getTime() - DELIVERY_CLAIM_TTL_MS) } }],
+      },
+      data: { delivering_at: now },
+    });
+    if (claimed.count !== 1) return; // já entregue ou outro processo entregando agora
+
     const fresh = await this.prisma.telegram_payments.findUnique({ where: { id: payment.id } });
     if (!fresh || fresh.delivered) return;
-    await this.deliver(fresh);
+    let ok = false;
+    try {
+      ok = await this.deliver(fresh);
+    } catch (e: any) {
+      this.logger.warn(`deliver ${payment.id} falhou: ${e?.message || e}`);
+    }
+    if (!ok) {
+      // libera o claim → o cron (reconcilePending) tenta de novo
+      await this.prisma.telegram_payments.updateMany({ where: { id: payment.id, delivered: false }, data: { delivering_at: null } }).catch(() => undefined);
+    }
   }
 
-  private async deliver(payment: any) {
+  // Entrega o produto (convite VIP + assinatura + mensagem/mídia). Devolve false quando NÃO pôde
+  // entregar (bot indisponível, convite do VIP não gerado) — nada é marcado e o cron retenta.
+  private async deliver(payment: any): Promise<boolean> {
     const token = await this.botToken(payment.bot_id);
-    if (!token) return;
+    if (!token) return false;
     const chatId = String(payment.tg_user_id);
     const plan = payment.plan_id ? await this.prisma.telegram_plans.findUnique({ where: { id: payment.plan_id } }) : null;
 
-    // 1) link de convite de uso único p/ o grupo/canal VIP
+    // 1) link de convite de uso único p/ o grupo/canal VIP. Plano COM grupo e sem convite
+    //    (grupo sumiu / bot não é admin) ⇒ não marca entregue: o lead pagou e não pode ficar sem acesso.
     let invite: string | null = null;
     if (plan?.deliver_group_id) {
       const grp = await this.prisma.telegram_groups.findUnique({ where: { id: plan.deliver_group_id }, select: { tg_chat_id: true } });
       if (grp) {
         const r = await tg.createChatInviteLink(token, String(grp.tg_chat_id), 'VIP', { member_limit: 1, expire_date: Math.floor(Date.now() / 1000) + 3 * 24 * 3600 });
         if (r.ok) invite = r.result?.invite_link || null;
+        if (!invite) this.logger.warn(`pagamento ${payment.id}: convite do VIP falhou (${r.description || 'sem link'}) — bot é admin com permissão de convidar?`);
+      } else {
+        this.logger.warn(`pagamento ${payment.id}: grupo de entrega ${plan.deliver_group_id} não existe mais.`);
       }
+      if (!invite) return false; // fica PAID + delivered=false; cron retenta
     }
 
     // 2) assinatura por tempo (se o plano tem duração) — estende a partir do fim atual
@@ -480,11 +557,15 @@ export class TelegramPaymentsService {
       }
     }
 
-    await this.prisma.telegram_payments.update({ where: { id: payment.id }, data: { delivered: true, delivered_at: new Date(), invite_link: invite } }).catch(() => undefined);
+    await this.prisma.telegram_payments.update({
+      where: { id: payment.id },
+      data: { delivered: true, delivered_at: new Date(), delivering_at: null, invite_link: invite },
+    });
 
     // limpa o aviso de "não pagou" (obsoleto após confirmar) e empurra a rotativa pra baixo da confirmação
     if (payment.nudge_message_id) await tg.deleteMessage(token, chatId, Number(payment.nudge_message_id)).catch(() => undefined);
     await this.rotators.bumpForContact(payment.bot_id, payment.tg_user_id).catch(() => undefined);
+    return true;
   }
 
   // Cria/estende a assinatura por tempo. Estende a partir do fim atual (se ainda válido) ou de agora.
@@ -494,6 +575,8 @@ export class TelegramPaymentsService {
       where: { bot_id: payment.bot_id, tg_user_id: payment.tg_user_id, plan_id: plan.id },
       orderBy: { created_at: 'desc' },
     });
+    // este pagamento já estendeu a assinatura (entrega retomada após falha parcial) → não estende 2×
+    if (existing && existing.last_payment_id === payment.id) return existing.access_until ? new Date(existing.access_until) : null;
     const now = Date.now();
     const cur = existing?.access_until ? new Date(existing.access_until).getTime() : 0;
     const base = cur > now ? cur : now;
@@ -517,8 +600,22 @@ export class TelegramPaymentsService {
   // Runner: lembra renovação (2 dias antes) e expira (remove do VIP) as vencidas.
   async processSubscriptions() {
     const now = Date.now();
+    // Org com assinatura da PLATAFORMA vencida → não expira/lembra ninguém (tudo para); a
+    // assinatura VIP fica como está e é processada quando a org reativar. 1 checagem/log por org.
+    const orgOk = new Map<string, boolean>();
+    const active = async (orgId: string) => {
+      if (!orgOk.has(orgId)) {
+        const ok = await this.access.isOrgActive(orgId);
+        orgOk.set(orgId, ok);
+        if (!ok) this.logger.log(`pulando org=${orgId}: acesso inativo`);
+      }
+      return orgOk.get(orgId)!;
+    };
     const expired = await this.prisma.telegram_subscriptions.findMany({ where: { status: 'ACTIVE', access_until: { lte: new Date(now) } }, take: 200 });
-    for (const s of expired) await this.expireSubscription(s).catch(() => undefined);
+    for (const s of expired) {
+      if (!(await active(s.organization_id))) continue;
+      await this.expireSubscription(s).catch(() => undefined);
+    }
 
     const soon = await this.prisma.telegram_subscriptions.findMany({
       where: {
@@ -528,7 +625,10 @@ export class TelegramPaymentsService {
       },
       take: 200,
     });
-    for (const s of soon) await this.remindSubscription(s).catch(() => undefined);
+    for (const s of soon) {
+      if (!(await active(s.organization_id))) continue;
+      await this.remindSubscription(s).catch(() => undefined);
+    }
   }
 
   private async renewMarkup(planId?: string | null) {
@@ -616,6 +716,18 @@ export class TelegramPaymentsService {
 
   // Runner: reconcilia pendentes (rede de segurança do webhook) e expira as velhas.
   async reconcilePending() {
+    // pagas e não entregues (entrega falhou/caiu no meio, claim vencido) → tenta entregar de novo
+    const undelivered = await this.prisma.telegram_payments.findMany({
+      where: {
+        status: 'PAID',
+        delivered: false,
+        OR: [{ delivering_at: null }, { delivering_at: { lt: new Date(Date.now() - DELIVERY_CLAIM_TTL_MS) } }],
+      },
+      orderBy: { paid_at: 'asc' },
+      take: 50,
+    });
+    for (const p of undelivered) await this.markPaidAndDeliver(p).catch(() => undefined);
+
     const pend = await this.prisma.telegram_payments.findMany({
       where: { status: 'PENDING' },
       orderBy: { created_at: 'asc' },

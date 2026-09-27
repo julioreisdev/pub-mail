@@ -43,7 +43,7 @@ import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/i
 
 import { get, patch } from 'api/api';
 import QuizView from './QuizView';
-import { normalizeQuizConfig, buildPresetConfig, QUIZ_PRESETS, uid, createContentBlock } from './quizConfig';
+import { normalizeQuizConfig, buildPresetConfig, QUIZ_PRESETS, uid, createContentBlock, normalizeRedirectUrl } from './quizConfig';
 
 // ---- upload -> data URL otimizado (sem backend) ----
 async function fileToDataUrl(file) {
@@ -282,6 +282,46 @@ export default function QuizBuilder() {
     return () => clearTimeout(t);
   }, [config, persist]);
 
+  // Snapshot atual pra flush (unmount/voltar) sem depender de closure.
+  const configRef = useRef(config);
+  configRef.current = config;
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+
+  // Voltar em <2s perdia a última edição (debounce ainda pendente):
+  // persiste na hora se estiver sujo e só então navega.
+  const flushIfDirty = useCallback(async () => {
+    if (!dirtyRef.current || !configRef.current) return;
+    await persistRef.current(configRef.current);
+  }, []);
+
+  const handleBack = async () => {
+    await flushIfDirty();
+    navigate('/quizzes');
+  };
+
+  // unmount (rota trocada por outro caminho): salva o pendente (best-effort)
+  useEffect(() => {
+    return () => {
+      if (dirtyRef.current && configRef.current) {
+        patch(`/quizzes/${id}`, { settings: configRef.current }).catch(() => {});
+        dirtyRef.current = false;
+      }
+    };
+  }, [id]);
+
+  // aviso do navegador ao fechar/recarregar com alteração pendente
+  useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!dirtyRef.current) return undefined;
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
+
   // mutador genérico
   const mutate = useCallback((fn) => {
     dirtyRef.current = true;
@@ -383,7 +423,8 @@ export default function QuizBuilder() {
     a.href = url;
     a.download = `quiz-${meta?.slug || 'preset'}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    // Firefox falha o download se o object URL for revogado na hora.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const importPreset = async (e) => {
     const file = e.target.files?.[0];
@@ -413,7 +454,7 @@ export default function QuizBuilder() {
   if (loadError || !config) {
     return (
       <Box sx={{ p: 3 }}>
-        <Button startIcon={<ArrowBackRoundedIcon />} onClick={() => navigate('/quizzes')}>
+        <Button startIcon={<ArrowBackRoundedIcon />} onClick={handleBack}>
           Voltar
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
@@ -427,7 +468,7 @@ export default function QuizBuilder() {
     <Box sx={{ height: 'calc(100dvh - 88px)', display: 'flex', flexDirection: 'column' }}>
       {/* Topbar */}
       <Stack direction="row" alignItems="center" spacing={1} sx={{ pb: 1.5, flexWrap: 'wrap', gap: 1 }}>
-        <IconButton onClick={() => navigate('/quizzes')} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+        <IconButton onClick={handleBack} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
           <ArrowBackRoundedIcon />
         </IconButton>
         <Box sx={{ flex: 1, minWidth: 160 }}>
@@ -669,6 +710,11 @@ export default function QuizBuilder() {
                           fullWidth
                           value={o.redirect || ''}
                           onChange={(e) => setOptionRedirect(q.id, o.id, e.target.value)}
+                          onBlur={(e) => {
+                            // https:// automático / esquema perigoso → '' (A-74)
+                            const fixed = normalizeRedirectUrl(e.target.value);
+                            if (fixed !== e.target.value) setOptionRedirect(q.id, o.id, fixed);
+                          }}
                           placeholder="↪ Redirecionar p/ esta resposta (opcional)"
                           sx={{ mt: 0.5, '& input': { fontSize: 12.5 } }}
                         />
@@ -800,7 +846,17 @@ export default function QuizBuilder() {
           </Section>
 
           <Section title="Redirecionamento">
-            <TextField size="small" label="URL de redirecionamento (geral)" value={config.redirect.url} onChange={(e) => mutate((c) => ((c.redirect.url = e.target.value), c))} placeholder="https://destino.com/oferta" />
+            <TextField
+              size="small"
+              label="URL de redirecionamento (geral)"
+              value={config.redirect.url}
+              onChange={(e) => mutate((c) => ((c.redirect.url = e.target.value), c))}
+              onBlur={(e) => {
+                const fixed = normalizeRedirectUrl(e.target.value);
+                if (fixed !== e.target.value) mutate((c) => ((c.redirect.url = fixed), c));
+              }}
+              placeholder="https://destino.com/oferta"
+            />
             <Typography variant="caption" color="text.secondary">
               Para onde o usuário vai após a última pergunta (sem captação) ou após enviar os dados (com captação).
             </Typography>

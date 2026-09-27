@@ -19,6 +19,7 @@ import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { CreateClientDto } from '../platform-billing/dto/billing.dto';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -47,6 +48,12 @@ export class AdminController {
   @Delete('organizations/:id')
   removeOrganization(@Param('id') id: string, @Req() req: any) {
     return this.admin.removeOrganization(id, req?.user?.organizationId);
+  }
+
+  // ===== Clientes (org + usuário dono + plano + módulos) =====
+  @Post('clients')
+  createClient(@Body() dto: CreateClientDto) {
+    return this.admin.createClient(dto);
   }
 
   // ===== Usuários =====

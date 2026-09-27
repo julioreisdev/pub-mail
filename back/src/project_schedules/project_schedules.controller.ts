@@ -73,8 +73,10 @@ export class ProjectSchedulesController {
     @Body() dto: DispatchNowDto,
   ) {
     try {
-      // template_id opcional: específico OU aleatório (ausente/null)
+      // template_id opcional: específico OU aleatório (ausente/null).
+      // A org vai junto: o projeto PRECISA pertencer ao tenant do token (A-04).
       const result = await this.emailSchedulesRunner.executeManualDispatch(
+        req.user.organizationId,
         projectId,
         dto?.template_id ?? null,
       );

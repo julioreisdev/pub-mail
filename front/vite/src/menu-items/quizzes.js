@@ -10,6 +10,7 @@ const quizzes = {
   id: 'quizzes',
   title: 'Quizzes',
   type: 'group',
+  requiredModule: 'quiz',
   icon: icons.IconListLetters,
   children: [
     {

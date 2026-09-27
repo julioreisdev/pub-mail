@@ -1,4 +1,5 @@
 import {
+  ServiceUnavailableException,
   BadRequestException,
   HttpException,
   HttpStatus,
@@ -10,6 +11,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { cleanEmailOrNull } from '../common/email.util';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
+import { AccessService } from '../platform-billing/access.service';
 import {
   buildBaseSlugFromWebchatName,
   ensureUniqueSlugByDomain,
@@ -48,6 +50,7 @@ export class WebchatsService {
     private readonly prisma: PrismaService,
     private readonly systemSettings: SystemSettingsService,
     private readonly splits: WebchatSplitsService,
+    private readonly access: AccessService,
   ) { }
 
   async create(data: CreateWebchatDto & { organization_id: string }) {
@@ -222,16 +225,31 @@ export class WebchatsService {
       await this.ensureWebchatDomainRegistered(organizationId, nextDomain);
     }
 
+    // A-66: renomear NÃO troca o slug (links publicados e polling de pagamento
+    // em andamento continuam válidos). Slug só muda se vier explícito no DTO;
+    // ao trocar de domínio, mantém o atual se ainda for único lá.
+    const explicitSlug =
+      data.slug !== undefined
+        ? buildBaseSlugFromWebchatName(String(data.slug))
+        : null;
     let nextSlug = current.slug;
-    if (nameChanged || domainChanged) {
-      const base = buildBaseSlugFromWebchatName(nextName);
+    if (explicitSlug && explicitSlug !== current.slug) {
       nextSlug = await ensureUniqueSlugByDomain(
         this.prisma,
         nextDomain,
-        base,
+        explicitSlug,
+        current.id,
+      );
+    } else if (domainChanged) {
+      nextSlug = await ensureUniqueSlugByDomain(
+        this.prisma,
+        nextDomain,
+        current.slug,
         current.id,
       );
     }
+    const slugChanged = nextSlug !== current.slug;
+    void nameChanged;
 
     if (data.agent_id) {
       await this.ensureAgentBelongsToOrganization(
@@ -281,7 +299,7 @@ export class WebchatsService {
         ...(data.split_weight !== undefined
           ? { split_weight: data.split_weight }
           : {}),
-        ...(nameChanged || domainChanged ? { slug: nextSlug } : {}),
+        ...(slugChanged ? { slug: nextSlug } : {}),
       },
       include: {
         agentes_ia: true,
@@ -452,13 +470,16 @@ export class WebchatsService {
   async getPublicConfig(slug: string, domainHint?: string) {
     const webchat = await this.resolvePublicWebchat(slug, domainHint);
     const settings = this.asRecord(webchat.settings);
+    // Cópia do settings SEM o conteúdo pago (funil de entrega/assets) — o `settings`
+    // cru vai inteiro pro browser, então precisa da mesma proteção da personalizacao.
+    const publicSettings = this.protectSettingsForPublic(settings);
     const adsConfig = await this.resolvePublicAdsConfig(
       webchat.organization_id,
       webchat.id,
       webchat.ads_config,
       settings,
     );
-    const personalizacao = this.resolvePublicPersonalizacao(settings);
+    const personalizacao = this.protectFunilForPublic(this.resolvePublicPersonalizacao(settings));
     const headerAdsCode =
       webchat.header_scripts ??
       (typeof settings.header_ads_code === 'string'
@@ -470,12 +491,14 @@ export class WebchatsService {
         ? settings.footer_ads_code
         : null);
 
+    // A-39: o config público NUNCA leva o prompt_mestre (nem nada de prompt/
+    // system) — só o que o chat público usa (campos de captação e toggles).
     const agent = webchat.agentes_ia
       ? {
         id: webchat.agentes_ia.id,
         name: webchat.agentes_ia.name,
         description: webchat.agentes_ia.description,
-        ia_config: webchat.agentes_ia.ia_config,
+        ia_config: this.publicIaConfig(webchat.agentes_ia.ia_config),
         active: webchat.agentes_ia.active,
       }
       : null;
@@ -489,7 +512,7 @@ export class WebchatsService {
       slug: webchat.slug,
       domain: webchat.domain,
       dominio: webchat.domain,
-      settings,
+      settings: publicSettings,
       header_scripts: webchat.header_scripts ?? null,
       header_ads_code: headerAdsCode,
       footer_scripts: webchat.footer_scripts ?? null,
@@ -601,6 +624,10 @@ export class WebchatsService {
     if (!webchat.agentes_ia) {
       throw new BadRequestException('Webchat sem agente vinculado.');
     }
+    // A-95: agente desativado não responde (erro claro 4xx, não 502).
+    if (webchat.agentes_ia.active === false) {
+      throw new BadRequestException('O agente de IA deste webchat está inativo.');
+    }
 
     // Sistema é single-tenant agora — não desconta mais tokens por mensagem.
     // A função debitTokensForWebchatMessage segue existindo no fim do arquivo
@@ -616,6 +643,7 @@ export class WebchatsService {
     const requestLeadState = this.mergeLeadStateFromSession(
       persistedSessionState?.lead_state,
       dto.lead_state,
+      Boolean(persistedSessionState),
     );
     const requestConversationHistory = this.mergeConversationHistoryForRequest(
       persistedSessionState?.conversation_history,
@@ -654,6 +682,11 @@ export class WebchatsService {
           session_id: normalizedSessionId ?? null,
           organization_id: webchat.organization_id,
           provider_keys: providerKeys,
+          // Prazo total das tentativas no micro (< AI_CALL_TIMEOUT_MS do back).
+          deadline_ms: Math.max(
+            10_000,
+            (Number(process.env.AI_CALL_TIMEOUT_MS) || 90_000) - 5_000,
+          ),
           webchat: {
             id: webchat.id,
             slug: webchat.slug,
@@ -753,19 +786,28 @@ export class WebchatsService {
         // ao invés de morrer com "Unable to start a transaction in the
         // given time" sob pico (default Prisma é 2s, apertado quando
         // várias outras transactions estão segurando conn aguardando IA).
-        persistedLead = (await this.prisma.$transaction(
-          (tx) =>
-            this.upsertLeadForWebchat(tx, webchat, {
-              email: leadEmail ?? undefined,
-              name: leadName ?? undefined,
-              phone: leadPhone ?? undefined,
-              source: 'webchat',
-              session_id: normalizedSessionId ?? undefined,
-              context,
-              custom_fields: customFields,
-            }),
-          { maxWait: 30_000, timeout: 30_000 },
-        )) as Record<string, any>;
+        // A-67: falha ao gravar o lead (duplicata, banco) NÃO pode engolir a
+        // resposta da IA — loga e segue; o lead tenta de novo na próxima mensagem.
+        try {
+          persistedLead = (await this.prisma.$transaction(
+            (tx) =>
+              this.upsertLeadForWebchat(tx, webchat, {
+                email: leadEmail ?? undefined,
+                name: leadName ?? undefined,
+                phone: leadPhone ?? undefined,
+                source: 'webchat',
+                session_id: normalizedSessionId ?? undefined,
+                context,
+                custom_fields: customFields,
+              }),
+            { maxWait: 30_000, timeout: 30_000 },
+          )) as Record<string, any>;
+        } catch (leadError: any) {
+          persistedLead = null;
+          this.logger.warn(
+            `Falha ao persistir lead do webchat ${webchat.id} (sessão ${normalizedSessionId ?? '-'}): ${leadError?.message || leadError}`,
+          );
+        }
       }
 
       const leadCaptureWithPersistence = {
@@ -946,23 +988,37 @@ export class WebchatsService {
       };
 
       if (!emailLead) {
-        emailLead = await tx.email_leads.create({
-          data: {
-            organization_id: webchat.organization_id,
-            email: normalizedEmail,
-            name: normalizedName ?? null,
-            attributes: mergedAttributes as any,
-          },
-        });
+        try {
+          emailLead = await tx.email_leads.create({
+            data: {
+              organization_id: webchat.organization_id,
+              email: normalizedEmail,
+              name: normalizedName ?? null,
+              attributes: mergedAttributes as any,
+            },
+          });
+        } catch (e: any) {
+          // Corrida (P2002 no unique org+email): rebusca em vez de 500 (A-67).
+          if (e?.code !== 'P2002') throw e;
+          emailLead = await tx.email_leads.findFirst({
+            where: {
+              organization_id: webchat.organization_id,
+              email: normalizedEmail,
+            },
+          });
+          if (!emailLead) throw e;
+        }
       } else {
+        // Lead já existe: rota pública só PREENCHE o que está vazio — nunca
+        // sobrescreve nome/atributos já gravados (A-67).
         await tx.email_leads.update({
           where: { id: emailLead.id },
           data: {
-            ...(normalizedName ? { name: normalizedName } : {}),
-            attributes: {
-              ...((emailLead.attributes as Record<string, any>) || {}),
-              ...mergedAttributes,
-            } as any,
+            ...(!emailLead.name && normalizedName ? { name: normalizedName } : {}),
+            attributes: this.fillEmptyAttributes(
+              emailLead.attributes,
+              mergedAttributes,
+            ) as any,
           },
         });
       }
@@ -975,13 +1031,17 @@ export class WebchatsService {
       });
 
       if (!existingRelation) {
-        await tx.email_project_leads.create({
-          data: {
-            project_id: webchat.email_project_id,
-            lead_id: emailLead.id,
-            status: 'SUBSCRIBED',
-          } as any,
-        });
+        try {
+          await tx.email_project_leads.create({
+            data: {
+              project_id: webchat.email_project_id,
+              lead_id: emailLead.id,
+              status: 'SUBSCRIBED',
+            } as any,
+          });
+        } catch (e: any) {
+          if (e?.code !== 'P2002') throw e; // corrida: vínculo já existe
+        }
       }
 
       return {
@@ -1012,22 +1072,22 @@ export class WebchatsService {
         });
 
     if (existingWebchatLead) {
+      // Lead já existe: só preenche o que está vazio (A-67). A sessão atual é
+      // atualizada (é o ponteiro pra conversa mais recente).
       const updatedLead = await tx.webchat_leads.update({
         where: { id: existingWebchatLead.id },
         data: {
-          ...(normalizedName ? { name: normalizedName } : {}),
-          ...(normalizedEmail ? { email: normalizedEmail } : {}),
-          phone: normalizedPhone ?? existingWebchatLead.phone,
-          source: dto.source ?? existingWebchatLead.source,
+          ...(!existingWebchatLead.name && normalizedName ? { name: normalizedName } : {}),
+          ...(!existingWebchatLead.email && normalizedEmail ? { email: normalizedEmail } : {}),
+          phone: existingWebchatLead.phone ?? normalizedPhone,
+          source: existingWebchatLead.source ?? dto.source ?? 'webchat',
           session_id: dto.session_id ?? existingWebchatLead.session_id,
           context:
-            dto.context !== undefined
-              ? (dto.context as any)
-              : existingWebchatLead.context,
-          custom_fields:
-            dto.custom_fields !== undefined
-              ? (dto.custom_fields as any)
-              : existingWebchatLead.custom_fields,
+            existingWebchatLead.context ?? ((dto.context as any) ?? null),
+          custom_fields: this.fillEmptyAttributes(
+            existingWebchatLead.custom_fields,
+            this.asRecord(dto.custom_fields),
+          ) as any,
         },
       });
 
@@ -1059,6 +1119,23 @@ export class WebchatsService {
       lead_id: lead.id,
       deduplicated: false,
     };
+  }
+
+  // Mescla atributos preenchendo SÓ chaves vazias do existente (rota pública
+  // nunca sobrescreve o que já foi gravado) — A-67.
+  private fillEmptyAttributes(
+    existingRaw: unknown,
+    incomingRaw: Record<string, any>,
+  ): Record<string, any> {
+    const out: Record<string, any> = { ...this.asRecord(existingRaw) };
+    Object.entries(this.asRecord(incomingRaw)).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === '') return;
+      const current = out[key];
+      if (current === undefined || current === null || current === '') {
+        out[key] = value;
+      }
+    });
+    return out;
   }
 
   private getSessionHistoryLimit() {
@@ -1132,13 +1209,18 @@ export class WebchatsService {
 
     if (sessionHistory.length === 0) return clientHistory;
     if (clientHistory.length === 0) return sessionHistory;
-    if (clientHistory.length < sessionHistory.length) {
-      return sessionHistory;
-    }
+
+    // A-68: a sessão do servidor é a fonte de verdade; do cliente só entram as
+    // entradas que ainda não existem (mesmo role+conteúdo). Antes era concat +
+    // dedupe só de consecutivos → após um reload o histórico duplicava.
+    const keyOf = (e: { role: string; content: string }) => `${e.role}\n${e.content}`;
+    const seen = new Set(sessionHistory.map(keyOf));
+    const extra = clientHistory.filter((e) => !seen.has(keyOf(e)));
+    if (extra.length === 0) return sessionHistory;
 
     return this.normalizeConversationHistoryEntries([
       ...sessionHistory,
-      ...clientHistory,
+      ...extra,
     ]);
   }
 
@@ -1215,12 +1297,37 @@ export class WebchatsService {
     );
   }
 
+  // `sessionExists`: há linha de sessão no servidor → o que o cliente manda em
+  // `released`/`collected`/`capture_completed` é IGNORADO (senão o body podia
+  // "liberar" a captação ou inventar dados coletados) — A-67. Histórico de
+  // tentativas e configs (required_fields etc.) continuam mescláveis.
   private mergeLeadStateFromSession(
     sessionLeadStateRaw: unknown,
     clientLeadStateRaw: unknown,
+    sessionExists = false,
   ) {
     const sessionLeadState = this.asRecord(sessionLeadStateRaw);
     const clientLeadState = this.asRecord(clientLeadStateRaw);
+
+    if (sessionExists) {
+      const trusted: Record<string, any> = {
+        ...clientLeadState,
+        ...sessionLeadState,
+        collected: { ...this.asRecord(sessionLeadState.collected) },
+        released: Boolean(sessionLeadState.released),
+        capture_completed: Boolean(sessionLeadState.capture_completed),
+      };
+      // Tentativas: maior valor entre sessão e cliente (nunca "zera" pra burlar).
+      const attempts: Record<string, any> = { ...this.asRecord(sessionLeadState.attempts) };
+      Object.entries(this.asRecord(clientLeadState.attempts)).forEach(([key, value]) => {
+        const current = Number(attempts[key]);
+        const next = Number(value);
+        if (!Number.isFinite(next)) return;
+        attempts[key] = Number.isFinite(current) ? Math.max(current, next) : next;
+      });
+      trusted.attempts = attempts;
+      return trusted;
+    }
 
     if (Object.keys(sessionLeadState).length === 0) return clientLeadState;
     if (!this.hasMeaningfulLeadState(clientLeadState)) return sessionLeadState;
@@ -1532,12 +1639,24 @@ export class WebchatsService {
       select: {
         id: true,
         status: true,
+        kind: true,
       },
     });
 
     if (!webchatDomain) {
       throw new BadRequestException(
         'Domínio de webchat não cadastrado para sua organização. Acesse Configurações > Conta & Domínios > Webchat.',
+      );
+    }
+    // A-95: domínio de quiz não serve pra webchat, e PENDING/FAILED não publica.
+    if (webchatDomain.kind !== 'webchat') {
+      throw new BadRequestException(
+        'Este domínio está cadastrado para quizzes, não para webchats.',
+      );
+    }
+    if (webchatDomain.status !== 'VERIFIED') {
+      throw new BadRequestException(
+        'Domínio de webchat ainda não verificado. Verifique o DNS antes de publicar o webchat.',
       );
     }
   }
@@ -1557,6 +1676,66 @@ export class WebchatsService {
       return {};
     }
     return value as Record<string, any>;
+  }
+
+  // Subconjunto NÃO sensível do ia_config pro config público (A-39). O front
+  // público lê só `campos_lead` (PublicWebchat.jsx); mantemos também modelo/
+  // temperatura/max_tokens e os toggles `captar_*` por compatibilidade. Tudo que
+  // tenha "prompt", "system", "instru" ou "persona" no nome fica de fora.
+  private publicIaConfig(raw: unknown): Record<string, any> {
+    const cfg = this.asRecord(raw);
+    const allowed = new Set(['modelo', 'model', 'temperatura', 'temperature', 'max_tokens', 'campos_lead']);
+    const out: Record<string, any> = {};
+    Object.entries(cfg).forEach(([key, value]) => {
+      const k = String(key).toLowerCase();
+      if (/prompt|system|instru|persona|regra|contexto/.test(k)) return;
+      if (allowed.has(k) || k.startsWith('captar_')) out[key] = value;
+    });
+    return out;
+  }
+
+  private protectSettingsForPublic(settings: Record<string, any>) {
+    const out: Record<string, any> = { ...settings };
+    if (out.personalizacao && typeof out.personalizacao === 'object' && !Array.isArray(out.personalizacao)) {
+      out.personalizacao = this.protectFunilForPublic(out.personalizacao);
+    } else if (out.funil) {
+      // shape legado (personalizacao na raiz do settings)
+      Object.assign(out, this.protectFunilForPublic(out));
+    }
+    return out;
+  }
+
+  // Funil no config PÚBLICO: as mensagens das sequências de ENTREGA (alvo de
+  // `charge.onPaidSequenceId`) são removidas (o chat só as recebe via
+  // /payments/:id quando status=PAID) e mensagens file/video perdem o assetId.
+  // Sem isso, qualquer um leria o produto pago direto no JSON do config.
+  private protectFunilForPublic(personalizacao: Record<string, any> | null) {
+    const funil = personalizacao?.funil;
+    if (!funil || typeof funil !== 'object' || !funil.sequences || typeof funil.sequences !== 'object') return personalizacao;
+    const protectedIds = new Set<string>();
+    Object.values(funil.sequences as Record<string, any>).forEach((seq: any) => {
+      if (seq?.ending?.type === 'charge' && seq.ending.charge?.onPaidSequenceId) {
+        protectedIds.add(String(seq.ending.charge.onPaidSequenceId));
+      }
+    });
+    const sequences: Record<string, any> = {};
+    Object.entries(funil.sequences as Record<string, any>).forEach(([id, seq]: [string, any]) => {
+      if (!seq || typeof seq !== 'object') return;
+      const messages = Array.isArray(seq.messages) ? seq.messages : [];
+      if (protectedIds.has(id)) {
+        sequences[id] = { ...seq, messages: [], protected: true };
+        return;
+      }
+      sequences[id] = {
+        ...seq,
+        messages: messages.map((m: any) =>
+          m && (m.type === 'file' || m.type === 'video')
+            ? { id: m.id, type: m.type, name: m.name, caption: m.caption, typingDurationMs: m.typingDurationMs, locked: true }
+            : m,
+        ),
+      };
+    });
+    return { ...personalizacao, funil: { ...funil, sequences } };
   }
 
   private resolvePublicPersonalizacao(settings: Record<string, any>) {
@@ -1883,7 +2062,17 @@ export class WebchatsService {
     return {};
   }
 
-  private async resolvePublicWebchat(slug: string, domainHint?: string) {
+  // Conta da org sem acesso ativo (assinatura vencida/pendente/bloqueada) → webchat
+  // público fica indisponível (D4: "vencido = tudo para"). 503 com mensagem amigável.
+  async resolvePublicWebchat(slug: string, domainHint?: string) {
+    const webchat = await this.resolvePublicWebchatRaw(slug, domainHint);
+    if (!(await this.access.isOrgActive(webchat.organization_id))) {
+      throw new ServiceUnavailableException('Este webchat está temporariamente indisponível.');
+    }
+    return webchat;
+  }
+
+  private async resolvePublicWebchatRaw(slug: string, domainHint?: string) {
     const normalizedDomain = this.normalizeDomain(domainHint);
 
     if (normalizedDomain) {

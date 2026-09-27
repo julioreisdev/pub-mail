@@ -190,6 +190,10 @@ cd front/vite && yarn install && yarn dev   # :3000
 
 > Webhooks (Telegram, Resend, gateways) need a public URL — in dev use a tunnel (e.g. `ngrok http 8000`) and point `PUBLIC_API_URL` at it.
 
+### Selling products through the Webchat (PIX charge in the funnel)
+
+In the **Funnel Builder**, a sequence can end with **💳 PIX charge**: set the price and pick (or create in one click) the **delivery sequence** — that is where the PDF, video, photos and product text go. In the chat the lead sees the PIX (QR + copy-and-paste code), copies it, pays and clicks **Validate payment**; the system confirms with the gateway (webhook, automatic check every minute and polling) and sends the delivery. Product files and videos are **protected** on the server (`back/protected/`) and only released through a **signed link** after payment. The PIX gateway (Mercado Pago or PushinPay) is **one per organization**, under **Settings → Payments**, together with the **sales** list across channels (Webchat + Telegram). Nothing is asked from the lead before paying.
+
 ## Environment variables
 
 ### Back (NestJS)
@@ -229,7 +233,7 @@ Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live
 | `PORT` | 9999 | |
 | `EMAIL_SERVICE_KEY` | — | Validated in `x-api-key` |
 | `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | BullMQ queues |
-| `NEST_WEBHOOK_URL` | — | Internal callback to the back (dispatch result) |
+| `NEST_WEBHOOK_URL` | `http://127.0.0.1:8000/webhooks/email` | Internal callback to the back (dispatch result) — the micro appends `/schedule-sent/:id` |
 | `BASE_URL_API` | — | Public back URL (open pixel / tracked click) |
 
 ### Front (Vite)
@@ -241,15 +245,17 @@ Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live
 
 ## Production deployment
 
+> 📘 **Full deployment tutorial (junior-friendly, every command included):** [`Deploy.md`](Deploy.md) · [`Deploy.pdf`](Deploy.pdf) (Portuguese). The section below is the summary.
+
 > **Sep/2026:** the AWS installation (EC2 via SSM) is being **decommissioned**. The next environment is a **new server with a clean database**. The runbook below is the official from-scratch install; the AWS history lives only in `CLAUDE.md`.
 
-**Native** deployment (no Docker): Ubuntu 24.04, Node 20 + Yarn 4 (corepack), MySQL 8, Redis 7, nginx + certbot, `ffmpeg` and `libvips`. Services run under `systemd`. Code lives in `/opt/pub-mail`.
+**Native** deployment (no Docker): Ubuntu 24.04, **Node 22 LTS** + Yarn 4 (corepack — every `package.json` pins `"packageManager": "yarn@4.10.3"`; without it corepack falls back to Yarn 1 and the back install fails), MySQL 8, Redis 7, nginx + certbot, `ffmpeg` and `libvips`. Services run under `systemd`. Code lives in `/opt/pub-mail`.
 
 ### 1. Packages
 
 ```bash
 apt update && apt install -y nginx mysql-server redis-server certbot python3-certbot-nginx ffmpeg libvips42 build-essential git
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs && corepack enable
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs && corepack enable
 ```
 
 ### 2. MySQL + Redis
@@ -270,11 +276,12 @@ cd /opt/pub-mail && for d in back ai-micro-services email-micro-services front/v
 # fill in each .env (.env files are NOT versioned) → see "Environment variables"; generate secrets with: openssl rand -hex 32
 ```
 
-The usual pitfalls (see the variables table): `DATABASE_HOST/USER/PASS/NAME/PORT` (runtime) **and** `DATABASE_URL` (Prisma CLI); `DATABASE_POOL_LIMIT=10`; `WEBCHAT_BACKEND_INTERNAL_URL=http://127.0.0.1:8000`; `PUBLIC_API_URL`, `BASE_URL_API` and `NEST_WEBHOOK_URL` with the new public back URL; `VITE_APP_BASE_NAME=/` and `VITE_API_URL` on the front.
+The usual pitfalls (see the variables table): the `.cnf` for MySQL must be readable by the `mysql` user (`chmod 644`) or it is silently ignored; Node 20 is EOL and `@prisma/streams-local` requires Node ≥ 22; `nest build` still emits `dist/` on type errors, so grep the output for `error TS` before starting the service; `DATABASE_HOST/USER/PASS/NAME/PORT` (runtime) **and** `DATABASE_URL` (Prisma CLI); `DATABASE_POOL_LIMIT=10`; `WEBCHAT_BACKEND_INTERNAL_URL=http://127.0.0.1:8000`; `WEBCHAT_DOMAIN_BIND_PROVIDER=CERTBOT` (only `CERTBOT|NONE|DISABLED|MOCK` are accepted); `PUBLIC_API_URL`/`BASE_API_URL` (back) and `BASE_URL_API` (email micro) with the new public back URL; `NEST_WEBHOOK_URL=http://127.0.0.1:8000/webhooks/email` (the micro appends `/schedule-sent/:id`); `STRIPE_SECRET_KEY` **must not be empty** (`BillingService` throws at boot) — without Stripe use an inert placeholder such as `sk_test_disabled_placeholder` and `VITE_STRIPE_ENABLED=false`; `VITE_APP_BASE_NAME=/` and `VITE_API_URL` on the front.
 
 ### 4. Build + database + seed
 
 ```bash
+unset CI   # with CI set (even CI=0) Yarn 4 goes immutable and refuses to install without a lockfile
 cd /opt/pub-mail/back && yarn install && yarn prisma migrate deploy && yarn prisma generate && yarn nest build
 # platform user (SUPER_ADMIN, hidden organization) + edge IP + certbot email — no password in code:
 SEED_ADMIN_EMAIL=dev@yourcompany.com SEED_ADMIN_PASSWORD='<strong password>' SEED_EDGE_IP=<server IPv4> SEED_CERTBOT_EMAIL=ops@yourcompany.com \
@@ -289,14 +296,14 @@ The seed is **idempotent** (run it again to change the password). Each organizat
 
 ### 5. Services (`systemd`)
 
-Three units — `pubmail-back` (`node dist/src/main.js`, port 8000, **runs as root** to write nginx vhosts and run certbot), `pubmail-ai` (`node server.js`, 4000) and `pubmail-email` (9999) — each with `WorkingDirectory` in its folder, `EnvironmentFile=<folder>/.env`, `Restart=always`. The micros stay **loopback-only** (the email micro has no auth on `/send`).
+Three units — `pubmail-back` (`node dist/src/main.js`, port 8000, **runs as root** to write nginx vhosts and run certbot), `pubmail-ai` (`node src/server.js`, 4000) and `pubmail-email` (9999) — each with `WorkingDirectory` in its folder, `EnvironmentFile=<folder>/.env`, `Restart=always`. The micros stay **loopback-only** (the email micro has no auth on `/send`).
 
 ### 6. nginx + SSL
 
 - **Front** vhost (platform domain): `root /opt/pub-mail/front/vite/dist` + `try_files $uri /index.html`.
 - **API** vhost (`api.<domain>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **before** `location / { proxy_pass http://127.0.0.1:8000; }`.
 - `000-default-deny` (`default_server` returning 444) for unknown hosts.
-- `certbot --nginx -d <front> -d api.<front>`. Customer domains are provisioned by the system itself (automatic vhost + certbot when clicking "Verify DNS").
+- `certbot --nginx --redirect -d <front> -d www.<front> -d api.<front>` (plus a 443 `server` for `www.<front>` returning `301` to the apex). Customer domains are provisioned by the system itself (automatic vhost + certbot when clicking "Verify DNS").
 - Firewall: only **80/443** (plus whatever admin access the infra team defines).
 
 ### 7. After going live
@@ -344,3 +351,5 @@ mysqldump -u pubmail -p pubmail | gzip > backup.sql.gz
 ---
 
 **License**: private / proprietary.
+
+- **Subscriptions / module-based access (Sep 2026):** the super admin creates clients with enabled modules (Email, Webchat, Quizzes, Telegram, Settings) and a price per period or lifetime; a pending/expired account gets a PIX payment screen that locks the platform, a free account gets a welcome modal. Super-admin-owned gateway and subscriptions dashboard under Administration → Payments. Details: `docs/plano-assinaturas-acesso.md`.

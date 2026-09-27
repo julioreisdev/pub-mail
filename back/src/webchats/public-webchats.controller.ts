@@ -8,6 +8,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../auth/public.decorator';
 import { CaptureWebchatLeadDto } from './dto/capture-webchat-lead.dto';
 import { SendWebchatMessageDto } from './dto/send-webchat-message.dto';
@@ -47,6 +48,8 @@ export class PublicWebchatsController {
     );
   }
 
+  // A-13: 20 captações/min por IP.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post(':slug/leads')
   @ApiOperation({
     summary:
@@ -62,6 +65,8 @@ export class PublicWebchatsController {
     return this.webchatsService.captureLead(slug, domainHint, dto);
   }
 
+  // A-13: 30 mensagens/min por IP (protege as chaves de IA free).
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post(':slug/messages')
   @ApiOperation({
     summary:

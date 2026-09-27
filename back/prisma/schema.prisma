@@ -85,6 +85,8 @@ model users {
   role            users_role    @default(OWNER)
   refresh_token   String?       @db.VarChar(512)
   active          Boolean       @default(dbgenerated("(true)"))
+  modules         Json?         // módulos liberados p/ este usuário: ['email','webchat','quiz','telegram','settings']
+  welcomed_at     DateTime?     @db.DateTime(3) // modal de boas-vindas já visto
   organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_organization_id")
 
   @@index([organization_id], map: "idx_users_org")
@@ -302,6 +304,7 @@ model email_projects_schedules_sent {
   @@index([organization_id, project_id, run_at], map: "idx_sent_org_project_runat")
   @@index([organization_id, sent], map: "idx_sent_org_sent")
   @@index([flow_step_id], map: "idx_sent_flow_step")
+  @@index([project_id, sent, run_at], map: "idx_sent_project_sent_run")
 }
 
 model email_schedules_sent_opens {
@@ -920,6 +923,10 @@ model system_settings {
   id                   Int      @id @default(1)
   webchat_edge_ip      String?  @db.VarChar(45)
   certbot_email        String?  @db.VarChar(255)
+  // Gateway PIX do SUPERADMIN (assinaturas do Pub Mail) — separado do gateway das orgs
+  billing_provider     String   @default("mercadopago") @db.VarChar(32)
+  billing_access_token String?  @db.Text
+  billing_active       Boolean  @default(false)
   created_at           DateTime @default(now()) @db.DateTime(0)
   updated_at           DateTime @updatedAt @db.DateTime(0)
 }
@@ -1171,6 +1178,7 @@ model telegram_payments {
   nudge_message_id    BigInt?   @db.BigInt
   invite_link         String?   @db.VarChar(512)
   delivered           Boolean   @default(false)
+  delivering_at       DateTime? @db.DateTime(3) // claim atômico da entrega (A-06); NULL = livre
   paid_at             DateTime? @db.DateTime(3)
   delivered_at        DateTime? @db.DateTime(3)
   expires_at          DateTime? @db.DateTime(3)
@@ -1317,6 +1325,7 @@ model telegram_broadcast_sends {
   group_id        String?                  @db.Char(36)
   status          telegram_bc_send_status  @default(PENDING)
   attempts        Int                      @default(0)
+  msg_index       Int                      @default(0) // próxima mensagem da copy a enviar (retomada de envio parcial)
   last_error      String?                  @db.Text
   created_at      DateTime                 @default(now()) @db.DateTime(3)
   sent_at         DateTime?                @db.DateTime(0)
@@ -1378,4 +1387,92 @@ model telegram_automation_enrollments {
   @@unique([automation_id, tg_user_id], map: "uk_tgautomenr")
   @@index([status, next_send_at], map: "idx_tgautomenr_due")
   @@index([organization_id], map: "idx_tgautomenr_org")
+}
+// ===== Pagamentos do Webchat (PIX no funil) =====
+// Arquivos de produto (PDF/vídeo/etc) ficam FORA de /uploads (não são públicos):
+// storage_path relativo a <cwd>/protected/. Download só com URL assinada.
+model webchat_assets {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  webchat_id      String?  @db.Char(36)
+  kind            String   @db.VarChar(16)
+  name            String   @db.VarChar(255)
+  mime            String   @db.VarChar(128)
+  size_bytes      BigInt   @db.BigInt
+  storage_path    String   @db.VarChar(512)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+
+  @@index([organization_id], map: "idx_wcasset_org")
+  @@index([webchat_id], map: "idx_wcasset_webchat")
+}
+
+// Cobrança PIX gerada por uma sequência do funil (ending.type = 'charge').
+// O valor vem SEMPRE do funil salvo no banco (nunca do cliente).
+model webchat_payments {
+  id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String    @db.Char(36)
+  webchat_id         String    @db.Char(36)
+  session_id         String    @db.VarChar(100)
+  sequence_id        String    @db.VarChar(80)
+  provider           String    @db.VarChar(32)
+  provider_charge_id String?   @db.VarChar(255)
+  amount_cents       Int       @default(0)
+  description        String?   @db.VarChar(255)
+  status             String    @default("PENDING") @db.VarChar(16)
+  pix_code           String?   @db.Text
+  qr_base64          String?   @db.LongText
+  context            Json?
+  expires_at         DateTime? @db.DateTime(3)
+  paid_at            DateTime? @db.DateTime(3)
+  delivered_at       DateTime? @db.DateTime(3)
+  created_at         DateTime  @default(now()) @db.DateTime(0)
+  updated_at         DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, created_at], map: "idx_wcpay_org_created")
+  @@index([webchat_id], map: "idx_wcpay_webchat")
+  @@index([status], map: "idx_wcpay_status")
+  @@index([provider_charge_id], map: "idx_wcpay_charge")
+  @@index([session_id, sequence_id], map: "idx_wcpay_session_seq")
+}
+
+// ===== Assinaturas da plataforma (acesso ao Pub Mail) =====
+// Plano da ORGANIZAÇÃO: preço + período (NULL = vitalício) + status.
+// status: FREE | PENDING (nunca pagou) | ACTIVE | EXPIRED | BLOCKED (manual)
+model organization_access {
+  organization_id String    @id @db.Char(36)
+  price_cents     Int       @default(0)
+  period_days     Int?
+  status          String    @default("FREE") @db.VarChar(16)
+  access_until    DateTime? @db.DateTime(3)
+  first_paid_at   DateTime? @db.DateTime(3)
+  last_paid_at    DateTime? @db.DateTime(3)
+  notes           String?   @db.VarChar(255)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([status], map: "idx_orgaccess_status")
+  @@index([access_until], map: "idx_orgaccess_until")
+}
+
+// Cobranças PIX das assinaturas (gateway do superadmin). status: PENDING|PAID|EXPIRED|FAILED|MANUAL
+model platform_payments {
+  id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String    @db.Char(36)
+  user_id            String?   @db.Char(36)
+  provider           String    @db.VarChar(32)
+  provider_charge_id String?   @db.VarChar(255)
+  amount_cents       Int       @default(0)
+  period_days        Int?
+  description        String?   @db.VarChar(255)
+  status             String    @default("PENDING") @db.VarChar(16)
+  pix_code           String?   @db.Text
+  qr_base64          String?   @db.LongText
+  expires_at         DateTime? @db.DateTime(3)
+  paid_at            DateTime? @db.DateTime(3)
+  created_at         DateTime  @default(now()) @db.DateTime(0)
+  updated_at         DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, created_at], map: "idx_ppay_org_created")
+  @@index([status], map: "idx_ppay_status")
+  @@index([provider_charge_id], map: "idx_ppay_charge")
 }

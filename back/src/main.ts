@@ -9,6 +9,9 @@ import { join } from 'path'; // <-- Importado para resolver caminhos de pastas
 async function bootstrap() {
   // Tipamos o app como NestExpressApplication para acessar o useStaticAssets
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Atrás do nginx: confia no 1º proxy pra `req.ip` ser o IP real do cliente
+  // (rate limit / logs). Sem isso o throttler veria só 127.0.0.1 (A-13/A-24).
+  app.set('trust proxy', 1);
   // Body limit 10mb (era 200mb): webchat + uploads de avatar/logo cabem
   // confortavelmente. Sob tráfego pago, 200mb × N reqs concorrentes podia
   // estourar heap. 10mb cobre todos os casos legítimos.
@@ -57,8 +60,12 @@ async function bootstrap() {
   );
 
   // -----------------------
-  // Swagger
+  // Swagger — desligado em produção, salvo SWAGGER_ENABLED=true (A-80)
   // -----------------------
+  const swaggerEnabled =
+    process.env.NODE_ENV !== 'production' ||
+    String(process.env.SWAGGER_ENABLED || '').toLowerCase() === 'true';
+  if (swaggerEnabled) {
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Pub Mail')
     .setDescription('Documentação da API')
@@ -79,6 +86,7 @@ async function bootstrap() {
       persistAuthorization: true,
     },
   });
+  }
 
   // -----------------------
   // Listen

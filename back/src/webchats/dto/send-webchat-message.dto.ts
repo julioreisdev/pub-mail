@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
   IsArray,
   IsNotEmpty,
   IsObject,
@@ -12,6 +13,7 @@ export class SendWebchatMessageDto {
   @ApiProperty({ example: 'Quero entender como funciona o plano premium.' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(4000)
   message: string;
 
   @ApiPropertyOptional({ example: 'session-abc-123' })
@@ -49,5 +51,6 @@ export class SendWebchatMessageDto {
   })
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(50)
   conversation_history?: Record<string, any>[];
 }

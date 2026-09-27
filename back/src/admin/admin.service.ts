@@ -10,6 +10,9 @@ import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
+import { CreateClientDto } from '../platform-billing/dto/billing.dto';
+import { AccessService } from '../platform-billing/access.service';
+import { ALL_MODULES, normalizeModules } from '../platform-billing/modules.const';
 
 const userSelect = {
   id: true,
@@ -18,6 +21,7 @@ const userSelect = {
   email: true,
   role: true,
   active: true,
+  modules: true,
 };
 
 function isUniqueError(e: any) {
@@ -32,7 +36,7 @@ function asRole(value: any, fallback: users_role): users_role {
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private readonly access: AccessService) {}
 
   // ---- Organização OCULTA (conta do desenvolvedor) ----
   // Org com hidden=true (e seus usuários) é tratada como INEXISTENTE pela API admin para
@@ -63,6 +67,8 @@ export class AdminService {
         _count: { select: { users: true } },
       },
     });
+    const accessRows = orgs.length ? await this.prisma.organization_access.findMany({ where: { organization_id: { in: orgs.map((o) => o.id) } } }) : [];
+    const amap = new Map(accessRows.map((r) => [r.organization_id, r] as [string, any]));
     return orgs.map((o: any) => ({
       id: o.id,
       name: o.name,
@@ -70,6 +76,7 @@ export class AdminService {
       status: o.status,
       created_at: o.created_at,
       users_count: o._count?.users ?? 0,
+      access: this.accessSummary(amap.get(o.id)),
     }));
   }
 
@@ -111,9 +118,11 @@ export class AdminService {
             password_hash,
             role,
             active: true,
+            modules: ALL_MODULES, // fluxo legado "Nova organização": acesso completo e gratuito
           },
           select: userSelect,
         });
+        await this.access.upsertPlan(organization.id, { price_cents: 0, period_days: null }, tx);
         return { organization, user };
       });
     } catch (e) {
@@ -184,6 +193,10 @@ export class AdminService {
             id,
           );
           await tx.$executeRawUnsafe(
+            'DELETE FROM email_schedules_sent_clicks WHERE schedule_sent_id IN (SELECT id FROM email_projects_schedules_sent WHERE organization_id = ?)',
+            id,
+          );
+          await tx.$executeRawUnsafe(
             'DELETE FROM email_behavior_trigger_fires WHERE trigger_id IN (SELECT id FROM email_behavior_triggers WHERE organization_id = ?)',
             id,
           );
@@ -207,6 +220,8 @@ export class AdminService {
           await tx.webchat_leads.deleteMany(where);
           await tx.webchat_sessions.deleteMany(where);
           await tx.webchat_domains.deleteMany(where);
+          await tx.webchat_payments.deleteMany(where); // cobranças PIX do funil
+          await tx.webchat_assets.deleteMany(where); // arquivos de produto (metadados; disco fica)
           await tx.webchats.deleteMany(where);
           await tx.quiz_leads.deleteMany(where);
           await tx.quiz_ads.deleteMany(where);
@@ -231,6 +246,30 @@ export class AdminService {
           await tx.billing_cards.deleteMany(where);
           await tx.wallets.deleteMany(where);
           await tx.organization_settings.deleteMany(where); // chaves de API da org
+          await tx.platform_payments.deleteMany(where); // cobranças de assinatura
+          await tx.organization_access.deleteMany(where); // plano de acesso
+
+          // Telegram (A-33): todas as tabelas têm organization_id. Sem isso os
+          // broadcasts/rotativas da org apagada continuavam rodando (runners
+          // não filtram org) e bots/contatos ficavam órfãos.
+          await tx.telegram_broadcast_sends.deleteMany(where);
+          await tx.telegram_broadcast_runs.deleteMany(where);
+          await tx.telegram_broadcast_copies.deleteMany(where);
+          await tx.telegram_broadcasts.deleteMany(where);
+          await tx.telegram_automation_enrollments.deleteMany(where);
+          await tx.telegram_automations.deleteMany(where);
+          await tx.telegram_flow_enrollments.deleteMany(where);
+          await tx.telegram_flows.deleteMany(where);
+          await tx.telegram_rotators.deleteMany(where);
+          await tx.telegram_subscriptions.deleteMany(where);
+          await tx.telegram_payments.deleteMany(where);
+          await tx.telegram_plans.deleteMany(where);
+          await tx.telegram_payment_settings.deleteMany(where); // gateway PIX (compartilhado c/ webchat)
+          await tx.telegram_messages.deleteMany(where);
+          await tx.telegram_groups.deleteMany(where);
+          await tx.telegram_contacts.deleteMany(where);
+          await tx.telegram_bots.deleteMany(where);
+
           await tx.users.deleteMany(where);
 
           await tx.organizations.delete({ where: { id } });
@@ -248,7 +287,7 @@ export class AdminService {
 
   async listUsers(viewerOrgId?: string) {
     const showHidden = await this.seesHidden(viewerOrgId);
-    return this.prisma.users.findMany({
+    const users = await this.prisma.users.findMany({
       where: showHidden ? {} : { organizations: { hidden: false } },
       orderBy: { name: 'asc' },
       select: {
@@ -256,6 +295,54 @@ export class AdminService {
         organizations: { select: { id: true, name: true, status: true } },
       },
     });
+    const orgIds = [...new Set(users.map((u) => u.organization_id))];
+    const accessRows = orgIds.length ? await this.prisma.organization_access.findMany({ where: { organization_id: { in: orgIds } } }) : [];
+    const amap = new Map(accessRows.map((r) => [r.organization_id, r] as [string, any]));
+    return users.map((u: any) => ({ ...u, modules: normalizeModules(u.modules), access: this.accessSummary(amap.get(u.organization_id)) }));
+  }
+
+  private accessSummary(row: any) {
+    const st = this.access.stateOf(row);
+    return {
+      status: st.status,
+      needs_payment: st.needs_payment,
+      price_cents: st.price_cents,
+      period_days: st.period_days,
+      lifetime: st.lifetime,
+      access_until: st.access_until,
+      days_left: st.days_left,
+      last_paid_at: st.last_paid_at,
+    };
+  }
+
+  // Novo CLIENTE = organização + wallet + usuário dono + plano de acesso + módulos, numa transação.
+  async createClient(dto: CreateClientDto) {
+    const email = String(dto.email || '').toLowerCase().trim();
+    if (!email) throw new BadRequestException('E-mail é obrigatório.');
+    const name = String(dto.name || '').trim();
+    if (!name) throw new BadRequestException('Nome é obrigatório.');
+    const orgName = String(dto.org_name || name).trim();
+    const existing = await this.prisma.users.findUnique({ where: { email } });
+    if (existing) throw new BadRequestException('Já existe um usuário com esse e-mail.');
+    const role = asRole(dto.role, users_role.OWNER);
+    const modules = normalizeModules(dto.modules);
+    const password_hash = await bcrypt.hash(String(dto.password), 12);
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        const organization = await tx.organizations.create({ data: { name: orgName } });
+        await tx.wallets.create({ data: { organization_id: organization.id, balance: '0.0000', status: wallets_status.ACTIVE } });
+        const user = await tx.users.create({
+          data: { organization_id: organization.id, name, email, password_hash, role, active: true, modules },
+          select: userSelect,
+        });
+        const access = await this.access.upsertPlan(organization.id, { price_cents: dto.price_cents, period_days: dto.period_days ?? null }, tx);
+        return { organization, user: { ...user, modules }, access };
+      });
+      return result;
+    } catch (e) {
+      if (isUniqueError(e)) throw new BadRequestException('E-mail já cadastrado.');
+      throw e;
+    }
   }
 
   async createUser(dto: CreateAdminUserDto, viewerOrgId?: string) {
@@ -287,6 +374,7 @@ export class AdminService {
           password_hash,
           role,
           active: true,
+          modules: normalizeModules(dto.modules),
         },
         select: userSelect,
       });
@@ -306,7 +394,10 @@ export class AdminService {
     if (dto.name !== undefined) data.name = String(dto.name).trim();
     if (dto.role !== undefined) data.role = asRole(dto.role, user.role);
     if (dto.active !== undefined) data.active = dto.active === true;
-    return this.prisma.users.update({ where: { id }, data, select: userSelect });
+    if (dto.modules !== undefined) data.modules = normalizeModules(dto.modules);
+    const updated = await this.prisma.users.update({ where: { id }, data, select: userSelect });
+    this.access.invalidateUser(id);
+    return updated;
   }
 
   async changePassword(id: string, password: string, viewerOrgId?: string) {

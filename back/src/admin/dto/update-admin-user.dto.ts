@@ -1,4 +1,5 @@
-import { IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import { MODULES } from '../../platform-billing/modules.const';
 
 export class UpdateAdminUserDto {
   @IsOptional()
@@ -12,4 +13,9 @@ export class UpdateAdminUserDto {
   @IsOptional()
   @IsBoolean()
   active?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(MODULES, { each: true })
+  modules?: string[];
 }

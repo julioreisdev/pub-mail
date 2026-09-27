@@ -54,6 +54,29 @@ export function sanitizeCssClasses(value) {
     .join(' ');
 }
 
+// Normaliza URL de redirecionamento (geral e por resposta) e href de página
+// legal: trim, prefixa `https://` quando parece domínio sem esquema (senão o
+// browser abre como link relativo → 404 no domínio do quiz) e rejeita
+// javascript:/data:/vbscript: (→ ''). Mesma regra do funil do webchat.
+const DANGEROUS_SCHEME_RE = /^(javascript|data|vbscript):/i;
+const BARE_DOMAIN_RE = /^[\w.-]+\.[a-z]{2,}(?:[/?#].*)?$/i;
+export function normalizeRedirectUrl(raw) {
+  const value = String(raw ?? '').trim();
+  if (!value) return '';
+  const probe = value.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, '');
+  if (DANGEROUS_SCHEME_RE.test(probe)) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//') || value.startsWith('/') || value.startsWith('#')) {
+    return value;
+  }
+  if (BARE_DOMAIN_RE.test(value)) return `https://${value}`;
+  return value;
+}
+
+// Só http(s) pode virar navegação/link no quiz público.
+export function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
 // ---- Defaults (base de qualquer config; normalize() preenche o que faltar) ----
 export function createDefaultQuizConfig() {
   return {
@@ -170,7 +193,7 @@ export function normalizeQuizConfig(raw) {
         .map((o) => ({
           id: o.id || uid('o'),
           label: typeof o.label === 'string' ? o.label : '',
-          redirect: typeof o.redirect === 'string' ? o.redirect : '',
+          redirect: typeof o.redirect === 'string' ? normalizeRedirectUrl(o.redirect) : '',
           cssClass: typeof o.cssClass === 'string' ? o.cssClass : ''
         })),
       // Conteúdo livre abaixo dos botões (títulos/texto/imagens/divisor).
@@ -186,9 +209,15 @@ export function normalizeQuizConfig(raw) {
       typeof merged.leadCapture.buttonBgColor === 'string' ? merged.leadCapture.buttonBgColor : '';
   }
 
+  // Redirect geral: mesma normalização (https:// automático, esquema perigoso → '').
+  merged.redirect = { ...(isObj(merged.redirect) ? merged.redirect : {}), url: normalizeRedirectUrl(merged.redirect?.url) };
+
+  // Páginas legais: o href é normalizado aqui; páginas SEM href válido ficam
+  // no config (o builder precisa delas pra edição) e são filtradas no render
+  // (QuizView) — antes um href vazio virava "#" e abria o próprio quiz.
   merged.legal.pages = (Array.isArray(merged.legal?.pages) ? merged.legal.pages : [])
     .filter(Boolean)
-    .map((p) => ({ id: p.id || uid('lp'), label: p.label || '', href: p.href || '' }));
+    .map((p) => ({ id: p.id || uid('lp'), label: p.label || '', href: normalizeRedirectUrl(p.href) }));
 
   return merged;
 }

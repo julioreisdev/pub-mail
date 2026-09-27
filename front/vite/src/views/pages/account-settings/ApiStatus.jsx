@@ -6,7 +6,6 @@ import {
     Chip,
     CircularProgress,
     Divider,
-    IconButton,
     LinearProgress,
     Stack,
     Tooltip,
@@ -18,9 +17,6 @@ import { HourglassBottomRoundedIcon as HourglassBottomRoundedIcon } from 'ui-com
 import { EventBusyRoundedIcon as EventBusyRoundedIcon } from 'ui-component/icons';
 import { BlockRoundedIcon as BlockRoundedIcon } from 'ui-component/icons';
 import { HelpOutlineRoundedIcon as HelpOutlineRoundedIcon } from 'ui-component/icons';
-import { ContentCopyRoundedIcon as ContentCopyRoundedIcon } from 'ui-component/icons';
-import { CheckRoundedIcon as CheckRoundedIcon } from 'ui-component/icons';
-import toast from 'react-hot-toast';
 
 import { get } from '../../../api/api';
 
@@ -92,56 +88,26 @@ function formatNumber(n) {
     return new Intl.NumberFormat('pt-BR').format(Number(n) || 0);
 }
 
+// A-19: o back devolve `key_masked`; se por algum motivo vier uma chave crua
+// (`api_key`/`key`), mascara no cliente — o valor completo NUNCA é exibido.
+function maskKeyClient(raw) {
+    const k = String(raw || '');
+    if (!k) return '';
+    if (k.length <= 8) return '•'.repeat(k.length);
+    return `${k.slice(0, 4)}…${k.slice(-4)}`;
+}
+function displayKey(keyData) {
+    if (keyData?.key_masked) return String(keyData.key_masked);
+    if (keyData?.api_key_masked) return String(keyData.api_key_masked);
+    return maskKeyClient(keyData?.api_key || keyData?.key || '');
+}
+
 function getErrorMessage(error, fallback) {
     const message = error?.response?.data?.message ?? error?.message;
     if (Array.isArray(message)) return message.join(' | ');
     return String(message || fallback);
 }
 
-function CopyKeyButton({ apiKey }) {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = async (e) => {
-        e.stopPropagation();
-        if (!apiKey) return;
-        try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(apiKey);
-            } else {
-                const ta = document.createElement('textarea');
-                ta.value = apiKey;
-                ta.style.position = 'fixed';
-                ta.style.opacity = '0';
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-            }
-            setCopied(true);
-            toast.success('Chave copiada.');
-            setTimeout(() => setCopied(false), 1500);
-        } catch {
-            toast.error('Não foi possível copiar.');
-        }
-    };
-
-    return (
-        <Tooltip title={copied ? 'Copiada!' : 'Copiar chave'} arrow placement="top">
-            <IconButton
-                size="small"
-                onClick={handleCopy}
-                sx={{
-                    width: 28,
-                    height: 28,
-                    color: copied ? 'success.main' : 'text.secondary',
-                    '&:hover': { color: 'primary.main', bgcolor: 'action.hover' }
-                }}
-            >
-                {copied ? <CheckRoundedIcon sx={{ fontSize: 16 }} /> : <ContentCopyRoundedIcon sx={{ fontSize: 16 }} />}
-            </IconButton>
-        </Tooltip>
-    );
-}
 
 function StatusBadge({ status }) {
     const meta = getStatusMeta(status);
@@ -196,7 +162,7 @@ function KeyRow({ keyData, now }) {
                     <StatusBadge status={keyData.status} />
                     <Box sx={{ minWidth: 0, flex: 1 }}>
                         <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-                            <Tooltip title={keyData.api_key || ''} arrow placement="top">
+                            <Tooltip title="Chave mascarada — o valor completo nunca sai do servidor." arrow placement="top">
                                 <Typography
                                     sx={{
                                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -210,10 +176,9 @@ function KeyRow({ keyData, now }) {
                                         flex: 1
                                     }}
                                 >
-                                    {keyData.api_key || '—'}
+                                    {displayKey(keyData) || '—'}
                                 </Typography>
                             </Tooltip>
-                            <CopyKeyButton apiKey={keyData.api_key} />
                         </Stack>
                         <Typography sx={{ fontSize: 11, color: 'text.secondary' }}>
                             {keyData.length ? `${keyData.length} chars` : ''} {keyData.length ? '·' : ''} id {keyData.id?.split(':')?.[1]?.slice(0, 8) || '—'}
@@ -371,6 +336,7 @@ function ProviderSection({ provider, now }) {
 }
 
 const REFRESH_INTERVAL_MS = 15000;
+const REFRESH_MAX_INTERVAL_MS = 120000; // teto do backoff após erros
 
 export default function ApiStatus() {
     const [isLoading, setIsLoading] = useState(true);
@@ -381,6 +347,10 @@ export default function ApiStatus() {
     const [lastFetchAt, setLastFetchAt] = useState(0);
     const intervalRef = useRef(null);
 
+    // Polling com backoff: após erro dobra o intervalo (até MAX); sucesso
+    // volta ao base. Com a aba oculta o polling pausa e retoma ao voltar.
+    const failuresRef = useRef(0);
+
     const load = useCallback(async (silent = false) => {
         if (silent) setIsRefreshing(true);
         else setIsLoading(true);
@@ -389,8 +359,12 @@ export default function ApiStatus() {
             const result = await get('/system-settings/ai-keys-status');
             setData(result);
             setLastFetchAt(Date.now());
+            failuresRef.current = 0;
+            return true;
         } catch (e) {
+            failuresRef.current += 1;
             setError(getErrorMessage(e, 'Não foi possível carregar o status das chaves.'));
+            return false;
         } finally {
             setIsLoading(false);
             setIsRefreshing(false);
@@ -402,11 +376,39 @@ export default function ApiStatus() {
     }, [load]);
 
     useEffect(() => {
-        intervalRef.current = setInterval(() => {
-            load(true);
-        }, REFRESH_INTERVAL_MS);
+        let cancelled = false;
+
+        const nextDelay = () => Math.min(REFRESH_INTERVAL_MS * 2 ** failuresRef.current, REFRESH_MAX_INTERVAL_MS);
+
+        const schedule = () => {
+            if (cancelled) return;
+            if (intervalRef.current) clearTimeout(intervalRef.current);
+            intervalRef.current = setTimeout(async () => {
+                if (cancelled) return;
+                if (document.hidden) {
+                    // aba oculta: não bate no servidor; retoma no visibilitychange
+                    intervalRef.current = null;
+                    return;
+                }
+                await load(true);
+                schedule();
+            }, nextDelay());
+        };
+
+        const onVisibility = () => {
+            if (document.hidden || cancelled) return;
+            if (!intervalRef.current) {
+                load(true).then(() => schedule());
+            }
+        };
+
+        schedule();
+        document.addEventListener('visibilitychange', onVisibility);
         return () => {
-            if (intervalRef.current) clearInterval(intervalRef.current);
+            cancelled = true;
+            if (intervalRef.current) clearTimeout(intervalRef.current);
+            intervalRef.current = null;
+            document.removeEventListener('visibilitychange', onVisibility);
         };
     }, [load]);
 
@@ -627,7 +629,7 @@ export default function ApiStatus() {
 
             <Alert severity="info" sx={{ borderRadius: 2 }}>
                 <strong>Como ler:</strong> a estimativa <em>"X usadas / Y capacidade"</em> usa o limite real do free tier de cada provider —
-                Groq (1k req/dia, 100k tokens/dia → cap real ~25 reqs), Cerebras (1M tokens/dia → ~250 reqs),
+                Groq (1k req/dia, ~200k tokens/dia → cap real ~50 reqs), Cerebras (1M tokens/dia → ~250 reqs),
                 Mistral (~33M tokens/dia → ~8.000 reqs), Gemini (1.500 req/dia), OpenRouter (50 req/dia/modelo free), SambaNova (~200 req/dia, flutuante).
                 Cada mensagem de webchat consome ~4.000 tokens em média (system prompt + histórico + resposta).
                 Quanto mais provedores você somar em <strong>Integrações</strong>, maior a capacidade total. "Mensagens hoje" e "Tokens hoje" resetam às 00:05 UTC.

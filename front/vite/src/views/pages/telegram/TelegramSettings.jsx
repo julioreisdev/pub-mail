@@ -175,10 +175,13 @@ function BotCard({ bot, onEdit, onRevalidate, onDelete, onTest, onSettings, reva
         }
     };
 
-    const copyToken = async () => {
+    // A-87: o token só existe mascarado no front — copiar ele não serve pra
+    // nada. O botão da linha do token agora copia o @username do bot.
+    const copyUsername = async () => {
+        if (!bot.username) return;
         try {
-            await navigator.clipboard.writeText(bot.token_masked || '');
-            toast.success('Copiado.');
+            await navigator.clipboard.writeText(`@${bot.username}`);
+            toast.success('@username do bot copiado.');
         } catch {
             toast.error('Não foi possível copiar.');
         }
@@ -219,11 +222,13 @@ function BotCard({ bot, onEdit, onRevalidate, onDelete, onTest, onSettings, reva
                 <Typography sx={{ flex: 1, fontFamily: MONO, fontSize: 12.5, color: 'text.secondary', wordBreak: 'break-all' }}>
                     {bot.token_masked}
                 </Typography>
-                <Tooltip title="Copiar">
-                    <IconButton size="small" onClick={copyToken} sx={{ color: 'text.secondary' }}>
-                        <IconCopy size={14} />
-                    </IconButton>
-                </Tooltip>
+                {bot.username ? (
+                    <Tooltip title={`Copiar @${bot.username}`}>
+                        <IconButton size="small" onClick={copyUsername} sx={{ color: 'text.secondary' }}>
+                            <IconCopy size={14} />
+                        </IconButton>
+                    </Tooltip>
+                ) : null}
             </Stack>
 
             {/* webhook + contadores */}

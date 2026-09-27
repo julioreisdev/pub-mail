@@ -6,6 +6,22 @@ import {
     LeadEmailEvent,
 } from './dto/update-lead-metrics.dto';
 import { TriggersService } from '../email-marketing/triggers/triggers.service';
+import {
+    redirectAllowedByHtml,
+    safeRedirectUrl,
+    trackingSignatureCutoff,
+    verifyTracking,
+} from '../common/tracking-sign.util';
+
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'PARTIAL']);
+
+type TrackingCheck =
+    | { ok: true; sent: { id: string; body_html: string | null } }
+    | { ok: false; reason: string };
+
+type CtaCheck =
+    | { ok: true; target: string }
+    | { ok: false; status: number; reason: string; message: string };
 
 @Injectable()
 export class WebhooksService {
@@ -24,6 +40,8 @@ export class WebhooksService {
                     id: true,
                     organization_id: true,
                     tokens_cost: true,
+                    status: true,
+                    sent_for_leads: true,
                 },
             });
 
@@ -33,14 +51,37 @@ export class WebhooksService {
             );
         }
 
+        // Nunca REGRIDE o status (A-60): um PROCESSING atrasado (callback de
+        // lote chegando depois do COMPLETED) não pode sobrescrever o terminal.
+        if (
+            dto.status === 'PROCESSING' &&
+            TERMINAL_STATUSES.has(String(sentRecord.status))
+        ) {
+            this.logger.debug(
+                `Callback PROCESSING ignorado: ${sentId.slice(0, 8)} já está ${sentRecord.status}.`,
+            );
+            return sentRecord;
+        }
+
+        // Observação: invalid_count/failed_count vêm no DTO mas a tabela não tem
+        // essas colunas — por ora ficam só no log/diagnóstico do micro.
+        const errorMessage =
+            dto.error_message != null
+                ? String(dto.error_message).slice(0, 255)
+                : null;
+
         // Atualiza o progresso no banco de dados
         const updated =
             await this.prisma.email_projects_schedules_sent.update({
                 where: { id: sentId },
                 data: {
                     status: dto.status,
-                    sent_for_leads: dto.sent_for_leads,
-                    error_message: dto.error_message ?? null,
+                    // contador nunca diminui (checkpoint/retomada do micro)
+                    sent_for_leads: Math.max(
+                        Number(sentRecord.sent_for_leads) || 0,
+                        Number(dto.sent_for_leads) || 0,
+                    ),
+                    error_message: errorMessage,
                     // Se concluiu ou falhou de vez, podemos marcar o antigo campo booleano sent como true para não quebrar fluxos legados
                     sent: dto.status === 'COMPLETED' || dto.status === 'PARTIAL',
                 },
@@ -155,6 +196,96 @@ export class WebhooksService {
                 metrics: currentMetrics,
             },
         });
+    }
+
+    // =========================================================================
+    // 🔐 VALIDAÇÃO DAS URLs DE RASTREIO (A-10 / A-11)
+    // - o sent row PRECISA pertencer ao projectId da URL;
+    // - `s` = HMAC(sentId|email) válido; OU, sem `s`, o envio precisa ser
+    //   anterior ao TRACKING_SIGNATURE_CUTOFF (links legados já enviados).
+    // =========================================================================
+    async validateTracking(
+        projectId: string,
+        scheduleSentId: string,
+        email: string,
+        sig: string | undefined | null,
+    ): Promise<TrackingCheck> {
+        const sent = await this.prisma.email_projects_schedules_sent.findFirst({
+            where: { id: scheduleSentId, project_id: projectId },
+            select: { id: true, created_at: true, body_html: true },
+        });
+        if (!sent) return { ok: false, reason: 'sent_not_in_project' };
+
+        const given = String(sig ?? '').trim();
+        if (given) {
+            if (!verifyTracking(scheduleSentId, email, given)) {
+                return { ok: false, reason: 'bad_signature' };
+            }
+            return { ok: true, sent: { id: sent.id, body_html: sent.body_html } };
+        }
+
+        // Legado (sem assinatura): só envios anteriores ao cutoff.
+        const created = new Date(sent.created_at as any);
+        if (created.getTime() < trackingSignatureCutoff().getTime()) {
+            return { ok: true, sent: { id: sent.id, body_html: sent.body_html } };
+        }
+        return { ok: false, reason: 'signature_required' };
+    }
+
+    // Clique: além do acima, o destino precisa ser http/https e constar nos CTAs
+    // do HTML enviado (a assinatura cobre sentId|email; o redirect é validado
+    // contra o body_html do disparo — anti open redirect).
+    async validateCtaClick(
+        projectId: string,
+        scheduleSentId: string,
+        email: string,
+        sig: string | undefined | null,
+        redirectUrl: string | undefined | null,
+    ): Promise<CtaCheck> {
+        const target = safeRedirectUrl(redirectUrl);
+        if (!target) {
+            return {
+                ok: false,
+                status: 400,
+                reason: 'bad_redirect',
+                message: 'redirectUrl ausente ou inválida (só http/https).',
+            };
+        }
+
+        const base = await this.validateTracking(projectId, scheduleSentId, email, sig);
+        if (!base.ok) {
+            const notFound = base.reason === 'sent_not_in_project';
+            return {
+                ok: false,
+                status: notFound ? 404 : 403,
+                reason: base.reason,
+                message: notFound ? 'Envio não encontrado.' : 'Link de rastreio inválido ou expirado.',
+            };
+        }
+
+        // Destino precisa constar no HTML do disparo. Sem HTML salvo (envio
+        // antigo/falho) só o legado passa — nunca um link assinado sem base.
+        const html = base.sent.body_html;
+        const hasHtml = !!String(html ?? '').trim();
+        if (hasHtml) {
+            if (!redirectAllowedByHtml(target, html)) {
+                return {
+                    ok: false,
+                    status: 403,
+                    reason: 'redirect_not_in_email',
+                    message: 'Destino não pertence a este e-mail.',
+                };
+            }
+        } else if (String(sig ?? '').trim()) {
+            return {
+                ok: false,
+                status: 403,
+                reason: 'no_html_to_validate',
+                message: 'Destino não pôde ser validado.',
+            };
+        }
+
+        return { ok: true, target };
     }
 
     // =========================================================================

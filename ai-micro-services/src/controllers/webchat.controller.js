@@ -44,7 +44,7 @@ const resolveProviderKeys = (body) => {
 
 export const createWebchatReply = async (req, res) => {
   try {
-    const { message, agent, lead_state, conversation_history } = req.body;
+    const { message, agent, lead_state, conversation_history, deadline_ms } = req.body;
 
     if (!message) {
       return res.status(400).json({
@@ -78,6 +78,8 @@ export const createWebchatReply = async (req, res) => {
       lead_state,
       conversation_history,
       providerKeys,
+      // Prazo total das tentativas (A-69): o back envia ~85s (< seu timeout de 90s).
+      deadlineMs: Number(deadline_ms) > 0 ? Number(deadline_ms) : undefined,
     });
 
     return res.status(200).json({

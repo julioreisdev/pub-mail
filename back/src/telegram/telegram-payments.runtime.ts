@@ -47,6 +47,11 @@ export class TelegramPaymentsRuntimeService {
           await this.service.startCharge(bot, data.slice(4), cq.from.id, cq.from.id);
         } else if (data.startsWith('paycheck:')) {
           const pid = data.slice(9);
+          // a cobrança tem que ser deste bot E deste usuário (callback_data é forjável)
+          if (!(await this.service.isOwner(pid, bot.id, cq.from?.id))) {
+            if (token) await tg.answerCallbackQuery(token, cq.id, 'Cobrança não encontrada.').catch(() => undefined);
+            return;
+          }
           const status = await this.service.checkPayment(pid);
           if (status === 'PAID') {
             if (token) await tg.answerCallbackQuery(token, cq.id, '✅ Pagamento confirmado! Acesso liberado 🎉').catch(() => undefined);
@@ -56,8 +61,13 @@ export class TelegramPaymentsRuntimeService {
             await this.service.sendNotPaidNudge(pid, status === 'EXPIRED').catch(() => undefined);
           }
         } else if (data.startsWith('paycancel:')) {
+          const pid = data.slice(10);
+          if (!(await this.service.isOwner(pid, bot.id, cq.from?.id))) {
+            if (token) await tg.answerCallbackQuery(token, cq.id, 'Cobrança não encontrada.').catch(() => undefined);
+            return;
+          }
           if (token) await tg.answerCallbackQuery(token, cq.id, 'Cobrança cancelada.').catch(() => undefined);
-          await this.service.cancelPayment(data.slice(10));
+          await this.service.cancelPayment(pid);
         }
       }
     } catch (e: any) {

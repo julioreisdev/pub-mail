@@ -4,27 +4,15 @@ import { Box, Stack, Typography, TextField, Button, Divider, Chip, Alert } from 
 import { WhatsAppIcon as WhatsAppIcon } from 'ui-component/icons';
 
 import MainCard from 'ui-component/cards/MainCard';
+import { useAuth } from 'contexts/AuthContext';
 
 const WHATSAPP_NUMBER_E164 = '554391162065'; // +55 43 9116-2065 (sem +, espaços ou traços)
 const COMPANY_NAME = 'Pub Mail';
 
-function safeJsonParse(value, fallback = null) {
-    try {
-        return JSON.parse(value);
-    } catch {
-        return fallback;
-    }
-}
 
-function maskToken(token) {
-    if (!token || typeof token !== 'string') return '';
-    // Mostra só começo e fim (evita vazar credencial inteira)
-    const start = token.slice(0, 18);
-    const end = token.slice(-10);
-    return `${start}...${end}`;
-}
-
-function buildWhatsappMessage({ companyName, userPayload, token, userText }) {
+// A-87: o JWT (nem um pedaço dele) NUNCA vai na mensagem — o suporte
+// identifica o cliente por User ID / Org ID.
+function buildWhatsappMessage({ companyName, userPayload, userText }) {
     const u = userPayload?.user || {};
     const org = userPayload?.organization || {};
 
@@ -40,11 +28,6 @@ function buildWhatsappMessage({ companyName, userPayload, token, userText }) {
         '🏢 *Organização*',
         `• Nome: ${org.name || '-'}`,
         `• Org ID: ${org.id || '-'}`,
-        '',
-        '🔐 *Sessão*',
-        `• Token (resumo): ${maskToken(token) || '-'}`,
-        // Se você realmente quiser mandar o token inteiro (não recomendado), troque a linha acima por:
-        // `• Token: ${token || '-'}`,
         '',
         '📝 *Pedido do cliente*',
         userText?.trim() ? userText.trim() : '(não informado)'
@@ -63,25 +46,17 @@ function openWhatsapp(numberE164, message) {
 export default function TicketWhatsappRequest() {
     const [text, setText] = useState('');
 
-    const { userPayload, token } = useMemo(() => {
-        const rawUser = localStorage.getItem('user'); // string JSON
-        const rawToken = localStorage.getItem('token'); // string JWT
-        return {
-            userPayload: safeJsonParse(rawUser, null),
-            token: rawToken || ''
-        };
-    }, []);
+    const { user: userPayload } = useAuth();
 
     const canSend = useMemo(() => {
-        // Pode enviar mesmo sem texto; mas precisa ter ao menos user ou token pra "informações do localStorage"
-        return Boolean(userPayload || token);
-    }, [userPayload, token]);
+        // Pode enviar mesmo sem texto; mas precisa ter os dados do usuário pra identificar o pedido
+        return Boolean(userPayload);
+    }, [userPayload]);
 
     const handleSend = () => {
         const message = buildWhatsappMessage({
             companyName: COMPANY_NAME,
             userPayload,
-            token,
             userText: text
         });
         openWhatsapp(WHATSAPP_NUMBER_E164, message);
@@ -113,8 +88,7 @@ export default function TicketWhatsappRequest() {
 
                         {!canSend && (
                             <Alert severity="warning">
-                                Não encontrei dados no <b>localStorage</b> (chaves <code>user</code> / <code>token</code>). Ainda posso abrir o WhatsApp,
-                                mas a mensagem vai sem identificação.
+                                Não encontrei os dados da sua conta. Ainda posso abrir o WhatsApp, mas a mensagem vai sem identificação.
                             </Alert>
                         )}
 

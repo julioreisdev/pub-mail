@@ -19,6 +19,9 @@ import {
 
 import { get } from '../../../api/api';
 import { useAuth } from 'contexts/AuthContext';
+import useAccess from 'hooks/useAccess';
+import { formatDate, planLabel } from 'views/pages/access/modules';
+import { IconShieldCheck } from '@tabler/icons-react';
 import Leads from '../../pages/webchat/Leads';
 
 // tint theme-aware (troca no dark) via canal CSS var
@@ -160,6 +163,7 @@ export default function Dashboard() {
     return name.split(' ')[0] || '';
   }, [user]);
 
+  const { has, hasAny, isSuper, access } = useAccess();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -182,8 +186,9 @@ export default function Dashboard() {
 
   const c = data?.counts || {};
 
+  // Só os módulos liberados pro usuário aparecem.
   const cards = [
-    {
+    has('email') && {
       icon: IconMailBolt,
       color: 'primary',
       value: c.email_projects ?? 0,
@@ -191,10 +196,23 @@ export default function Dashboard() {
       hint: `${c.leads ?? 0} leads na base`,
       onClick: () => navigate('/email/email-marketing')
     },
-    { icon: IconRobot, color: 'secondary', value: c.agents ?? 0, label: 'Agentes de IA', onClick: () => navigate('/webchat/agentes') },
-    { icon: IconBrandHipchat, color: 'success', value: c.webchats ?? 0, label: 'Webchats', onClick: () => navigate('/webchat/webchats') },
-    { icon: IconListLetters, color: 'orange', value: c.quizzes ?? 0, label: 'Quizzes', onClick: () => navigate('/quizzes') }
-  ];
+    has('webchat') && { icon: IconRobot, color: 'secondary', value: c.agents ?? 0, label: 'Agentes de IA', onClick: () => navigate('/webchat/agentes') },
+    has('webchat') && { icon: IconBrandHipchat, color: 'success', value: c.webchats ?? 0, label: 'Webchats', onClick: () => navigate('/webchat/webchats') },
+    has('quiz') && { icon: IconListLetters, color: 'orange', value: c.quizzes ?? 0, label: 'Quizzes', onClick: () => navigate('/quizzes') }
+  ].filter(Boolean);
+
+  // Plano da conta (não-superadmin): status + vencimento.
+  const accessHint = !access
+    ? ''
+    : access.status === 'ACTIVE'
+      ? access.lifetime || !access.access_until
+        ? 'Acesso vitalício'
+        : `Ativo até ${formatDate(access.access_until)} · ${access.days_left} dia${access.days_left === 1 ? '' : 's'}`
+      : access.status === 'FREE'
+        ? 'Acesso gratuito'
+        : access.status;
+  const showAccessCard = !isSuper && !!access;
+  const gridCols = Math.min(4, Math.max(1, cards.length + (showAccessCard ? 1 : 0)));
 
   return (
     <Box sx={{ p: { xs: 0.5, md: 1 } }}>
@@ -207,20 +225,34 @@ export default function Dashboard() {
         </Typography>
       </Box>
 
-      <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', lg: 'repeat(4, 1fr)' } }}>
+      <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', lg: `repeat(${gridCols}, 1fr)` } }}>
         {cards.map((card) => (
           <StatCard key={card.label} {...card} loading={loading} />
         ))}
+        {showAccessCard ? (
+          <StatCard
+            icon={IconShieldCheck}
+            color={access.expiring_soon ? 'warning' : 'success'}
+            value={access.expiring_soon ? `${access.days_left}d` : access.status === 'ACTIVE' || access.status === 'FREE' ? 'OK' : '—'}
+            label="Seu acesso"
+            hint={`${accessHint}${access.price_cents ? ` · ${planLabel(access)}` : ''}`}
+            loading={false}
+          />
+        ) : null}
       </Box>
 
-      <Box sx={{ mt: 2 }}>
-        <IntegrationsCard data={data} loading={loading} onClick={() => navigate('/settings/integrations')} />
-      </Box>
+      {has('settings') ? (
+        <Box sx={{ mt: 2 }}>
+          <IntegrationsCard data={data} loading={loading} onClick={() => navigate('/settings/integrations')} />
+        </Box>
+      ) : null}
 
       {/* leads (visão geral, com seletor de origem) */}
-      <Box sx={{ mt: 3 }}>
-        <Leads embedded />
-      </Box>
+      {hasAny(['email', 'webchat', 'quiz']) ? (
+        <Box sx={{ mt: 3 }}>
+          <Leads embedded />
+        </Box>
+      ) : null}
     </Box>
   );
 }

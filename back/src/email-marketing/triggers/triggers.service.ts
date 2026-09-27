@@ -9,6 +9,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemSettingsService } from '../../system-settings/system-settings.service';
+import { AccessService } from '../../platform-billing/access.service';
 import { CreateTriggerDto, UpdateTriggerDto } from './dto/trigger.dto';
 
 const UNIT_MS: Record<string, number> = {
@@ -53,6 +54,7 @@ export class TriggersService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly systemSettings: SystemSettingsService,
+    private readonly access: AccessService,
   ) {}
 
   private async assertProject(organizationId: string, projectId: string) {
@@ -172,12 +174,29 @@ export class TriggersService {
       });
       if (triggers.length === 0) return;
 
+      // Org com assinatura vencida => nenhum gatilho dispara (sem tag, sem envio).
+      const orgId = triggers[0].organization_id;
+      if (!(await this.access.isOrgActive(orgId))) {
+        this.logger.debug(`pulando org=${orgId}: acesso inativo (gatilhos do projeto ${projectId})`);
+        return;
+      }
+
       const link = await this.prisma.email_project_leads.findFirst({
         where: { project_id: projectId, leads: { email } },
         include: { leads: true },
       });
       if (!link?.leads) return;
       const lead = link.leads;
+
+      // Só age em lead INSCRITO no projeto e ATIVO (sem bounce/spam). Vale
+      // pra ADD_TAG e SEND_TEMPLATE — quem se desinscreveu não recebe nem é
+      // etiquetado (auditoria A-15).
+      if (link.status !== 'SUBSCRIBED' || lead.global_status !== 'ACTIVE') {
+        this.logger.debug(
+          `Gatilho ignorado p/ ${email}: pivô=${link.status}, lead=${lead.global_status}`,
+        );
+        return;
+      }
 
       const now = Date.now();
       for (const trg of triggers) {
@@ -263,6 +282,15 @@ export class TriggersService {
       select: { id: true, subject: true, body_html: true, body_text: true, builder_model: true },
     });
     if (!template) return;
+
+    // Reconfere na hora do envio (o estado pode ter mudado desde o fire()).
+    const fresh = await this.prisma.email_project_leads.findUnique({
+      where: { project_id_lead_id: { project_id: projectId, lead_id: lead.id } },
+      select: { status: true, leads: { select: { global_status: true } } },
+    });
+    if (!fresh || fresh.status !== 'SUBSCRIBED' || fresh.leads?.global_status !== 'ACTIVE') {
+      return;
+    }
 
     const baseApi = process.env.BASE_API_URL || 'http://localhost:8000';
     const mappedLead = {

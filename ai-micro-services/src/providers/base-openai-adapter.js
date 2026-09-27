@@ -49,13 +49,18 @@ export class BaseOpenAIAdapter {
   }
 
   // Faz a request. Retorna { ok, status, data, error, errorKind, retryAfterSec, raw }.
-  async chat({ apiKey, payload, modelOverride }) {
+  // `timeoutMs` opcional: o router passa o tempo que ainda resta do deadline
+  // global pra nenhuma tentativa isolada estourar o limite do back (A-69).
+  async chat({ apiKey, payload, modelOverride, timeoutMs }) {
     const url = `${this.baseUrl}/chat/completions`;
     const body = this.buildRequestBody(payload, modelOverride);
     const headers = this.buildHeaders(apiKey);
 
+    const effectiveTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.min(this.timeoutMs, timeoutMs)
+      : this.timeoutMs;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
     let response;
     let rawText = '';
@@ -145,13 +150,14 @@ export class BaseOpenAIAdapter {
     }
     if (status === 401 || status === 403) return 'invalid_key';
     if (status >= 500) return 'transient';
-    if (status === 400) return 'fatal'; // payload bug — não vale tentar outras chaves
-    // 404 model_not_found: o adapter está mal configurado (modelo removido do
-    // free tier ou nome mudou). Marcamos como invalid_key pra que a UI mostre
-    // a chave em vermelho e o admin perceba — NÃO é a chave que está ruim,
-    // mas o adapter precisa de attention. Sem isso, last_error fica enterrado
-    // e o ai-router gasta tempo tentando inutilmente.
-    if (status === 404) return 'invalid_key';
+    // 400 (payload/modelo inválido) e 404 model_not_found = o ADAPTER está mal
+    // configurado (modelo descontinuado/nome mudou), não a chave. Classificar
+    // como `fatal`: o router pula as outras chaves do MESMO provider e NÃO
+    // marca a chave inválida (antes, um modelo descontinuado derrubava todas as
+    // chaves do provider por 26h — A-69). O last_error fica registrado
+    // (markTransient) pra diagnóstico.
+    if (status === 400) return 'fatal';
+    if (status === 404) return 'fatal';
     return 'transient';
   }
 

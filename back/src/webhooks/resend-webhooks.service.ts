@@ -1,5 +1,6 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { Prisma } from 'generated/prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SystemSettingsService } from '../system-settings/system-settings.service';
@@ -91,30 +92,30 @@ export class ResendWebhooksService {
     return true;
   }
 
+  // `db` = client da transação (ou o prisma). updateMany não lança se o
+  // dispatch não existir (ex.: envio fora do fluxo) — e não aborta a transação.
   private async incr(
+    db: Prisma.TransactionClient,
     dispatchId: string,
     field: 'delivered_count' | 'bounced_count' | 'complained_count',
   ) {
-    try {
-      await this.prisma.email_projects_schedules_sent.update({
-        where: { id: dispatchId },
-        data: { [field]: { increment: 1 } } as any,
-      });
-    } catch {
-      // dispatch pode não existir (ex.: envio fora do fluxo) — ignora
-    }
+    await db.email_projects_schedules_sent.updateMany({
+      where: { id: dispatchId },
+      data: { [field]: { increment: 1 } } as any,
+    });
   }
 
-  // Supressão global por endereço (a conta Resend é única na plataforma): um
-  // hard-bounce/reclamação vale para todos os projetos daquele e-mail. O disparo
-  // já filtra global_status=ACTIVE, então isso remove o lead dos próximos envios.
+  // Supressão por org e endereço: um hard-bounce/reclamação vale para todos os
+  // projetos daquele e-mail na org. O disparo já filtra global_status=ACTIVE,
+  // então isso remove o lead dos próximos envios.
   private async suppress(
+    db: Prisma.TransactionClient,
     organizationId: string,
     recipients: string[],
     status: 'BOUNCED' | 'COMPLAINED',
   ) {
     if (recipients.length === 0) return 0;
-    const res = await this.prisma.email_leads.updateMany({
+    const res = await db.email_leads.updateMany({
       where: { organization_id: organizationId, email: { in: recipients }, global_status: 'ACTIVE' },
       data: { global_status: status as any },
     });
@@ -154,15 +155,16 @@ export class ResendWebhooksService {
       throw new UnauthorizedException('Assinatura do webhook inválida.');
     }
 
-    // idempotência via svix-id
-    if (h.id) {
-      try {
-        await this.prisma.email_webhook_events.create({ data: { id: String(h.id) } });
-      } catch (e: any) {
-        if (e?.code === 'P2002') return { ok: true, duplicate: true };
-        // falha inesperada ao gravar idempotência: loga e segue processando
-        this.logger.warn(`Falha ao registrar svix-id ${h.id}: ${e?.message}`);
-      }
+    // idempotência via svix-id: só CONFERE aqui; o registro é gravado DEPOIS
+    // do processamento (na mesma transação dos contadores/supressão) — antes
+    // era gravado antes e uma falha de DB perdia o bounce pra sempre (A-61).
+    const eventId = h.id ? String(h.id) : null;
+    if (eventId) {
+      const seen = await this.prisma.email_webhook_events.findUnique({
+        where: { id: eventId },
+        select: { id: true },
+      });
+      if (seen) return { ok: true, duplicate: true };
     }
 
     const type = String(body?.type || '');
@@ -171,21 +173,31 @@ export class ResendWebhooksService {
     const recipients = this.recipientsOf(data);
 
     let suppressed = 0;
-    switch (type) {
-      case 'email.delivered':
-        if (dispatchId) await this.incr(dispatchId, 'delivered_count');
-        break;
-      case 'email.bounced':
-        if (dispatchId) await this.incr(dispatchId, 'bounced_count');
-        if (this.isHardBounce(data)) suppressed = await this.suppress(organizationId, recipients, 'BOUNCED');
-        break;
-      case 'email.complained':
-        if (dispatchId) await this.incr(dispatchId, 'complained_count');
-        suppressed = await this.suppress(organizationId, recipients, 'COMPLAINED');
-        break;
-      default:
-        // sent / delivery_delayed / opened / clicked etc. — não tratados aqui
-        break;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        switch (type) {
+          case 'email.delivered':
+            if (dispatchId) await this.incr(tx, dispatchId, 'delivered_count');
+            break;
+          case 'email.bounced':
+            if (dispatchId) await this.incr(tx, dispatchId, 'bounced_count');
+            if (this.isHardBounce(data)) suppressed = await this.suppress(tx, organizationId, recipients, 'BOUNCED');
+            break;
+          case 'email.complained':
+            if (dispatchId) await this.incr(tx, dispatchId, 'complained_count');
+            suppressed = await this.suppress(tx, organizationId, recipients, 'COMPLAINED');
+            break;
+          default:
+            // sent / delivery_delayed / opened / clicked etc. — não tratados aqui
+            break;
+        }
+        // marca o evento como processado junto com os efeitos (atômico)
+        if (eventId) await tx.email_webhook_events.create({ data: { id: eventId } });
+      });
+    } catch (e: any) {
+      // corrida: outra entrega do mesmo svix-id processou primeiro
+      if (e?.code === 'P2002') return { ok: true, duplicate: true };
+      throw e;
     }
 
     this.logger.log(

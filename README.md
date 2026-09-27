@@ -190,6 +190,10 @@ cd front/vite && yarn install && yarn dev   # :3000
 
 > Webhooks (Telegram, Resend, gateways) precisam de uma URL pública — em dev use um túnel (ex.: `ngrok http 8000`) e aponte `PUBLIC_API_URL` para ele.
 
+### Vender produtos pelo Webchat (Cobrança PIX no funil)
+
+No **Construtor de Funil**, uma sequência pode terminar em **💳 Cobrança PIX**: informe o valor e escolha (ou crie com um clique) a **sequência de entrega** — nela vão o PDF, o vídeo, as fotos e o texto do produto. No chat, o lead vê o PIX (QR + copia-e-cola), copia, paga e clica em **Validar pagamento**; o sistema confirma no gateway (webhook, verificação automática a cada minuto e polling) e envia a entrega. Arquivos e vídeos de produto ficam **protegidos** no servidor (`back/protected/`) e só são liberados por **link assinado** depois do pagamento. O gateway PIX (Mercado Pago ou PushinPay) é **um por organização**, em **Configurações → Pagamentos**, junto com a lista de **vendas** de todos os canais (Webchat + Telegram). Nada é pedido ao lead antes do pagamento.
+
 ## Variáveis de ambiente
 
 ### Back (NestJS)
@@ -229,7 +233,7 @@ Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda
 | `PORT` | 9999 | |
 | `EMAIL_SERVICE_KEY` | — | Validado em `x-api-key` |
 | `REDIS_HOST` / `REDIS_PORT` | 127.0.0.1 / 6379 | Filas BullMQ |
-| `NEST_WEBHOOK_URL` | — | Callback interno para o back (resultado do disparo) |
+| `NEST_WEBHOOK_URL` | `http://127.0.0.1:8000/webhooks/email` | Callback interno para o back (resultado do disparo) — o micro concatena `/schedule-sent/:id` |
 | `BASE_URL_API` | — | URL pública do back (pixel de abertura / clique rastreado) |
 
 ### Front (Vite)
@@ -241,16 +245,23 @@ Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda
 
 ## Deploy em produção
 
+> 📘 **Tutorial de deploy completo (nível júnior, com todos os comandos):** [`Deploy.md`](Deploy.md) · [`Deploy.pdf`](Deploy.pdf). A seção abaixo é o resumo.
+
 > **Set/2026:** a instalação na AWS (EC2 via SSM) está sendo **desativada**. O próximo ambiente é um **servidor novo com banco limpo**. O runbook abaixo é o caminho oficial de instalação do zero; o histórico da AWS ficou só no `CLAUDE.md`.
 
-Deploy **nativo** (sem Docker): Ubuntu 24.04, Node 20 + Yarn 4 (corepack), MySQL 8, Redis 7, nginx + certbot, `ffmpeg` e `libvips`. Serviços como `systemd`. O código fica em `/opt/pub-mail`.
+Deploy **nativo** (sem Docker): Ubuntu 24.04, **Node 22 LTS** + Yarn 4 (corepack — cada `package.json` fixa `"packageManager": "yarn@4.10.3"`; sem isso o corepack cai no Yarn 1 e o install do back falha), MySQL 8, Redis 7, nginx + certbot, `ffmpeg` e `libvips`. Serviços como `systemd`. O código fica em `/opt/pub-mail`.
+
+> Validado do zero em **25/09/2026** (Hostinger, 2 vCPU / 8 GB, `reveleonline.com`) — o passo a passo abaixo é exatamente o que foi executado.
 
 ### 1. Pacotes
 
 ```bash
 apt update && apt install -y nginx mysql-server redis-server certbot python3-certbot-nginx ffmpeg libvips42 build-essential git
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs && corepack enable
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt install -y nodejs && corepack enable
+# swap (servidor sem swap trava no build do front): fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
+
+> Node 20 chegou ao fim de vida em abr/2026 e o `@prisma/streams-local` (Prisma 7) exige Node ≥ 22.
 
 ### 2. MySQL + Redis
 
@@ -258,7 +269,11 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y node
 mysql -e "CREATE DATABASE pubmail CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -e "CREATE USER 'pubmail'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY '<DB_PASS>'; GRANT ALL ON pubmail.* TO 'pubmail'@'127.0.0.1'; FLUSH PRIVILEGES;"
 # recomendado: innodb_buffer_pool_size ~25% da RAM; redis: maxmemory + noeviction
+# /etc/mysql/mysql.conf.d/zz-pubmail.cnf  →  [mysqld] innodb_buffer_pool_size=2G, max_connections=200, bind-address=127.0.0.1
+# /etc/redis/redis.conf                    →  maxmemory 2gb, maxmemory-policy noeviction, bind 127.0.0.1 ::1
 ```
+
+> O `.cnf` precisa ser **legível pelo usuário `mysql`** (`chmod 644`) — com 600 o MySQL o ignora em silêncio e o buffer pool fica em 128 MB. Guarde os segredos gerados (senha do banco, JWT, chaves dos micros) num arquivo root-only, ex.: `/root/pubmail.secrets` (`chmod 600`).
 
 > O banco **precisa** ser `utf8mb4_unicode_ci` — as migrations criam tabelas com esse collation e as FKs falham se o default do servidor for outro.
 
@@ -268,13 +283,17 @@ mysql -e "CREATE USER 'pubmail'@'127.0.0.1' IDENTIFIED WITH mysql_native_passwor
 git clone <repo> /opt/pub-mail
 cd /opt/pub-mail && for d in back ai-micro-services email-micro-services front/vite; do cp $d/.env.example $d/.env; done
 # preencha cada .env (os .env NÃO são versionados) → ver "Variáveis de ambiente"; gere os segredos com: openssl rand -hex 32
+chmod 600 back/.env ai-micro-services/.env email-micro-services/.env front/vite/.env
 ```
 
-Pontos que sempre dão problema (veja a tabela de variáveis): `DATABASE_HOST/USER/PASS/NAME/PORT` (runtime) **e** `DATABASE_URL` (CLI do Prisma); `DATABASE_POOL_LIMIT=10`; `WEBCHAT_BACKEND_INTERNAL_URL=http://127.0.0.1:8000`; `PUBLIC_API_URL`, `BASE_URL_API` e `NEST_WEBHOOK_URL` com a URL pública nova do back; `VITE_APP_BASE_NAME=/` e `VITE_API_URL` no front.
+> Se o código for enviado a partir do clone local (sem `git clone` no servidor): `tar -czf - --exclude-from=.rsync-deploy-excludes . | ssh <host> 'tar -xzf - -C /opt/pub-mail'` — o arquivo de exclusões deixa de fora `node_modules`, `dist`, `.env`, `uploads`, `generated` e `.git`.
+
+Pontos que sempre dão problema (veja a tabela de variáveis): `DATABASE_HOST/USER/PASS/NAME/PORT` (runtime) **e** `DATABASE_URL` (CLI do Prisma); `DATABASE_POOL_LIMIT=10`; `WEBCHAT_BACKEND_INTERNAL_URL=http://127.0.0.1:8000`; `WEBCHAT_DOMAIN_BIND_PROVIDER=CERTBOT` (os únicos valores aceitos são `CERTBOT|NONE|DISABLED|MOCK`); `PUBLIC_API_URL`/`BASE_API_URL` (back) e `BASE_URL_API` (micro de e-mail) com a URL pública nova do back; `NEST_WEBHOOK_URL=http://127.0.0.1:8000/webhooks/email` (o micro concatena `/schedule-sent/:id`); `STRIPE_SECRET_KEY` **não pode ficar vazio** (o `BillingService` lança erro no boot) — sem Stripe use um placeholder inerte como `sk_test_disabled_placeholder` e `VITE_STRIPE_ENABLED=false`; `VITE_APP_BASE_NAME=/` e `VITE_API_URL` no front.
 
 ### 4. Build + banco + seed
 
 ```bash
+unset CI   # com CI definido (mesmo CI=0) o Yarn 4 entra em modo imutável e recusa instalar sem lockfile
 cd /opt/pub-mail/back && yarn install && yarn prisma migrate deploy && yarn prisma generate && yarn nest build
 # usuário de plataforma (SUPER_ADMIN, organização oculta) + IP de borda + e-mail do certbot — sem senha no código:
 SEED_ADMIN_EMAIL=dev@suaempresa.com SEED_ADMIN_PASSWORD='<senha forte>' SEED_EDGE_IP=<IPv4 do servidor> SEED_CERTBOT_EMAIL=ops@suaempresa.com \
@@ -285,19 +304,19 @@ cd /opt/pub-mail/email-micro-services && yarn install
 cd /opt/pub-mail/front/vite && yarn install && NODE_OPTIONS=--max-old-space-size=4096 yarn build
 ```
 
-O seed é **idempotente** (pode rodar de novo para trocar a senha). Cada organização cadastra **as próprias chaves** (IA, Resend, webhook) em *Configurações → Integrações* — nada é compartilhado entre organizações. IP de borda e e-mail do certbot são da plataforma e só o `SUPER_ADMIN` edita.
+O `nest build` **emite `dist/` mesmo com erro de tipo** — confira que a saída não tem `error TS` antes de subir o serviço. O seed é **idempotente** (pode rodar de novo para trocar a senha). Cada organização cadastra **as próprias chaves** (IA, Resend, webhook) em *Configurações → Integrações* — nada é compartilhado entre organizações. IP de borda e e-mail do certbot são da plataforma e só o `SUPER_ADMIN` edita.
 
 ### 5. Serviços (`systemd`)
 
-Três units — `pubmail-back` (`node dist/src/main.js`, porta 8000, **roda como root** para escrever vhosts do nginx e rodar o certbot), `pubmail-ai` (`node server.js`, 4000) e `pubmail-email` (9999) — com `WorkingDirectory` na pasta de cada serviço, `EnvironmentFile=<pasta>/.env`, `Restart=always`. Os micros ficam **só em loopback** (o email-micro não tem autenticação no `/send`).
+Três units — `pubmail-back` (`node dist/src/main.js`, porta 8000, **roda como root** para escrever vhosts do nginx e rodar o certbot), `pubmail-ai` (`node src/server.js`, 4000) e `pubmail-email` (`node server.js`, 9999) — com `WorkingDirectory` na pasta de cada serviço, `EnvironmentFile=<pasta>/.env`, `Restart=always`. Os micros ficam **só em loopback** (o email-micro não tem autenticação no `/send`).
 
 ### 6. nginx + SSL
 
 - Vhost do **front** (domínio da plataforma): `root /opt/pub-mail/front/vite/dist` + `try_files $uri /index.html`.
-- Vhost da **API** (`api.<domínio>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **antes** do `location / { proxy_pass http://127.0.0.1:8000; }`.
+- Vhost da **API** (`api.<domínio>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **antes** do `location / { proxy_pass http://127.0.0.1:8000; }`; `client_max_body_size 520m` + `client_body_timeout 600s` (upload de vídeos de produto do webchat). A pasta `back/protected/` (produtos pagos) **não** pode ser servida pelo nginx.
 - `000-default-deny` (`default_server` retornando 444) para hosts não cadastrados.
-- `certbot --nginx -d <front> -d api.<front>`. Domínios de cliente são provisionados pelo próprio sistema (vhost + certbot automáticos ao clicar "Verificar DNS").
-- Firewall: só **80/443** (e o acesso administrativo que o time de infra definir).
+- `certbot --nginx --redirect -d <front> -d www.<front> -d api.<front>` (o `--redirect` força HTTPS). Um `server` extra em 443 para `www.<front>` com `return 301 https://<front>$request_uri`. Domínios de cliente são provisionados pelo próprio sistema (vhost + certbot automáticos ao clicar "Verificar DNS").
+- Firewall (`ufw`): só **22/80/443**. Os micros escutam em `*:4000`/`*:9999` mas ficam inacessíveis de fora pelo firewall. SSH só por chave (`PasswordAuthentication no` num drop-in `/etc/ssh/sshd_config.d/00-*.conf` — o nome precisa vir **antes** dos drop-ins do provedor, porque no `sshd` vale o primeiro valor lido).
 
 ### 7. Após subir
 
@@ -344,3 +363,5 @@ mysqldump -u pubmail -p pubmail | gzip > backup.sql.gz
 ---
 
 **Licença**: privada / proprietária.
+
+- **Assinaturas / acesso por módulos (set/2026):** o superadmin cria clientes com módulos liberados (E-mail, Webchat, Quizzes, Telegram, Configurações) e preço por período ou vitalício; conta pendente/vencida recebe uma tela de pagamento PIX que trava a plataforma, conta grátis recebe boas-vindas. Gateway próprio do superadmin e dashboard de assinaturas em Administração → Pagamentos. Detalhes: `docs/plano-assinaturas-acesso.md`.

@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { encodeWebhookUrls } from '../../common/cta-url.util';
 import { CreateEmailTemplateDto } from './dto/create-email-template.dto';
 import { UpdateEmailTemplateDto } from './dto/update-email-template.dto';
 
@@ -23,32 +24,12 @@ export class EmailTemplatesService {
   };
 
   /**
-   * 🛡️ Método helper para codificar a URL de destino no CTA.
-   * Procura o padrão {{base_webhook_cta_click}}?redirectUrl=SEU_LINK e codifica
-   * apenas o que vem depois do "=", garantindo que o webhook não quebre.
+   * 🛡️ Codifica a URL de destino dos CTAs rastreados antes de salvar.
+   * Implementação compartilhada em common/cta-url.util (também usada por
+   * passos do fluxo inicial e reciclagem).
    */
   private encodeWebhookUrls(html: string): string {
-    if (!html) return html;
-
-    // Captura: 1. Prefixo (href="..." ou href='...') | 2. A URL original | 3. A aspa de fechamento
-    const regex =
-      /(href=['"]\{\{base_webhook_cta_click\}\}\?redirectUrl=)([^'"]+)(['"])/g;
-
-    return html.replace(regex, (match, prefix, urlOriginal, suffix) => {
-      let encodedUrl = urlOriginal;
-      try {
-        // Tenta decodificar primeiro para evitar "duplo encoding" caso o cliente
-        // cole uma URL que já tem %20, %3D, etc.
-        const decoded = decodeURIComponent(urlOriginal);
-        encodedUrl = encodeURIComponent(decoded);
-      } catch (e) {
-        // Se falhar (URL malformada), apenas faz o encode direto
-        encodedUrl = encodeURIComponent(urlOriginal);
-      }
-
-      // Remonta a string do atributo href perfeitamente
-      return `${prefix}${encodedUrl}${suffix}`;
-    });
+    return encodeWebhookUrls(html);
   }
 
   async create(

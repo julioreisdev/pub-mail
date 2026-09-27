@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as tg from './telegram-api.util';
 
 const PAGE_SIZE = 30;
+const MEMBER_COUNT_CONCURRENCY = 8; // getChatMemberCount em paralelo por vez (listagem de grupos)
 
 type MediaParts = {
   text: string;
@@ -50,28 +51,38 @@ export class TelegramChatService {
   // ---------------- captura via webhook ----------------
   async captureUpdate(bot: { id: string; organization_id: string }, update: any): Promise<void> {
     try {
+      // Edição de mensagem já capturada → ignora (senão vira uma 2ª linha IN duplicada).
+      if (update?.edited_message || update?.edited_channel_post) return;
+
+      // Toque em botão inline (callback_query) em DM = interação do lead. Não vira mensagem,
+      // mas registra a atividade no contato (a condição "inativo" das automações usa isso).
+      const cq = update?.callback_query;
+      if (cq?.from?.id && (!cq.message?.chat?.type || cq.message.chat.type === 'private')) {
+        await this.noteCallbackActivity(bot, cq.from.id);
+        return;
+      }
+
       // Descoberta de grupo/canal por my_chat_member (bot adicionado/removido/promovido).
       const cm = update?.my_chat_member || update?.chat_member;
-      if (!update?.message && !update?.edited_message && !update?.channel_post && !update?.edited_channel_post && cm?.chat) {
+      if (!update?.message && !update?.channel_post && cm?.chat) {
         if (['group', 'supergroup', 'channel'].includes(cm.chat.type)) {
           await this.upsertGroup(bot, cm.chat);
         }
         return;
       }
 
-      const m = update?.message || update?.edited_message || update?.channel_post || update?.edited_channel_post;
+      const m = update?.message || update?.channel_post;
       const chat = m?.chat;
       if (!chat) return;
 
-      // migração grupo→supergrupo: remove a linha antiga (evita duplicado no seletor).
+      // migração grupo→supergrupo: o Telegram troca o chat_id. ATUALIZA a linha existente (mantém
+      // id → planos/rotativas/broadcasts que apontam pro grupo continuam válidos) em vez de apagar.
       if (m?.migrate_to_chat_id) {
-        await this.prisma.telegram_groups.deleteMany({ where: { bot_id: bot.id, tg_chat_id: BigInt(chat.id) } }).catch(() => undefined);
+        await this.migrateGroup(bot, chat.id, m.migrate_to_chat_id);
         return;
       }
       if (m?.migrate_from_chat_id) {
-        await this.prisma.telegram_groups
-          .deleteMany({ where: { bot_id: bot.id, tg_chat_id: BigInt(m.migrate_from_chat_id) } })
-          .catch(() => undefined);
+        await this.migrateGroup(bot, m.migrate_from_chat_id, chat.id);
       }
 
       const parts = extractMedia(m);
@@ -93,9 +104,10 @@ export class TelegramChatService {
             media_file_id: parts.media_file_id || null,
           },
         });
-        // mantém o botão de teste funcionando
+        // chat de teste = o PRIMEIRO privado que falou com o bot (tipicamente o dono). Só grava
+        // se ainda não há um — senão "Enviar teste" iria pro último lead que escreveu.
         await this.prisma.telegram_bots
-          .update({ where: { id: bot.id }, data: { test_chat_id: BigInt(chat.id) } })
+          .updateMany({ where: { id: bot.id, test_chat_id: null }, data: { test_chat_id: BigInt(chat.id) } })
           .catch(() => undefined);
       } else if (chat.type === 'group' || chat.type === 'supergroup' || chat.type === 'channel') {
         const from = m.from || {};
@@ -124,6 +136,43 @@ export class TelegramChatService {
       }
     } catch (err: any) {
       this.logger.warn(`captureUpdate falhou: ${err?.message || err}`);
+    }
+  }
+
+  // Grupo→supergrupo: move a linha pro novo tg_chat_id (mesmo id interno). Se já existe uma linha
+  // pro novo id (descoberta antes via my_chat_member), ela é a recém-criada — apaga essa e
+  // preserva a antiga (que tem histórico e referências).
+  private async migrateGroup(bot: { id: string; organization_id: string }, fromChatId: any, toChatId: any) {
+    try {
+      const from = BigInt(fromChatId);
+      const to = BigInt(toChatId);
+      if (from === to) return;
+      const old = await this.prisma.telegram_groups.findFirst({ where: { bot_id: bot.id, tg_chat_id: from }, select: { id: true } });
+      if (!old) return; // nada a migrar (a linha nova segue o caminho normal do upsert)
+      const fresh = await this.prisma.telegram_groups.findFirst({ where: { bot_id: bot.id, tg_chat_id: to }, select: { id: true } });
+      if (fresh && fresh.id !== old.id) {
+        await this.prisma.telegram_groups.delete({ where: { id: fresh.id } }).catch(() => undefined);
+      }
+      await this.prisma.telegram_groups.update({ where: { id: old.id }, data: { tg_chat_id: to, type: 'supergroup' } });
+      this.logger.log(`grupo ${old.id} migrado ${String(from)} → ${String(to)} (supergrupo).`);
+    } catch (e: any) {
+      this.logger.warn(`migrateGroup falhou: ${e?.message || e}`);
+    }
+  }
+
+  // Marca no contato o instante do último toque em botão (attributes.last_callback_at, epoch ms).
+  private async noteCallbackActivity(bot: { id: string; organization_id: string }, tgUserId: any) {
+    try {
+      const c = await this.prisma.telegram_contacts.findFirst({
+        where: { bot_id: bot.id, tg_user_id: BigInt(tgUserId) },
+        select: { id: true, attributes: true },
+      });
+      if (!c) return;
+      const attrs = c.attributes && typeof c.attributes === 'object' ? { ...(c.attributes as any) } : {};
+      attrs.last_callback_at = Date.now();
+      await this.prisma.telegram_contacts.update({ where: { id: c.id }, data: { attributes: attrs } });
+    } catch {
+      /* best-effort */
     }
   }
 
@@ -313,15 +362,24 @@ export class TelegramChatService {
     const tokenById = new Map(bots.map((b) => [b.id, b.token]));
     const botById = new Map(bots.map((b) => [b.id, { id: b.id, name: b.name, username: b.username, status: b.status }]));
 
+    // contagem em lotes de MEMBER_COUNT_CONCURRENCY (até 100 grupos → não abre 100 chamadas de uma vez)
+    const countOne = async (r: any): Promise<number | null> => {
+      const token = tokenById.get(r.bot_id);
+      if (!token) return null;
+      const c = await tg.getChatMemberCount(token, String(r.tg_chat_id));
+      return c.ok && typeof c.result === 'number' ? c.result : null;
+    };
+    const countAll = async () => {
+      const out: (number | null)[] = [];
+      for (let i = 0; i < rows.length; i += MEMBER_COUNT_CONCURRENCY) {
+        const part = await Promise.all(rows.slice(i, i + MEMBER_COUNT_CONCURRENCY).map(countOne));
+        out.push(...part);
+      }
+      return out;
+    };
+
     const [counts, lasts] = await Promise.all([
-      Promise.all(
-        rows.map(async (r) => {
-          const token = tokenById.get(r.bot_id);
-          if (!token) return null;
-          const c = await tg.getChatMemberCount(token, String(r.tg_chat_id));
-          return c.ok && typeof c.result === 'number' ? c.result : null;
-        }),
-      ),
+      countAll(),
       // prévia calculada na hora (com o autor) — robusto p/ dados antigos e novos.
       Promise.all(
         rows.map((r) =>
@@ -334,30 +392,9 @@ export class TelegramChatService {
       ),
     ]);
 
-    // Dedupe de duplicatas MORTAS (migração grupo→supergrupo cria 2 linhas com o mesmo
-    // bot+título; a antiga não responde ao getChatMemberCount). Apaga a morta quando há uma viva.
-    const byKey = new Map<string, { g: any; count: number | null; last: any }[]>();
-    rows.forEach((g, i) => {
-      const key = `${g.bot_id}::${String(g.title || '').trim().toLowerCase()}`;
-      if (!byKey.has(key)) byKey.set(key, []);
-      byKey.get(key)!.push({ g, count: counts[i], last: lasts[i] });
-    });
-    const toDelete: string[] = [];
-    const kept: { g: any; count: number | null; last: any }[] = [];
-    for (const arr of byKey.values()) {
-      if (arr.length > 1 && arr.some((x) => x.count != null)) {
-        for (const x of arr) {
-          if (x.count == null) toDelete.push(x.g.id);
-          else kept.push(x);
-        }
-      } else {
-        kept.push(...arr);
-      }
-    }
-    if (toDelete.length) {
-      await this.prisma.telegram_groups.deleteMany({ where: { id: { in: toDelete } } }).catch(() => undefined);
-    }
-    kept.sort((a, b) => new Date(b.g.last_message_at || 0).getTime() - new Date(a.g.last_message_at || 0).getTime());
+    // (Sem dedupe destrutivo aqui: um GET não apaga linhas — um 429/rede deixava member_count
+    // null e o grupo "vivo" era apagado. A migração grupo→supergrupo é tratada em migrateGroup.)
+    const kept = rows.map((g, i) => ({ g, count: counts[i], last: lasts[i] }));
 
     return kept.map(({ g, count, last }) => {
       const base = this.mapGroup(g);

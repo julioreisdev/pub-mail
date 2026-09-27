@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Stack, TextField, Typography } from '@mui/material';
-import { alpha } from '@mui/material/styles';
 import { IconPlus, IconKey } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
@@ -22,7 +21,7 @@ function formatDateTime(value) {
 }
 
 const AI_PROVIDERS = [
-    { key: 'groq', label: 'Groq', model: 'llama-3.3-70b-versatile', description: 'Mais rápido (~250 tok/s). 1k req/dia/conta no free tier.', placeholder: 'gsk_xxx' },
+    { key: 'groq', label: 'Groq', model: 'openai/gpt-oss-120b', description: 'Mais rápido (~250 tok/s). 1k req/dia/conta no free tier.', placeholder: 'gsk_xxx' },
     { key: 'cerebras', label: 'Cerebras Cloud', model: 'llama-3.3-70b', description: 'Mais rápido que Groq (~450 tok/s). 1M tokens/dia/conta no free.', placeholder: 'csk-xxx' },
     { key: 'mistral', label: 'Mistral La Plateforme', model: 'mistral-small-latest', description: 'Cota free generosa (~1B tokens/mês). 1 req/s.', placeholder: 'mst_xxx' },
     { key: 'openrouter', label: 'OpenRouter', model: 'meta-llama/llama-3.3-70b-instruct:free', description: 'Agregador de modelos. ~50 req/dia por modelo grátis.', placeholder: 'sk-or-v1-xxx' },
@@ -31,6 +30,24 @@ const AI_PROVIDERS = [
 ];
 
 const EMPTY = Object.fromEntries(AI_PROVIDERS.map((p) => [p.key, { masked: [], count: 0 }]));
+
+// A-19: placeholder do segredo. Prefere `<campo>_masked` do back; se vier
+// só `has_<campo>` mostra um marcador genérico; se (por versão antiga do
+// back) vier a chave crua, mascara no cliente — o valor cru nunca vai pro input.
+function maskSecretClient(raw) {
+    const k = String(raw || '');
+    if (!k) return '';
+    if (k.length <= 8) return '•'.repeat(k.length);
+    return `${k.slice(0, 4)}…${k.slice(-4)}`;
+}
+function secretPlaceholder(data, field) {
+    const masked = data?.[`${field}_masked`];
+    if (masked) return String(masked);
+    const has = data?.[`has_${field}`];
+    if (has === true) return '••••••••••••';
+    if (has === false) return '';
+    return maskSecretClient(data?.[field]);
+}
 
 export default function IntegrationsManager() {
     const [isLoading, setIsLoading] = useState(true);
@@ -42,8 +59,14 @@ export default function IntegrationsManager() {
     const [addInputs, setAddInputs] = useState({});
     const [busy, setBusy] = useState(''); // marca provider/ação em andamento
 
+    // A-19: segredos de campo único (Resend API key / webhook secret) NUNCA
+    // entram no value do input. O input começa vazio (type=password) e o
+    // placeholder mostra o valor mascarado vindo do servidor; só entra no
+    // PATCH o que o usuário digitou.
     const [resendInput, setResendInput] = useState('');
     const [webhookSecretInput, setWebhookSecretInput] = useState('');
+    const [resendMasked, setResendMasked] = useState('');
+    const [webhookSecretMasked, setWebhookSecretMasked] = useState('');
     const [edgeIpInput, setEdgeIpInput] = useState('');
     const [certbotEmailInput, setCertbotEmailInput] = useState('');
     const [canEditInfra, setCanEditInfra] = useState(false); // edge IP / certbot: só SUPER_ADMIN (infra da plataforma)
@@ -59,8 +82,10 @@ export default function IntegrationsManager() {
                 ])
             )
         );
-        setResendInput(data?.resend_api_key || '');
-        setWebhookSecretInput(data?.resend_webhook_secret || '');
+        setResendInput('');
+        setWebhookSecretInput('');
+        setResendMasked(secretPlaceholder(data, 'resend_api_key'));
+        setWebhookSecretMasked(secretPlaceholder(data, 'resend_webhook_secret'));
         setEdgeIpInput(data?.webchat_edge_ip || '');
         setCertbotEmailInput(data?.certbot_email || '');
         setCanEditInfra(Boolean(data?.can_edit_infra));
@@ -118,8 +143,8 @@ export default function IntegrationsManager() {
         try {
             // chaves de IA são gerenciadas pelos botões (add/remove); aqui só a infra.
             const payload = {
-                resend_api_key: resendInput,
-                resend_webhook_secret: webhookSecretInput,
+                ...(resendInput.trim() ? { resend_api_key: resendInput.trim() } : {}),
+                ...(webhookSecretInput.trim() ? { resend_webhook_secret: webhookSecretInput.trim() } : {}),
                 ...(canEditInfra ? { webchat_edge_ip: edgeIpInput, certbot_email: certbotEmailInput } : {})
             };
             const data = await patch('/system-settings', payload);
@@ -173,10 +198,10 @@ export default function IntegrationsManager() {
                                 key={provider.key}
                                 sx={{
                                     border: '1px solid',
-                                    borderColor: active ? (t) => alpha(t.palette.success.main, 0.5) : 'divider',
+                                    borderColor: active ? (t) => `rgba(${t.vars.palette.success.mainChannel} / 0.5)` : 'divider',
                                     borderRadius: 2.5,
                                     p: 1.75,
-                                    bgcolor: active ? (t) => alpha(t.palette.success.main, 0.06) : 'transparent'
+                                    bgcolor: active ? (t) => `rgba(${t.vars.palette.success.mainChannel} / 0.06)` : 'transparent'
                                 }}
                             >
                                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
@@ -237,7 +262,17 @@ export default function IntegrationsManager() {
                 <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>Envio de e-mails — Resend</Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.5 }}>Chave usada para validar domínios e para o disparo em massa.</Typography>
                 <Stack spacing={2}>
-                    <TextField fullWidth label="Resend API Key" placeholder="re_xxxxxxxxxxxx" value={resendInput} onChange={(e) => setResendInput(e.target.value)} />
+                    <TextField
+                        fullWidth
+                        type="password"
+                        autoComplete="new-password"
+                        label="Resend API Key"
+                        placeholder={resendMasked || 're_xxxxxxxxxxxx'}
+                        helperText={resendMasked ? 'Chave configurada. Digite uma nova só se quiser substituir.' : 'Nenhuma chave configurada.'}
+                        value={resendInput}
+                        onChange={(e) => setResendInput(e.target.value)}
+                        InputLabelProps={{ shrink: true }}
+                    />
                     <Box sx={{ borderTop: '1px dashed', borderColor: 'divider', pt: 2 }}>
                         <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>Webhook de entrega / bounce</Typography>
                         <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.5 }}>
@@ -245,7 +280,17 @@ export default function IntegrationsManager() {
                             <b>email.complained</b>. Cole aqui o <i>Signing Secret</i>. Hard-bounces e spam <b>suprimem o lead automaticamente</b>.
                         </Typography>
                         <TextField fullWidth size="small" label="URL do webhook (cole no Resend)" value={webhookUrl} InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} sx={{ mb: 1.5 }} />
-                        <TextField fullWidth label="Resend Webhook Signing Secret" placeholder="whsec_xxxxxxxxxxxx" value={webhookSecretInput} onChange={(e) => setWebhookSecretInput(e.target.value)} />
+                        <TextField
+                            fullWidth
+                            type="password"
+                            autoComplete="new-password"
+                            label="Resend Webhook Signing Secret"
+                            placeholder={webhookSecretMasked || 'whsec_xxxxxxxxxxxx'}
+                            helperText={webhookSecretMasked ? 'Segredo configurado. Digite um novo só se quiser substituir.' : 'Nenhum segredo configurado.'}
+                            value={webhookSecretInput}
+                            onChange={(e) => setWebhookSecretInput(e.target.value)}
+                            InputLabelProps={{ shrink: true }}
+                        />
                     </Box>
                 </Stack>
             </Box>

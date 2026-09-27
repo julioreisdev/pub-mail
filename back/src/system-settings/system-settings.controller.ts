@@ -8,6 +8,8 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { UpdateSystemSettingsDto } from './dto/update-system-settings.dto';
 import {
   SystemSettingsRow,
@@ -27,8 +29,11 @@ type SettingsResponse = {
   openrouter_api_keys_count: number;
   sambanova_api_keys_masked: string[];
   sambanova_api_keys_count: number;
+  // Mascarados (A-19). `has_*` diz se existe valor salvo.
   resend_api_key: string;
   resend_webhook_secret: string;
+  has_resend_api_key: boolean;
+  has_resend_webhook_secret: boolean;
   webchat_edge_ip: string;
   certbot_email: string;
   can_edit_infra: boolean;
@@ -53,7 +58,10 @@ export class SystemSettingsController {
     return this.toResponse(row, req);
   }
 
+  // Escritas (chaves/segredos) só para OWNER/ADMIN (A-07).
   @Patch()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({
     summary: 'Atualiza configurações do sistema. Campos omitidos não mudam; campos com string vazia são limpos.',
   })
@@ -75,6 +83,8 @@ export class SystemSettingsController {
   }
 
   @Post('ai-keys')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Adiciona uma ou mais chaves a um provedor de IA.' })
   async addAiKeys(
     @Req() req: any,
@@ -86,6 +96,8 @@ export class SystemSettingsController {
   }
 
   @Delete('ai-keys')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: 'Remove a chave no índice informado de um provedor de IA.' })
   async removeAiKey(
     @Req() req: any,
@@ -118,8 +130,14 @@ export class SystemSettingsController {
       openrouter_api_keys_count: openrouter.length,
       sambanova_api_keys_masked: sambanova.map((k) => this.service.maskKey(k)),
       sambanova_api_keys_count: sambanova.length,
-      resend_api_key: row.resend_api_key || '',
-      resend_webhook_secret: row.resend_webhook_secret || '',
+      // Segredos nunca voltam em claro: o front reenvia o valor mascarado e o
+      // service ignora (só grava quando o usuário digita um valor novo).
+      resend_api_key: row.resend_api_key ? this.service.maskKey(row.resend_api_key) : '',
+      resend_webhook_secret: row.resend_webhook_secret
+        ? this.service.maskKey(row.resend_webhook_secret)
+        : '',
+      has_resend_api_key: Boolean(row.resend_api_key),
+      has_resend_webhook_secret: Boolean(row.resend_webhook_secret),
       webchat_edge_ip: row.webchat_edge_ip || '',
       certbot_email: row.certbot_email || '',
       can_edit_infra: req.user.role === 'SUPER_ADMIN',

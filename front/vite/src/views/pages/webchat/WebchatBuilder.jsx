@@ -748,6 +748,18 @@ function PreviewChat({ personalizacao }) {
                         ⌨️ Esperando resposta digitada
                         {ending.captureVariable ? ` → {{${ending.captureVariable}}}` : ''}
                       </Box>
+                    ) : ending.type === 'charge' ? (
+                      <Box
+                        sx={{
+                          alignSelf: 'flex-start',
+                          fontSize: 11,
+                          color: showDark ? '#86efac' : '#166534',
+                          fontWeight: 700,
+                          mt: 0.5,
+                        }}
+                      >
+                        💳 Cobrança PIX no fim desta sequência
+                      </Box>
                     ) : ending.type === 'end' ? (
                       <Box
                         sx={{
@@ -960,6 +972,10 @@ export default function WebchatBuilder() {
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState(null);
   const lastSavedHashRef = useRef('');
   const autoSavingRef = useRef(false);
+  // Snapshot sempre-atual do estado (lido pelo intervalo estável do
+  // auto-save, pelo flush no unmount e pelo beforeunload — sem depender
+  // de closures que mudam a cada edição).
+  const latestRef = useRef({ personalizacao: null, settings: null, borderRadiusInput: '18' });
 
   // Estabiliza onChange do FunnelBuilder pra que o React.memo dele não
   // re-renderize ReactFlow inteiro a cada keystroke em outras abas.
@@ -1228,7 +1244,8 @@ export default function WebchatBuilder() {
     anchor.href = url;
     anchor.download = `webchat-preset-${id || 'custom'}.json`;
     anchor.click();
-    URL.revokeObjectURL(url);
+    // Firefox falha o download se o object URL for revogado na hora.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleImportPreset = async (event) => {
@@ -1263,24 +1280,66 @@ export default function WebchatBuilder() {
     }
   };
 
-  // Compute do payload de save — usado tanto pelo handleSave manual
-  // quanto pelo auto-save. Centraliza o commit do borderRadius (state
-  // local) e a normalização da personalização.
-  const buildSavePayload = useCallback(() => {
-    const parsedBR = parseInt(borderRadiusInput, 10);
+  // Mantém o snapshot atual (render a render) pros efeitos estáveis.
+  latestRef.current = { personalizacao, settings, borderRadiusInput };
+
+  // Compute do payload de save a partir de um snapshot — usado pelo
+  // handleSave manual, pelo auto-save e pelo flush. Centraliza o commit
+  // do borderRadius (state local) e a normalização da personalização.
+  const buildSavePayloadFrom = (snap) => {
+    const snapPersonalizacao = snap.personalizacao || {};
+    const parsedBR = parseInt(snap.borderRadiusInput, 10);
     const clampedBR = Number.isFinite(parsedBR)
       ? Math.min(40, Math.max(0, parsedBR))
-      : Number(personalizacao?.theme?.borderRadius ?? 18);
+      : Number(snapPersonalizacao?.theme?.borderRadius ?? 18);
     const personalizacaoToSave = {
-      ...personalizacao,
-      theme: { ...toObject(personalizacao.theme), borderRadius: clampedBR },
+      ...snapPersonalizacao,
+      theme: { ...toObject(snapPersonalizacao.theme), borderRadius: clampedBR },
     };
     const nextSettings = {
-      ...toObject(settings),
+      ...toObject(snap.settings),
       personalizacao: normalizePersonalizacao(personalizacaoToSave),
     };
     return { personalizacaoToSave, nextSettings, clampedBR };
-  }, [borderRadiusInput, personalizacao, settings]);
+  };
+
+  const currentHashOf = (snap) => {
+    try {
+      return JSON.stringify(buildSavePayloadFrom(snap).nextSettings.personalizacao);
+    } catch {
+      return '';
+    }
+  };
+
+  const isDirty = useCallback(() => {
+    if (!lastSavedHashRef.current) return false;
+    return currentHashOf(latestRef.current) !== lastSavedHashRef.current;
+  }, []);
+
+  // Salva um snapshot. NÃO sobrescreve o estado com o snapshot depois do
+  // PATCH (isso revertia edições feitas durante a request). Só aplica a
+  // normalização (borderRadius clamp etc.) se nada mudou nesse meio tempo.
+  const saveSnapshot = useCallback(
+    async (snap, { silent = false } = {}) => {
+      if (!id) return false;
+      const { personalizacaoToSave, nextSettings, clampedBR } = buildSavePayloadFrom(snap);
+      const hash = JSON.stringify(nextSettings.personalizacao);
+      await patch(`/webchats/${id}`, { settings: nextSettings });
+      lastSavedHashRef.current = hash;
+      setLastAutoSavedAt(new Date());
+      const unchanged =
+        JSON.stringify(latestRef.current.personalizacao) === JSON.stringify(snap.personalizacao) &&
+        latestRef.current.borderRadiusInput === snap.borderRadiusInput;
+      if (unchanged) {
+        setSettings(nextSettings);
+        setPersonalizacao(personalizacaoToSave);
+        setBorderRadiusInput(String(clampedBR));
+      }
+      if (!silent) setSuccess('Builder salvo com sucesso.');
+      return true;
+    },
+    [id],
+  );
 
   const handleSave = async () => {
     if (!id) return;
@@ -1288,14 +1347,7 @@ export default function WebchatBuilder() {
     setError('');
     setSuccess('');
     try {
-      const { personalizacaoToSave, nextSettings, clampedBR } = buildSavePayload();
-      await patch(`/webchats/${id}`, { settings: nextSettings });
-      setSettings(nextSettings);
-      setPersonalizacao(personalizacaoToSave);
-      setBorderRadiusInput(String(clampedBR));
-      lastSavedHashRef.current = JSON.stringify(nextSettings.personalizacao);
-      setLastAutoSavedAt(new Date());
-      setSuccess('Builder salvo com sucesso.');
+      await saveSnapshot(latestRef.current);
     } catch (err) {
       setError(getErrorMessage(err, 'Não foi possível salvar o builder.'));
     } finally {
@@ -1303,35 +1355,64 @@ export default function WebchatBuilder() {
     }
   };
 
-  // Auto-save: a cada 60s, verifica se o estado mudou desde o último
-  // save e dispara um PATCH silencioso (sem alert verde). Funciona
-  // mesmo com o modal do funil aberto — toda mudança em personalizacao
-  // (incluindo dentro do funil) é coberta. Ignora se já está salvando
-  // ou se nada mudou.
+  // Flush: salva imediatamente se houver alteração pendente (silencioso).
+  // Usado pelo botão Voltar e pelo unmount. Nunca lança.
+  const flushIfDirty = useCallback(async () => {
+    if (!id || autoSavingRef.current || !isDirty()) return false;
+    autoSavingRef.current = true;
+    try {
+      await saveSnapshot(latestRef.current, { silent: true });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      autoSavingRef.current = false;
+    }
+  }, [id, isDirty, saveSnapshot]);
+
+  // Auto-save: a cada 60s (intervalo ESTÁVEL — deps só [id]), verifica se
+  // o estado mudou desde o último save e dispara um PATCH silencioso.
+  // Funciona mesmo com o modal do funil aberto — toda mudança em
+  // personalizacao (incluindo dentro do funil) é coberta. Ignora se já
+  // está salvando ou se nada mudou. No unmount, faz flush do pendente.
+  const flushRef = useRef(flushIfDirty);
+  flushRef.current = flushIfDirty;
   useEffect(() => {
     if (!id) return undefined;
-    const interval = window.setInterval(async () => {
-      if (autoSavingRef.current || saving) return;
+    const interval = window.setInterval(() => {
+      flushRef.current();
+    }, 60000);
+    return () => {
+      window.clearInterval(interval);
+      // unmount: salva o que ficou pendente (best-effort, a request
+      // continua mesmo com o componente desmontado)
+      flushRef.current();
+    };
+  }, [id]);
+
+  // Aviso do navegador ao fechar/recarregar a aba com alterações não salvas.
+  useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!isDirty()) return undefined;
+      event.preventDefault();
+      event.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isDirty]);
+
+  const handleBack = async () => {
+    if (isDirty()) {
+      setSaving(true);
       try {
-        const { personalizacaoToSave, nextSettings, clampedBR } = buildSavePayload();
-        const currentHash = JSON.stringify(nextSettings.personalizacao);
-        if (currentHash === lastSavedHashRef.current) return;
-        autoSavingRef.current = true;
-        await patch(`/webchats/${id}`, { settings: nextSettings });
-        lastSavedHashRef.current = currentHash;
-        setSettings(nextSettings);
-        setPersonalizacao(personalizacaoToSave);
-        setBorderRadiusInput(String(clampedBR));
-        setLastAutoSavedAt(new Date());
-      } catch {
-        // Auto-save é silencioso por design — falhou? user vê próximo
-        // tick ou ao clicar em Salvar manualmente.
+        await flushIfDirty();
       } finally {
-        autoSavingRef.current = false;
+        setSaving(false);
       }
-    }, 60_000);
-    return () => window.clearInterval(interval);
-  }, [id, saving, buildSavePayload]);
+    }
+    navigate('/webchat/webchats');
+  };
 
   // Inicializa hash ao carregar (assim auto-save não dispara antes da
   // primeira edição real do user).
@@ -1377,7 +1458,7 @@ export default function WebchatBuilder() {
       >
         <Box sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
           <Tooltip title="Voltar para Webchats">
-            <IconButton size="small" onClick={() => navigate('/webchat/webchats')}>
+            <IconButton size="small" onClick={handleBack} disabled={saving}>
               <ArrowBackRoundedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -1933,8 +2014,8 @@ export default function WebchatBuilder() {
                         Abrir construtor de funil
                       </Button>
                       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                        Toda a edição (sequências, mensagens, botões, áudios) acontece no construtor em tela cheia. Suas alterações
-                        são preservadas ao fechar — basta clicar em <strong>Salvar</strong> no rodapé do builder pra persistir.
+                        Toda a edição (sequências, mensagens, botões, áudios, cobrança PIX) acontece no construtor em tela cheia — ele tem o
+                        próprio botão <strong>Salvar</strong>, e as alterações também são preservadas ao fechar.
                       </Typography>
                     </Box>
 
@@ -1966,11 +2047,22 @@ export default function WebchatBuilder() {
                           Construtor de Funil
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
-                          As alterações são salvas localmente. Clique em <strong>Salvar</strong> no builder para persistir.
+                          Clique em <strong>Salvar</strong> para publicar no chat (o funil também salva sozinho a cada 60 s).
+                          {lastAutoSavedAt ? ` Último salvamento: ${lastAutoSavedAt.toLocaleTimeString('pt-BR')}.` : ''}
                         </Typography>
                       </Box>
                       <Button
                         variant="contained"
+                        color="success"
+                        onClick={handleSave}
+                        disabled={saving}
+                        startIcon={saving ? <CircularProgress size={14} color="inherit" /> : <SaveRoundedIcon fontSize="small" />}
+                        sx={{ borderRadius: 2, fontWeight: 700 }}
+                      >
+                        {saving ? 'Salvando…' : 'Salvar'}
+                      </Button>
+                      <Button
+                        variant="outlined"
                         onClick={() => setFunnelModalOpen(false)}
                         sx={{ borderRadius: 2, fontWeight: 700 }}
                       >

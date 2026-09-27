@@ -1,7 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as tg from './telegram-api.util';
-import { noteFlood, clearFlood } from './telegram-flood.util';
+import { noteFlood, clearFlood, isCooling, hadFlood, refreshFromDb, retryAfterOf } from './telegram-flood.util';
+import { AccessService } from '../platform-billing/access.service';
 
 // Roda um loop contínuo: para cada rotativa ativa que está "vencida" (last_rotated_at +
 // interval <= agora), edita a mensagem no grupo/canal para o próximo texto (ou envia a 1ª).
@@ -11,7 +12,6 @@ import { noteFlood, clearFlood } from './telegram-flood.util';
 // retry_after REAL e coloca o bot em cooldown (NÃO fica reenviando, que era o que amplificava).
 const DM_MIN_INTERVAL = 30; // s — editar DM de cada lead no máx a cada 30s
 const GROUP_MIN_INTERVAL = 10; // s
-const MAX_COOLDOWN = 6 * 3600; // teto do flood-wait honrado
 const EDITS_PER_HOUR = 10; // teto de edições da rotativa por lead numa janela de 1h
 const HOUR_MS = 3600 * 1000;
 const MIN_EDIT_GAP = Math.floor(HOUR_MS / EDITS_PER_HOUR); // ~6 min entre edições do mesmo lead
@@ -22,10 +22,13 @@ export class TelegramRotatorsRunner implements OnModuleInit {
   private ticking = false;
   // trava por contato (bot:tgUserId) p/ o sweep de fundo e o bump do fluxo não colidirem (duplicar)
   private busy = new Set<string>();
-  // cooldown por bot (flood-wait). Enquanto vigente, NENHUMA chamada é feita p/ aquele bot.
-  private botCooldown = new Map<string, number>();
+  // cooldown por bot (flood-wait) = cache COMPARTILHADO em telegram-flood.util (o mesmo que o
+  // broadcast usa; carregado do banco no boot). Enquanto vigente, NENHUMA chamada é feita p/ o bot.
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: AccessService,
+  ) {}
 
   private lock(key: string): boolean {
     if (this.busy.has(key)) return false;
@@ -38,15 +41,13 @@ export class TelegramRotatorsRunner implements OnModuleInit {
 
   // true = bot está em flood-wait; não deve receber nenhuma chamada agora.
   private cooling(botId: string): boolean {
-    const until = this.botCooldown.get(botId) || 0;
-    return Date.now() < until;
+    return isCooling(botId);
   }
-  // registra 429: coloca o bot em cooldown pelo retry_after REAL do Telegram.
+  // registra 429: coloca o bot em cooldown pelo retry_after REAL do Telegram (cache + banco).
   private note429(botId: string, res: any): boolean {
     if (res && res.error_code === 429) {
-      const retry = Math.min(Number(res?.parameters?.retry_after) || 30, MAX_COOLDOWN);
-      this.botCooldown.set(botId, Date.now() + retry * 1000);
-      void noteFlood(this.prisma, botId, res); // marca no card do bot (aviso no front)
+      const retry = retryAfterOf(res);
+      void noteFlood(this.prisma, botId, res); // cache compartilhado + card do bot (aviso no front)
       this.logger.warn(`rotativa: bot ${botId} em flood-wait ${retry}s (429) — pausando.`);
       return true;
     }
@@ -69,15 +70,13 @@ export class TelegramRotatorsRunner implements OnModuleInit {
     );
   }
 
-  // envio/edição funcionou → limpa o flood-wait do card se o bot estava marcado.
+  // envio/edição funcionou → limpa o flood-wait (cache + card) se o bot estava marcado.
   private onOk(botId: string) {
-    if (this.botCooldown.has(botId)) {
-      this.botCooldown.delete(botId);
-      void clearFlood(this.prisma, botId);
-    }
+    if (hadFlood(botId)) void clearFlood(this.prisma, botId);
   }
 
   onModuleInit() {
+    void refreshFromDb(this.prisma); // carrega flood_until do banco no boot
     this.loop().catch((e) => this.logger.error(`rotator loop morreu: ${e?.message || e}`));
   }
 
@@ -104,8 +103,15 @@ export class TelegramRotatorsRunner implements OnModuleInit {
     try {
       const now = Date.now();
       const rotators = await this.prisma.telegram_rotators.findMany({ where: { active: true } });
+      const orgOk = new Map<string, boolean>(); // 1 checagem por org por tick (tick é a cada 3s → debug)
       for (const r of rotators) {
         if (this.cooling(r.bot_id)) continue; // bot em flood-wait → não toca
+        if (!orgOk.has(r.organization_id)) {
+          const ok = await this.access.isOrgActive(r.organization_id);
+          orgOk.set(r.organization_id, ok);
+          if (!ok) this.logger.debug(`pulando org=${r.organization_id}: acesso inativo`);
+        }
+        if (!orgOk.get(r.organization_id)) continue; // assinatura vencida → não edita/envia
         const last = r.last_rotated_at ? new Date(r.last_rotated_at).getTime() : 0;
         if (r.target_kind === 'dm') {
           // DM: varre os contatos em lotes (rate-limited), no MÁXIMO a cada DM_MIN_INTERVAL.
@@ -156,7 +162,15 @@ export class TelegramRotatorsRunner implements OnModuleInit {
       const res = await tg.editMessageText(bot.token, chatId, messageId, text, {});
       if (!res.ok) {
         if (this.note429(r.bot_id, res)) return; // flood → recua, NÃO reenvia
-        if (this.isDeadError(res)) return; // bot expulso do grupo/canal → não fica reenviando
+        if (this.isDeadError(res)) {
+          // bot expulso do grupo/canal (ou chat sumiu) → desativa a rotativa e grava o instante,
+          // senão o tick de 3s martela a API pra sempre. O usuário reativa quando resolver.
+          this.logger.warn(`rotativa ${r.id}: bot fora do chat (${res.description}) — desativando.`);
+          await this.prisma.telegram_rotators
+            .update({ where: { id: r.id }, data: { active: false, last_rotated_at: new Date() } })
+            .catch(() => undefined);
+          return;
+        }
         const d = String(res.description || '').toLowerCase();
         if (d.includes('not modified')) {
           // texto igual ao atual (modo aleatório caiu no mesmo) — só avança o índice
@@ -316,6 +330,7 @@ export class TelegramRotatorsRunner implements OnModuleInit {
     try {
       const r = await this.prisma.telegram_rotators.findFirst({ where: { bot_id: botId, target_kind: 'dm', active: true } });
       if (!r) return;
+      if (!(await this.access.isOrgActive(r.organization_id))) return; // assinatura vencida → não toca
       const texts = this.textsOf(r);
       if (!texts.length) return;
       const bot = await this.prisma.telegram_bots.findUnique({ where: { id: botId }, select: { token: true, status: true } });

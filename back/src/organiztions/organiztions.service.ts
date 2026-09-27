@@ -45,7 +45,11 @@ export class OrganiztionsService {
     try {
       return await this.prisma.organizations.update({
         where: { id: organizationId },
-        data: { ...dto },
+        // Só os campos do tenant (nunca status/stripe_customer_id).
+        data: {
+          ...(dto.name !== undefined ? { name: String(dto.name).trim() } : {}),
+          ...(dto.document_id !== undefined ? { document_id: dto.document_id } : {}),
+        },
         select: {
           id: true,
           name: true,

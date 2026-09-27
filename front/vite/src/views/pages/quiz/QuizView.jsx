@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { normalizeQuizConfig, sanitizeCssClasses } from './quizConfig';
+import { normalizeQuizConfig, sanitizeCssClasses, isHttpUrl } from './quizConfig';
 import { mountQuizAds } from './quizAds';
 
 function cx(...parts) {
@@ -11,7 +11,8 @@ function cx(...parts) {
 // de sair da página.
 function navigateTo(url) {
   const dest = String(url || '').trim();
-  if (!dest || typeof document === 'undefined') return;
+  // Só http(s) — nunca executa javascript:/data: vindo do config.
+  if (!dest || !isHttpUrl(dest) || typeof document === 'undefined') return;
   try {
     const a = document.createElement('a');
     a.href = dest;
@@ -131,6 +132,7 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
   const [doneMsg, setDoneMsg] = useState('');
   const scrollRef = useRef(null);
   const redirectRef = useRef(''); // redirect baseado na resposta (último não-vazio vence)
+  const submittingRef = useRef(false); // trava síncrona contra envio duplo do lead
 
   useEffect(() => ensureStyle(), []);
 
@@ -150,6 +152,8 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
     setLeadError('');
     setDoneMsg('');
     redirectRef.current = '';
+    submittingRef.current = false;
+    setSubmitting(false);
     setAnimKey((k) => k + 1);
   }, [resetKey]);
 
@@ -210,16 +214,21 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
 
   const submitLead = async (e) => {
     e?.preventDefault?.();
+    // Guarda contra envio duplo (clique + Enter, ou dois Enters) — o
+    // `submitting` do state pode ainda não ter propagado, então usa ref.
+    if (submittingRef.current) return;
     const lc = config.leadCapture;
     setLeadError('');
     if (lc.captureName && !String(lead.name).trim()) return setLeadError('Preencha o nome.');
     if (lc.captureEmail && !/\S+@\S+\.\S+/.test(String(lead.email).trim())) return setLeadError('E-mail inválido.');
-    if (lc.capturePhone && String(lead.phone).replace(/[^\d+]/g, '').length < 6) return setLeadError('Telefone inválido.');
+    // Conta DÍGITOS (não o tamanho): "++++++" não passa.
+    if (lc.capturePhone && String(lead.phone).replace(/\D+/g, '').length < 8) return setLeadError('Telefone inválido.');
 
     if (isPreview) {
       goRedirect();
       return;
     }
+    submittingRef.current = true;
     setSubmitting(true);
     try {
       if (onLeadSubmit) {
@@ -240,6 +249,7 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
       goRedirect();
     } catch (err) {
       setLeadError(err?.response?.data?.message || err?.message || 'No se pudo guardar. Inténtalo de nuevo.');
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -299,6 +309,12 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
   };
 
   const currentQuestion = config.questions[stepIndex] || config.questions[0];
+
+  // Rodapé legal: só páginas com rótulo E link http(s) válido (igual ao
+  // `normalizeLegalPages` do webchat) — href vazio não vira "#".
+  const legalPages = (Array.isArray(config.legal?.pages) ? config.legal.pages : []).filter(
+    (p) => p && String(p.label || '').trim() && isHttpUrl(p.href)
+  );
 
   return (
     <div
@@ -545,14 +561,13 @@ export default function QuizView({ config: rawConfig, mode = 'live', ads = null,
         </div>
 
         {/* Rodapé legal */}
-        {config.legal?.pages?.length && config.legal.pages.some((p) => p.label) ? (
+        {legalPages.length ? (
           <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: theme.mutedColor, lineHeight: 1.5 }}>
             {config.legal.text ? <span>{config.legal.text} </span> : null}
-            {config.legal.pages
-              .filter((p) => p.label)
+            {legalPages
               .map((p, i, arr) => (
                 <span key={p.id}>
-                  <a className="qz-link" href={p.href || '#'} target="_blank" rel="noreferrer">
+                  <a className="qz-link" href={p.href} target="_blank" rel="noreferrer">
                     {p.label}
                   </a>
                   {i < arr.length - 1 ? <span> · </span> : null}

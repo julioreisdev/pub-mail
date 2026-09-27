@@ -19,3 +19,14 @@ uploads/
 # sistema / editor
 .DS_Store
 *.log
+
+# acessos dos servidores de deploy — NUNCA versionar
+servers.json
+
+# Arquivos de produtos pagos (webchat) — servidos só com URL assinada
+protected/
+
+# chaves RSA legadas sem uso no código — nunca versionar
+back/private.key
+back/public.key
+*.pem

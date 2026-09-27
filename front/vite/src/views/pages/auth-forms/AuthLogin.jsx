@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 // material-ui
 import Button from '@mui/material/Button';
@@ -18,11 +19,15 @@ import CustomFormControl from 'ui-component/extended/Form/CustomFormControl';
 import { VisibilityIcon as Visibility } from 'ui-component/icons';
 import { VisibilityOffIcon as VisibilityOff } from 'ui-component/icons';
 
-import { post } from '../../../api/api';
+import { useAuth } from 'contexts/AuthContext';
 
 // ===============================|| JWT - LOGIN ||=============================== //
 
 export default function AuthLogin() {
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [email, setEmail] = useState(''); // pode ser email OU username
   const [password, setPassword] = useState('');
 
@@ -56,33 +61,13 @@ export default function AuthLogin() {
     setIsSubmitting(true);
 
     try {
-      const result = await post('/auth/login', {
-        email: email.trim(),
-        password
-      });
+      await login({ email: email.trim(), password });
 
-      const token = result?.tokens?.accessToken;
-      const user = result?.user;
-
-      if (!token) {
-        throw new Error('Resposta inválida: token não encontrado.');
-      }
-
-      // Persistência básica
-      localStorage.setItem('token', token);
-
-      if (user) {
-        localStorage.setItem('user', JSON.stringify(user));
-      } else {
-        // garante que não fica "user velho" no storage
-        localStorage.removeItem('user');
-      }
-
-      // ✅ pós-login: volta pra rota que tentou acessar
-      window.location.reload();
+      // ✅ pós-login: volta pra rota que tentou acessar (RequireAuth manda `from`)
+      const from = location.state?.from?.pathname || '/dashboard';
+      navigate(from, { replace: true });
     } catch (err) {
       setErrorMsg(extractErrorMessage(err));
-    } finally {
       setIsSubmitting(false);
     }
   };
@@ -142,13 +127,15 @@ export default function AuthLogin() {
       <Box sx={{ mt: 2 }}>
         <AnimateButton>
           <Button
-            color="secondary"
+            color="primary"
             fullWidth
             size="large"
             type="submit"
             variant="contained"
             disabled={isSubmitting}
-            startIcon={isSubmitting ? <CircularProgress size={18} /> : null}
+            disableElevation
+            startIcon={isSubmitting ? <CircularProgress size={18} color="inherit" /> : null}
+            sx={{ borderRadius: 2.5, py: 1.4, fontWeight: 700, fontSize: 15 }}
           >
             {isSubmitting ? 'Entrando...' : 'Entrar'}
           </Button>

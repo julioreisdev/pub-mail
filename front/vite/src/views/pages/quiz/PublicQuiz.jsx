@@ -4,13 +4,18 @@ import { useParams } from 'react-router-dom';
 import { get, post } from 'api/api';
 import QuizView from './QuizView';
 
+// Em produção o domínio é SEMPRE o hostname real: `?domain=` só vale em DEV
+// (sem isso, o quiz de qualquer org poderia ser aberto na origem do painel e
+// seus header_scripts rodariam onde o JWT está guardado).
 function resolvePublicDomain() {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const q = (params.get('domain') || '').trim().toLowerCase();
-    if (q) return q;
-  } catch {
-    /* noop */
+  if (import.meta.env.DEV) {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const q = (params.get('domain') || '').trim().toLowerCase();
+      if (q) return q;
+    } catch {
+      /* noop */
+    }
   }
   return String(window.location.hostname || '').toLowerCase();
 }
@@ -92,8 +97,9 @@ export default function PublicQuiz() {
 
         setState({ loading: false, error: '', quiz: raw });
         if (raw.name) document.title = raw.name;
-      } catch {
-        if (alive) setState({ loading: false, error: 'Quiz não encontrado.', quiz: null });
+      } catch (err) {
+        const msg = err?.response?.status === 503 ? err?.response?.data?.message || 'Quiz temporariamente indisponível.' : 'Quiz não encontrado.';
+        if (alive) setState({ loading: false, error: msg, quiz: null });
       }
     })();
     return () => {

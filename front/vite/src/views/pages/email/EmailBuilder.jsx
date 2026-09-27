@@ -186,17 +186,36 @@ export default function EmailBuilder({ open, mode = 'template', initialModel = n
   const [linkDialog, setLinkDialog] = useState({ open: false, url: '' });
   const activeEditorRef = useRef(null);
   const savedRangeRef = useRef(null);
+  // A-76: snapshot do estado ao abrir → fechar com Esc/backdrop/X/Cancelar
+  // com alterações pede confirmação (antes perdia tudo silenciosamente).
+  const openSnapshotRef = useRef('');
 
   // (re)hidrata ao abrir — do modelo salvo (banco), não do HTML
   useEffect(() => {
     if (!open) return;
-    setModel(initialModel ? normalizeModel(initialModel) : createDefaultModel());
+    const nextModel = initialModel ? normalizeModel(initialModel) : createDefaultModel();
+    setModel(nextModel);
     setName(initialName || '');
     setSubject(initialSubject || '');
     setSelectedId(null);
     activeEditorRef.current = null;
+    openSnapshotRef.current = JSON.stringify({ model: nextModel, name: initialName || '', subject: initialSubject || '' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  const isDirty = () => {
+    try {
+      return JSON.stringify({ model, name, subject }) !== openSnapshotRef.current;
+    } catch {
+      return true;
+    }
+  };
+
+  const requestClose = () => {
+    if (saving) return;
+    if (isDirty() && !window.confirm('Descartar alterações?')) return;
+    onClose?.();
+  };
 
   const blocks = model.blocks;
   const selected = useMemo(() => blocks.find((b) => b.id === selectedId) || null, [blocks, selectedId]);
@@ -287,10 +306,10 @@ export default function EmailBuilder({ open, mode = 'template', initialModel = n
   const body = model.body;
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullScreen>
+    <Dialog open={open} onClose={saving ? undefined : (_e, reason) => (reason === 'escapeKeyDown' || reason === 'backdropClick' ? requestClose() : onClose?.())} fullScreen>
       {/* Header */}
       <Stack direction="row" alignItems="center" spacing={1.5} sx={{ px: 2, py: 1.25, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}>
-        <IconButton onClick={onClose} disabled={saving}><CloseRoundedIcon /></IconButton>
+        <IconButton onClick={requestClose} disabled={saving}><CloseRoundedIcon /></IconButton>
         <Typography variant="h4" sx={{ fontWeight: 900, flexShrink: 0 }}>Construtor de e-mail</Typography>
         <Stack direction="row" spacing={1} sx={{ flex: 1, ml: 2, flexWrap: 'wrap', gap: 1 }}>
           {showName ? (
@@ -320,7 +339,7 @@ export default function EmailBuilder({ open, mode = 'template', initialModel = n
             FormHelperTextProps={{ sx: { fontSize: 10, mx: 0.5, mt: 0.25, lineHeight: 1.2 } }}
           />
         </Stack>
-        <Button onClick={onClose} disabled={saving} sx={{ borderRadius: 2 }}>Cancelar</Button>
+        <Button onClick={requestClose} disabled={saving} sx={{ borderRadius: 2 }}>Cancelar</Button>
         <Button
           variant="contained"
           color="secondary"

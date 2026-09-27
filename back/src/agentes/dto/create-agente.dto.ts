@@ -27,7 +27,7 @@ export class CreateAgenteDto {
     example: {
       prompt_mestre:
         'Você é um atendente objetivo e cordial. Faça perguntas curtas.',
-      modelo: 'llama-3.3-70b-versatile',
+      modelo: 'openai/gpt-oss-120b',
       temperatura: 0.7,
       max_tokens: 500,
     },

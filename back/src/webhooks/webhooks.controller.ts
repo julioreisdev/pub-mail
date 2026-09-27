@@ -11,11 +11,20 @@ import {
     Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { SkipThrottle } from '@nestjs/throttler';
 import { WebhooksService } from './webhooks.service';
 import { UpdateScheduleSentDto } from './dto/update-schedule-sent.dto';
 import { ApiKeyGuard } from '../auth/api-key.guard'; // Ajuste o caminho se necessário
 import { UpdateLeadMetricsDto } from './dto/update-lead-metrics.dto';
 
+// GIF 1x1 transparente
+const PIXEL = Buffer.from(
+    'R0lGODlhAQABAPAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
+    'base64',
+);
+
+// Pixel/clique/callback do micro: sem rate limit (A-13) — tráfego legítimo em rajada.
+@SkipThrottle()
 @Controller('webhooks/email')
 export class WebhooksController {
     private readonly logger = new Logger(WebhooksController.name);
@@ -24,19 +33,30 @@ export class WebhooksController {
 
     // =========================================================================
     // 🚀 ROTA DO PIXEL DE ABERTURA (Invisível)
+    // ?s=<assinatura> (HMAC sentId|email). Sem `s` só vale para envios
+    // anteriores ao TRACKING_SIGNATURE_CUTOFF (links legados).
     // =========================================================================
     @Get('schedule-sent/open-pixel/:projectId/:scheduleSentId/:email')
     async trackOpenPixel(
         @Param('projectId', new ParseUUIDPipe()) projectId: string,
         @Param('scheduleSentId', new ParseUUIDPipe()) scheduleSentId: string,
         @Param('email') email: string,
+        @Query('s') sig: string | undefined,
         @Res() res: Response,
     ) {
-        // 1. O GIF 1x1 Transparente em Base64
-        const pixel = Buffer.from(
-            'R0lGODlhAQABAPAAAAAAAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==',
-            'base64',
+        // 1. Valida (pertence ao projeto + assinatura/legado). Inválido => 204 sem registrar.
+        const check = await this.webhooksService.validateTracking(
+            projectId,
+            scheduleSentId,
+            email,
+            sig,
         );
+        if (!check.ok) {
+            this.logger.debug(
+                `Pixel rejeitado (${check.reason}) sent=${scheduleSentId.slice(0, 8)} email=${email}`,
+            );
+            return res.status(204).end();
+        }
 
         // 2. Dispara a atualização do banco em BACKGROUND (sem usar await de propósito)
         // Isso permite que a imagem carregue instantaneamente para o cliente
@@ -51,19 +71,35 @@ export class WebhooksController {
         // 3. Força o provedor de e-mail a não usar cache da imagem (garante rastreio real)
         res.set({
             'Content-Type': 'image/gif',
-            'Content-Length': pixel.length.toString(),
+            'Content-Length': PIXEL.length.toString(),
             'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
             Pragma: 'no-cache',
             Expires: '0',
         });
 
         // 4. Retorna os bytes do GIF instantaneamente
-        res.send(pixel);
+        res.send(PIXEL);
     }
 
     // =========================================================================
-    // 🖱️ NOVO: ROTA DE RASTREAMENTO DE CLIQUE NO CTA (Redirect 302)
+    // 🖱️ RASTREAMENTO DE CLIQUE NO CTA (Redirect 302)
+    // Rota ASSINADA: /cta-click/:projectId/:sentId/:email/:s?redirectUrl=...
+    // (a assinatura vai no path porque o template concatena `?redirectUrl=`
+    // depois de {{base_webhook_cta_click}}).
     // =========================================================================
+    @Get('cta-click/:projectId/:scheduleSentId/:email/:s')
+    async trackCtaClickSigned(
+        @Param('projectId', new ParseUUIDPipe()) projectId: string,
+        @Param('scheduleSentId', new ParseUUIDPipe()) scheduleSentId: string,
+        @Param('email') email: string,
+        @Param('s') sig: string,
+        @Query('redirectUrl') redirectUrl: string,
+        @Res() res: Response,
+    ) {
+        return this.handleCtaClick(projectId, scheduleSentId, email, sig, redirectUrl, res);
+    }
+
+    // Rota LEGADA (sem assinatura): só aceita envios anteriores ao cutoff.
     @Get('cta-click/:projectId/:scheduleSentId/:email')
     async trackCtaClick(
         @Param('projectId', new ParseUUIDPipe()) projectId: string,
@@ -72,8 +108,32 @@ export class WebhooksController {
         @Query('redirectUrl') redirectUrl: string,
         @Res() res: Response,
     ) {
-        // 1. Define para onde o lead vai (fallback de segurança caso falte a URL)
-        const targetUrl = redirectUrl ? redirectUrl : '';
+        return this.handleCtaClick(projectId, scheduleSentId, email, undefined, redirectUrl, res);
+    }
+
+    private async handleCtaClick(
+        projectId: string,
+        scheduleSentId: string,
+        email: string,
+        sig: string | undefined,
+        redirectUrl: string,
+        res: Response,
+    ) {
+        // 1. Valida assinatura/legado, pertencimento ao projeto e o destino
+        // (precisa ser http/https E constar nos CTAs do HTML enviado — anti open redirect, A-11).
+        const check = await this.webhooksService.validateCtaClick(
+            projectId,
+            scheduleSentId,
+            email,
+            sig,
+            redirectUrl,
+        );
+        if (!check.ok) {
+            this.logger.warn(
+                `Clique rejeitado (${check.reason}) sent=${scheduleSentId.slice(0, 8)} email=${email}`,
+            );
+            return res.status(check.status).send(check.message);
+        }
 
         // 2. Dispara a atualização do banco em BACKGROUND (garante o clique mais rápido possível)
         this.webhooksService
@@ -85,7 +145,7 @@ export class WebhooksController {
             });
 
         // 3. Redireciona o usuário imediatamente para o link final
-        return res.redirect(302, targetUrl);
+        return res.redirect(302, check.target);
     }
 
     // =========================================================================

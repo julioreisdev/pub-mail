@@ -8,6 +8,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemSettingsService } from '../../system-settings/system-settings.service';
+import { encodeWebhookUrls } from '../../common/cta-url.util';
 import { RecycleDto } from './dto/recycle.dto';
 
 // "Frio" avaliado em memória a partir da pivô metrics (last_open/last_click_cta)
@@ -82,7 +83,8 @@ export class RecycleService {
     await this.assertProject(organizationId, projectId);
     const criteria = dto.criteria === 'inactive' ? 'inactive' : 'never';
     const days = Math.max(1, Math.floor(Number(dto.days) || 30));
-    const html = String(dto.body_html || '').trim();
+    // CTAs rastreados com destino encodado (igual aos templates).
+    const html = encodeWebhookUrls(String(dto.body_html || '').trim());
     const subject = String(dto.subject || '').trim() || 'Sentimos sua falta 👋';
     if (!html) throw new BadRequestException('Monte o e-mail antes de disparar.');
 

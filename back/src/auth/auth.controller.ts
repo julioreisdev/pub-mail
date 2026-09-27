@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshDto } from './dto/refresh.dto';
@@ -21,6 +22,8 @@ import {
 export class AuthController {
   constructor(private auth: AuthService) {}
 
+  // Anti-abuso (A-13): 5 cadastros/min por IP.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('register')
   @ApiOperation({ summary: 'Criar conta (User + Organization + Wallet) e retornar tokens' })
   @ApiBody({ type: CreateUserDto })
@@ -30,6 +33,8 @@ export class AuthController {
     return this.auth.register(dto);
   }
 
+  // Anti-força-bruta (A-13): 10 tentativas/min por IP.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @ApiOperation({ summary: 'Login e retorno de access_token + refresh_token' })
   @ApiBody({ type: LoginDto })

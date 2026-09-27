@@ -41,15 +41,31 @@ import {
   formatBytes,
   dataUrlBytes,
   LEAD_CAPTURE_PRESETS,
+  createDefaultCharge,
+  formatBRL,
+  normalizeRedirectUrl,
 } from './funnel-utils';
 import RichTextField from './RichTextField';
 import AudioRecorder from './AudioRecorder';
+import { get, post } from 'api/api';
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Chip,
+  FormControlLabel,
+  InputAdornment,
+  LinearProgress,
+} from '@mui/material';
+import { IconChevronDown, IconCreditCard, IconFileTypePdf, IconLock, IconUpload, IconVideo } from '@tabler/icons-react';
 
 // Nó customizado do ReactFlow: card representando uma sequência. Mostra
 // nome, número de mensagens e tipo de fim (opções X / esperar input).
 function SequenceNode({ data, selected }) {
   const seq = data?.sequence;
   const isStart = data?.isStart;
+  const isDelivery = data?.isDelivery;
+  const protectedCount = (seq?.messages || []).filter((m) => m?.type === 'file' || m?.type === 'video').length;
   const optionsCount = seq?.ending?.type === 'options' ? (seq.ending.options || []).length : 0;
   const messagesCount = (seq?.messages || []).length;
 
@@ -81,6 +97,16 @@ function SequenceNode({ data, selected }) {
               Início
             </Typography>
           ) : null}
+          {isDelivery ? (
+            <Tooltip title="Sequência de ENTREGA: só chega ao lead depois do pagamento confirmado">
+              <Typography
+                variant="caption"
+                sx={{ bgcolor: '#7c3aed', color: 'common.white', px: 0.75, borderRadius: 1, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 0.4 }}
+              >
+                <IconLock size={11} /> Entrega
+              </Typography>
+            </Tooltip>
+          ) : null}
         </Stack>
       </Box>
       <Box sx={{ p: 1.25 }}>
@@ -101,6 +127,21 @@ function SequenceNode({ data, selected }) {
         {seq?.ending?.type === 'end' && (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
             🏁 Fim do funil
+          </Typography>
+        )}
+        {seq?.ending?.type === 'charge' && (
+          <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontWeight: 700, color: '#2e7d32' }}>
+            💳 Cobrança PIX · {formatBRL(seq.ending.charge?.amountCents || 0)}
+            {!seq.ending.charge?.onPaidSequenceId ? (
+              <Typography component="span" variant="caption" sx={{ color: 'warning.main', display: 'block', fontWeight: 600 }}>
+                ⚠ sem sequência de entrega
+              </Typography>
+            ) : null}
+          </Typography>
+        )}
+        {protectedCount > 0 && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            📎 {protectedCount} arquivo{protectedCount === 1 ? '' : 's'} protegido{protectedCount === 1 ? '' : 's'}
           </Typography>
         )}
       </Box>
@@ -162,6 +203,31 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
   const sequenceList = useMemo(() => Object.values(funil.sequences), [funil.sequences]);
   const selectedSequence = funil.sequences[selectedSequenceId] || null;
 
+  // Sequências que são ENTREGA (alvo de alguma cobrança) — ganham badge no
+  // canvas e aviso no editor: seu conteúdo só chega após o pagamento.
+  const deliveryIds = useMemo(() => {
+    const set = new Set();
+    sequenceList.forEach((seq) => {
+      if (seq.ending?.type === 'charge' && seq.ending.charge?.onPaidSequenceId) {
+        set.add(seq.ending.charge.onPaidSequenceId);
+      }
+    });
+    return set;
+  }, [sequenceList]);
+
+  // Gateway PIX da organização (Configurações → Pagamentos). Só informativo:
+  // sem gateway pronto a cobrança não vai funcionar no chat.
+  const [gateway, setGateway] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    get('/payments/settings')
+      .then((g) => alive && setGateway(g))
+      .catch(() => alive && setGateway({ ready: false, error: true }));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Modelo -> nodes do ReactFlow. Fonte da verdade ESTRUTURAL (qtd de
   // sequências, conteúdo, seleção, posição salva).
   const derivedNodes = useMemo(() => {
@@ -169,10 +235,10 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
       id: seq.id,
       type: 'sequence',
       position: seq.position || { x: 0, y: 0 },
-      data: { sequence: seq, isStart: seq.id === funil.startSequenceId },
+      data: { sequence: seq, isStart: seq.id === funil.startSequenceId, isDelivery: deliveryIds.has(seq.id) },
       selected: seq.id === selectedSequenceId,
     }));
-  }, [sequenceList, funil.startSequenceId, selectedSequenceId]);
+  }, [sequenceList, funil.startSequenceId, selectedSequenceId, deliveryIds]);
 
   // Estado LOCAL de nodes do ReactFlow. Durante o drag o ReactFlow mexe
   // só aqui (movimento suave). NÃO emitimos pro modelo a cada frame — era
@@ -207,6 +273,20 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
               style: { stroke: '#2979ff' },
             });
           }
+        });
+      } else if (seq.ending?.type === 'charge' && seq.ending.charge?.onPaidSequenceId && funil.sequences[seq.ending.charge.onPaidSequenceId]) {
+        out.push({
+          id: `${seq.id}-paid`,
+          source: seq.id,
+          target: seq.ending.charge.onPaidSequenceId,
+          label: `✅ pago · ${formatBRL(seq.ending.charge.amountCents || 0)}`,
+          labelStyle: { fontSize: 11, fontWeight: 700, fill: '#2e7d32' },
+          labelBgPadding: [4, 2],
+          labelBgBorderRadius: 4,
+          labelBgStyle: { fill: '#fff', fillOpacity: 0.95 },
+          animated: true,
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#2e7d32' },
+          style: { stroke: '#2e7d32', strokeWidth: 2 },
         });
       } else if (seq.ending?.type === 'wait_input' && seq.ending.nextSequenceId && funil.sequences[seq.ending.nextSequenceId]) {
         out.push({
@@ -289,8 +369,12 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
       window.alert('O funil precisa ter ao menos uma sequência.');
       return;
     }
-    const nextSequences = { ...funil.sequences };
-    delete nextSequences[seqId];
+    // Clona cada sequência antes de mexer — sem isso `s.ending = …` mutava o
+    // estado anterior (prev) e o React não enxergava a mudança.
+    const nextSequences = {};
+    Object.keys(funil.sequences || {}).forEach((id) => {
+      if (id !== seqId) nextSequences[id] = { ...funil.sequences[id] };
+    });
     // Limpa referências (options.action.goto + wait_input.nextSequenceId)
     Object.keys(nextSequences).forEach((id) => {
       const s = nextSequences[id];
@@ -307,12 +391,19 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
       if (s.ending?.type === 'wait_input' && s.ending.nextSequenceId === seqId) {
         s.ending = { ...s.ending, nextSequenceId: '' };
       }
+      if (s.ending?.type === 'charge' && s.ending.charge?.onPaidSequenceId === seqId) {
+        s.ending = { ...s.ending, charge: { ...s.ending.charge, onPaidSequenceId: '' } };
+      }
     });
     let nextStart = funil.startSequenceId;
     if (nextStart === seqId) {
       nextStart = Object.keys(nextSequences)[0] || '';
     }
-    emit({ ...funil, sequences: nextSequences, startSequenceId: nextStart });
+    // Captação intermediária apontando pra sequência apagada → desliga.
+    const lc = funil.leadCapture || {};
+    const leadCapture =
+      lc.triggerSequenceId === seqId ? { ...lc, triggerSequenceId: '' } : lc;
+    emit({ ...funil, sequences: nextSequences, startSequenceId: nextStart, leadCapture });
     setSelectedSequenceId(nextStart);
   }
 
@@ -363,8 +454,39 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
       options: type === 'options' ? seq.ending?.options?.length ? seq.ending.options : [createDefaultOption()] : [],
       captureVariable: type === 'wait_input' ? seq.ending?.captureVariable || '' : '',
       nextSequenceId: type === 'wait_input' ? seq.ending?.nextSequenceId || '' : '',
+      // Preserva a config da cobrança se o usuário alternar e voltar.
+      charge: type === 'charge' ? seq.ending?.charge || createDefaultCharge() : seq.ending?.charge,
     };
     patchSequence(seqId, { ending });
+  }
+
+  function patchCharge(seqId, patch) {
+    const seq = funil.sequences[seqId];
+    if (!seq?.ending || seq.ending.type !== 'charge') return;
+    const charge = { ...(seq.ending.charge || createDefaultCharge()), ...patch };
+    patchSequence(seqId, { ending: { ...seq.ending, charge } });
+  }
+
+  // Cria a sequência de ENTREGA já ligada à cobrança (atalho pro usuário leigo).
+  function createDeliverySequence(seqId) {
+    const seq = funil.sequences[seqId];
+    if (!seq?.ending || seq.ending.type !== 'charge') return;
+    const positions = sequenceList.map((s) => s.position || { x: 0, y: 0 });
+    const maxY = positions.reduce((acc, p) => Math.max(acc, p.y), 0);
+    const delivery = createDefaultSequence(`Entrega — ${seq.name || 'produto'}`);
+    delivery.messages = [{ ...createDefaultMessage('text'), html: 'Aqui está o seu produto 🎁 Bom proveito!' }];
+    delivery.ending = { type: 'end', options: [], captureVariable: '', nextSequenceId: '' };
+    delivery.position = { x: (seq.position?.x || 80) + 320, y: Math.max(maxY, seq.position?.y || 0) + 60 };
+    const next = {
+      ...funil,
+      sequences: {
+        ...funil.sequences,
+        [delivery.id]: delivery,
+        [seqId]: { ...seq, ending: { ...seq.ending, charge: { ...(seq.ending.charge || createDefaultCharge()), onPaidSequenceId: delivery.id } } },
+      },
+    };
+    emit(next);
+    setSelectedSequenceId(delivery.id);
   }
 
   function patchOption(seqId, optId, patch) {
@@ -408,6 +530,10 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
         triggerSequenceId: fields ? seqId : '',
         fields,
         prompts: {
+          // Preserva TODOS os prompts custom (intro/closing incluídos) —
+          // trocar o preset de campos não pode apagar os textos.
+          intro: prevPrompts.intro || '',
+          closing: prevPrompts.closing || '',
           nome: prevPrompts.nome || '',
           telefone: prevPrompts.telefone || '',
           email: prevPrompts.email || '',
@@ -506,6 +632,10 @@ function FunnelBuilderImpl({ value, onChange, height = 700 }) {
             onSetLeadCapture={(fields) => setLeadCaptureForSequence(selectedSequence.id, fields)}
             onSetLeadCapturePrompt={setLeadCapturePrompt}
             onSetEnding={setEndingPatch}
+            onPatchCharge={(patch) => patchCharge(selectedSequence.id, patch)}
+            onCreateDeliverySequence={() => createDeliverySequence(selectedSequence.id)}
+            gateway={gateway}
+            isDelivery={deliveryIds.has(selectedSequence.id)}
           />
         ) : (
           <Typography variant="body2" color="text.secondary">
@@ -558,6 +688,10 @@ function SequenceEditor({
   onSetLeadCapture,
   onSetLeadCapturePrompt,
   onSetEnding,
+  onPatchCharge,
+  onCreateDeliverySequence,
+  gateway,
+  isDelivery,
 }) {
   const otherSequences = useMemo(
     () => Object.values(funil.sequences).filter((s) => s.id !== sequence.id),
@@ -592,6 +726,13 @@ function SequenceEditor({
         size="small"
       />
 
+      {isDelivery ? (
+        <Alert severity="info" icon={<IconLock size={18} />} sx={{ py: 0.5 }}>
+          <strong>Sequência de entrega.</strong> As mensagens abaixo (incluindo arquivos e vídeos) só são enviadas ao lead{' '}
+          <strong>depois do pagamento confirmado</strong>. Coloque aqui o produto: PDF, vídeo, fotos, áudios e o texto de agradecimento.
+        </Alert>
+      ) : null}
+
       <Divider>Mensagens</Divider>
 
       <Stack spacing={1.5}>
@@ -608,17 +749,28 @@ function SequenceEditor({
         ))}
       </Stack>
 
-      <Stack direction="row" spacing={1}>
-        <Button size="small" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('text')}>
-          Texto
-        </Button>
-        <Button size="small" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('image')}>
-          Imagem
-        </Button>
-        <Button size="small" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('audio')}>
-          Áudio
-        </Button>
-      </Stack>
+      <Box>
+        <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', display: 'block', mb: 0.75 }}>
+          Adicionar mensagem
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.75}>
+          <Button size="small" variant="outlined" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('text')} sx={{ borderRadius: 2 }}>
+            Texto
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('image')} sx={{ borderRadius: 2 }}>
+            Imagem
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('audio')} sx={{ borderRadius: 2 }}>
+            Áudio
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<IconFileTypePdf size={16} />} onClick={() => onAddMessage('file')} sx={{ borderRadius: 2 }}>
+            Arquivo/PDF
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<IconVideo size={16} />} onClick={() => onAddMessage('video')} sx={{ borderRadius: 2 }}>
+            Vídeo
+          </Button>
+        </Stack>
+      </Box>
 
       <Divider>Como termina?</Divider>
 
@@ -632,8 +784,19 @@ function SequenceEditor({
       >
         <MenuItem value="options">Mostrar botões</MenuItem>
         <MenuItem value="wait_input">Esperar resposta digitada</MenuItem>
+        <MenuItem value="charge">💳 Cobrança PIX (vender produto)</MenuItem>
         <MenuItem value="end">Encerrar funil</MenuItem>
       </TextField>
+
+      {sequence.ending?.type === 'charge' && (
+        <ChargeEditor
+          sequence={sequence}
+          otherSequences={otherSequences}
+          gateway={gateway}
+          onPatchCharge={onPatchCharge}
+          onCreateDeliverySequence={onCreateDeliverySequence}
+        />
+      )}
 
       {sequence.ending?.type === 'options' && (
         <OptionsEditor
@@ -812,12 +975,20 @@ function EndingSection({ funil, onSetEnding }) {
 // MessageEditor — text / image / audio
 // =============================================================================
 
+const MESSAGE_TYPE_LABEL = {
+  text: 'Texto',
+  image: 'Imagem',
+  audio: 'Áudio',
+  file: '📎 Arquivo (protegido)',
+  video: '🎬 Vídeo (protegido)',
+};
+
 function MessageEditor({ message, index, total, onPatch, onRemove, onMove }) {
   return (
     <Box sx={{ p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
         <Typography variant="caption" sx={{ fontWeight: 800 }}>
-          #{index + 1} • {message.type === 'text' ? 'Texto' : message.type === 'image' ? 'Imagem' : 'Áudio'}
+          #{index + 1} • {MESSAGE_TYPE_LABEL[message.type] || 'Texto'}
         </Typography>
         <Box sx={{ flex: 1 }} />
         <Tooltip title="Subir">
@@ -855,6 +1026,10 @@ function MessageEditor({ message, index, total, onPatch, onRemove, onMove }) {
 
       {message.type === 'audio' && (
         <AudioMessageEditor message={message} onPatch={onPatch} />
+      )}
+
+      {(message.type === 'file' || message.type === 'video') && (
+        <FileMessageEditor message={message} onPatch={onPatch} />
       )}
 
       <Stack direction="row" spacing={1} sx={{ mt: 1 }} alignItems="center">
@@ -1029,6 +1204,11 @@ function OptionsEditor({ sequence, otherSequences, onPatchOption, onPatchOptionA
               placeholder="https://..."
               value={opt.action?.url || ''}
               onChange={(e) => onPatchOptionAction(opt.id, { url: e.target.value })}
+              onBlur={(e) => {
+                // https:// automático / esquema perigoso → '' (A-74)
+                const fixed = normalizeRedirectUrl(e.target.value);
+                if (fixed !== e.target.value) onPatchOptionAction(opt.id, { url: fixed });
+              }}
             />
           )}
           {opt.action?.type === 'send_to_ai' && (
@@ -1094,6 +1274,298 @@ function WaitInputEditor({ sequence, otherSequences, onPatch }) {
           </MenuItem>
         ))}
       </TextField>
+    </Stack>
+  );
+}
+
+
+// =============================================================================
+// FileMessageEditor — arquivo/PDF ou vídeo hospedado no SERVIDOR (protegido).
+// O upload vai pra /webchat-assets (não pro JSON do funil); o lead só recebe
+// a URL assinada depois do pagamento.
+// =============================================================================
+
+function FileMessageEditor({ message, onPatch }) {
+  const inputRef = useRef(null);
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState('');
+  const isVideo = message.type === 'video';
+  const accept = isVideo ? 'video/*' : '.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.epub,image/*,audio/*';
+  const maxBytes = isVideo ? 500 * 1024 * 1024 : 100 * 1024 * 1024;
+
+  async function handleFile(e) {
+    const file = e.target?.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    if (isVideo && !file.type.startsWith('video/')) {
+      setError('Selecione um arquivo de vídeo (mp4, webm…).');
+      return;
+    }
+    if (file.size > maxBytes) {
+      setError(isVideo ? 'Vídeo acima de 500 MB — hospede fora (YouTube não listado, Vimeo…) e envie o link numa mensagem de texto.' : 'Arquivo acima de 100 MB.');
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    setProgress(0);
+    try {
+      const res = await post('/webchat-assets', fd, {
+        headers: { 'Content-Type': undefined },
+        timeout: 0,
+        onUploadProgress: (ev) => {
+          if (ev.total) setProgress(Math.round((ev.loaded / ev.total) * 100));
+        },
+      });
+      onPatch({ assetId: res.id, name: res.name, size: res.size_bytes, mime: res.mime });
+    } catch (err) {
+      const m = err?.response?.data?.message ?? err?.message;
+      setError(Array.isArray(m) ? m.join(' | ') : String(m || 'Falha no upload.'));
+    } finally {
+      setProgress(null);
+    }
+  }
+
+  return (
+    <Stack spacing={1}>
+      <Alert severity="success" icon={<IconLock size={18} />} sx={{ py: 0.25 }}>
+        Conteúdo protegido: fica no servidor e só é liberado ao lead após o pagamento.
+      </Alert>
+      {message.assetId ? (
+        <Box sx={{ p: 1.25, borderRadius: 2, border: '1px solid', borderColor: 'success.main', bgcolor: 'action.hover' }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            {isVideo ? <IconVideo size={22} /> : <IconFileTypePdf size={22} />}
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                {message.name || 'arquivo'}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {formatBytes(Number(message.size) || 0)}
+                {message.mime ? ` · ${message.mime}` : ''}
+              </Typography>
+            </Box>
+            <Chip size="small" color="success" label="Enviado" />
+          </Stack>
+        </Box>
+      ) : null}
+      {progress !== null ? (
+        <Box>
+          <LinearProgress variant="determinate" value={progress} sx={{ borderRadius: 1, height: 8 }} />
+          <Typography variant="caption" color="text.secondary">
+            Enviando… {progress}%
+          </Typography>
+        </Box>
+      ) : null}
+      {error ? (
+        <Alert severity="error" sx={{ py: 0.25 }}>
+          {error}
+        </Alert>
+      ) : null}
+      <input ref={inputRef} type="file" accept={accept} hidden onChange={handleFile} />
+      <Stack direction="row" spacing={1}>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<IconUpload size={16} />}
+          disabled={progress !== null}
+          onClick={() => inputRef.current?.click()}
+        >
+          {message.assetId ? (isVideo ? 'Trocar vídeo' : 'Trocar arquivo') : isVideo ? 'Selecionar vídeo' : 'Selecionar arquivo'}
+        </Button>
+        {message.assetId ? (
+          <Button size="small" color="error" onClick={() => onPatch({ assetId: '', name: '', size: 0, mime: '' })}>
+            Remover
+          </Button>
+        ) : null}
+      </Stack>
+      <Typography variant="caption" color="text.secondary">
+        {isVideo ? 'Até 500 MB (mp4 recomendado). O lead assiste dentro do chat.' : 'Até 100 MB (PDF, zip, doc…). O lead recebe um botão de download.'}
+      </Typography>
+      <TextField
+        size="small"
+        fullWidth
+        label="Nome exibido no chat"
+        value={message.label || ''}
+        onChange={(e) => onPatch({ label: e.target.value.slice(0, 150) })}
+        placeholder={message.name || (isVideo ? 'Ex.: Aula 1 — Bolo de cenoura' : 'Ex.: Apostila completa')}
+        helperText="É o nome que o lead vê no chat e ao salvar o arquivo. Vazio = nome do arquivo enviado."
+      />
+      <RichTextField
+        label="Legenda (opcional)"
+        value={message.caption || ''}
+        onChange={(html) => onPatch({ caption: html })}
+        minHeight={48}
+        placeholder="Texto que aparece junto do arquivo (opcional)"
+      />
+    </Stack>
+  );
+}
+
+// =============================================================================
+// ChargeEditor — Cobrança PIX (fim de sequência type='charge')
+// =============================================================================
+
+// Campo de dinheiro "estilo caixa eletrônico": o usuário digita só números e
+// o valor vai se formando da direita pra esquerda (1 → 0,01; 1990 → 19,90).
+function MoneyField({ valueCents, onChange, label = 'Valor do produto' }) {
+  const display = (Number(valueCents) || 0) === 0 ? '' : formatBRL(valueCents).replace(/^R\$\s?/, '');
+  return (
+    <TextField
+      size="small"
+      fullWidth
+      label={label}
+      value={display}
+      placeholder="0,00"
+      onChange={(e) => {
+        const digits = String(e.target.value || '').replace(/\D+/g, '').slice(0, 9);
+        onChange(digits ? parseInt(digits, 10) : 0);
+      }}
+      InputProps={{ startAdornment: <InputAdornment position="start">R$</InputAdornment> }}
+      inputProps={{ inputMode: 'numeric' }}
+      helperText="Digite só os números: 1990 vira R$ 19,90"
+    />
+  );
+}
+
+function ChargeEditor({ sequence, otherSequences, gateway, onPatchCharge, onCreateDeliverySequence }) {
+  const charge = { ...createDefaultCharge(), ...(sequence.ending?.charge || {}) };
+  const gatewayReady = gateway?.ready === true;
+  const deliveryMissing = !charge.onPaidSequenceId;
+
+  return (
+    <Stack spacing={1.5}>
+      <Alert severity="info" sx={{ py: 0.5 }}>
+        Ao chegar aqui, depois das mensagens acima, o chat <strong>gera um PIX</strong> com o valor abaixo e mostra o código
+        copia-e-cola (e o QR), o botão de copiar e o botão de validar. Quando o pagamento for confirmado, o chat envia a{' '}
+        <strong>sequência de entrega</strong> — é nela que você coloca o produto (PDF, vídeo, fotos…).
+      </Alert>
+
+      {gateway && !gatewayReady ? (
+        <Alert severity="warning" sx={{ py: 0.5 }}>
+          <strong>Gateway PIX não configurado.</strong> Cadastre o token do Mercado Pago ou PushinPay em{' '}
+          <a href="/settings/payments" target="_blank" rel="noreferrer" style={{ fontWeight: 700 }}>
+            Configurações → Pagamentos
+          </a>{' '}
+          — sem isso a cobrança não funciona no chat.
+        </Alert>
+      ) : gatewayReady ? (
+        <Alert severity="success" sx={{ py: 0.25 }} icon={<IconCreditCard size={18} />}>
+          Gateway pronto ({gateway.provider === 'pushinpay' ? 'PushinPay' : 'Mercado Pago'}).
+        </Alert>
+      ) : null}
+
+      <MoneyField valueCents={charge.amountCents} onChange={(cents) => onPatchCharge({ amountCents: cents })} />
+      {(Number(charge.amountCents) || 0) <= 0 ? (
+        <Alert severity="warning" sx={{ py: 0.25 }}>
+          Informe o valor do produto.
+        </Alert>
+      ) : null}
+
+      <TextField
+        size="small"
+        fullWidth
+        label="Nome do produto (aparece no extrato e em Vendas)"
+        value={charge.description || ''}
+        onChange={(e) => onPatchCharge({ description: e.target.value.slice(0, 120) })}
+        placeholder="Ex.: Curso completo de bolos"
+      />
+
+      <TextField
+        select
+        size="small"
+        fullWidth
+        label="Após o pagamento, enviar a sequência"
+        value={charge.onPaidSequenceId || ''}
+        onChange={(e) => onPatchCharge({ onPaidSequenceId: e.target.value })}
+        helperText="Essa sequência é a ENTREGA: fica protegida e só chega a quem pagou. Uma seta verde aparece no fluxograma."
+        error={deliveryMissing}
+      >
+        <MenuItem value="">— selecione —</MenuItem>
+        {otherSequences.map((s) => (
+          <MenuItem key={s.id} value={s.id}>
+            {s.name}
+          </MenuItem>
+        ))}
+      </TextField>
+      {deliveryMissing ? (
+        <Button size="small" variant="contained" startIcon={<AddRoundedIcon />} onClick={onCreateDeliverySequence} sx={{ alignSelf: 'flex-start' }}>
+          Criar sequência de entrega
+        </Button>
+      ) : null}
+
+      <FormControlLabel
+        control={<Switch checked={charge.showQr !== false} onChange={(e) => onPatchCharge({ showQr: e.target.checked })} />}
+        label="Mostrar QR code além do código copia-e-cola"
+      />
+
+      <Accordion disableGutters sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, '&:before': { display: 'none' } }}>
+        <AccordionSummary expandIcon={<IconChevronDown size={18} />}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+            Textos e botões (personalizar)
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack spacing={1.25}>
+            <RichTextField
+              label="Mensagem junto do PIX"
+              value={charge.pixMessage}
+              onChange={(html) => onPatchCharge({ pixMessage: html })}
+              minHeight={48}
+            />
+            <TextField
+              size="small"
+              fullWidth
+              label="Texto do botão de copiar"
+              value={charge.copyButtonLabel}
+              onChange={(e) => onPatchCharge({ copyButtonLabel: e.target.value.slice(0, 80) })}
+            />
+            <RichTextField
+              label="Mensagem após copiar"
+              value={charge.copiedMessage}
+              onChange={(html) => onPatchCharge({ copiedMessage: html })}
+              minHeight={48}
+            />
+            <TextField
+              size="small"
+              fullWidth
+              label="Texto do botão de validar pagamento"
+              value={charge.validateButtonLabel}
+              onChange={(e) => onPatchCharge({ validateButtonLabel: e.target.value.slice(0, 80) })}
+            />
+            <RichTextField
+              label="Mensagem quando ainda não pagou"
+              value={charge.notPaidMessage}
+              onChange={(html) => onPatchCharge({ notPaidMessage: html })}
+              minHeight={48}
+            />
+            <RichTextField
+              label="Mensagem quando o PIX expira (30 min)"
+              value={charge.expiredMessage}
+              onChange={(html) => onPatchCharge({ expiredMessage: html })}
+              minHeight={48}
+            />
+            <TextField
+              size="small"
+              fullWidth
+              label="Texto do botão de gerar novo PIX"
+              value={charge.newPixButtonLabel}
+              onChange={(e) => onPatchCharge({ newPixButtonLabel: e.target.value.slice(0, 80) })}
+            />
+            <RichTextField
+              label="Mensagem de pagamento confirmado"
+              value={charge.paidMessage}
+              onChange={(html) => onPatchCharge({ paidMessage: html })}
+              minHeight={48}
+            />
+            <RichTextField
+              label="Mensagem 'estou te enviando o conteúdo' (antes da entrega)"
+              value={charge.sendingMessage}
+              onChange={(html) => onPatchCharge({ sendingMessage: html })}
+              minHeight={48}
+            />
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
     </Stack>
   );
 }

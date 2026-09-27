@@ -21,6 +21,7 @@ import {
   ApiBody,
   ApiOkResponse,
   ApiBadRequestResponse,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -69,6 +70,7 @@ export class UsersController {
   @ApiBody({ type: UpdateUserDto })
   @ApiOkResponse({ description: 'Usuário atualizado com sucesso' })
   @ApiBadRequestResponse({ description: 'Dados inválidos' })
+  @ApiForbiddenResponse({ description: 'Sem permissão para alterar papel/status (só OWNER/ADMIN, nunca o próprio)' })
   @ApiNotFoundResponse({ description: 'Usuário não encontrado' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
   update(
@@ -76,7 +78,10 @@ export class UsersController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateUserDto,
   ) {
-    return this.usersService.updateInOrganization(req.user.organizationId, id, dto);
+    return this.usersService.updateInOrganization(req.user.organizationId, id, dto, {
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 
   // DELETE /users/:id (soft) -> só se for da mesma org
@@ -84,9 +89,13 @@ export class UsersController {
   @ApiOperation({ summary: 'Desativar (soft delete) um usuário por ID (somente dentro da mesma organização)' })
   @ApiParam({ name: 'id', description: 'ID do usuário', type: String, format: 'uuid' })
   @ApiOkResponse({ description: 'Usuário desativado com sucesso' })
+  @ApiForbiddenResponse({ description: 'Sem permissão (só OWNER/ADMIN, nunca o próprio)' })
   @ApiNotFoundResponse({ description: 'Usuário não encontrado' })
   @ApiUnauthorizedResponse({ description: 'Sem token ou token inválido' })
   remove(@Req() req: any, @Param('id', new ParseUUIDPipe()) id: string) {
-    return this.usersService.removeInOrganization(req.user.organizationId, id);
+    return this.usersService.removeInOrganization(req.user.organizationId, id, {
+      userId: req.user.userId,
+      role: req.user.role,
+    });
   }
 }

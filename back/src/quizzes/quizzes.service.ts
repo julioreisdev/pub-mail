@@ -1,9 +1,11 @@
 import {
+  ServiceUnavailableException,
   BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AccessService } from '../platform-billing/access.service';
 import { cleanEmailOrNull } from '../common/email.util';
 import { QuizSplitsService } from '../quiz-splits/quiz-splits.service';
 import { QuizAdsService } from './quiz-ads.service';
@@ -63,6 +65,7 @@ export class QuizzesService {
     private readonly ads: QuizAdsService,
     private readonly leadEmail: QuizLeadEmailService,
     private readonly schedulesRunner: EmailSchedulesRunner,
+    private readonly access: AccessService,
   ) {}
 
   // Garante que o domínio é um domínio de QUIZ cadastrado E verificado.
@@ -196,14 +199,19 @@ export class QuizzesService {
       await this.ensureProjectBelongsToOrg(organizationId, dto.email_project_id);
     }
 
+    // A-66: renomear NÃO troca o slug (links publicados continuam valendo).
+    // Slug só muda se vier explícito no DTO; ao trocar de domínio, mantém o
+    // slug atual se ainda for único lá.
+    const explicitSlug =
+      dto.slug !== undefined ? slugifyName(String(dto.slug)) : null;
     let nextSlug = current.slug;
-    if (nameChanged || domainChanged) {
-      nextSlug = await this.uniqueSlugByDomain(
-        nextDomain,
-        slugifyName(nextName),
-        current.id,
-      );
+    if (explicitSlug && explicitSlug !== current.slug) {
+      nextSlug = await this.uniqueSlugByDomain(nextDomain, explicitSlug, current.id);
+    } else if (domainChanged) {
+      nextSlug = await this.uniqueSlugByDomain(nextDomain, current.slug, current.id);
     }
+    const slugChanged = nextSlug !== current.slug;
+    void nameChanged;
 
     let nextSplitId: string | undefined;
     if (dto.split_id !== undefined) {
@@ -244,7 +252,7 @@ export class QuizzesService {
         ...(dto.split_weight !== undefined
           ? { split_weight: dto.split_weight }
           : {}),
-        ...(nameChanged || domainChanged ? { slug: nextSlug } : {}),
+        ...(slugChanged ? { slug: nextSlug } : {}),
       },
       include: quizInclude,
     });
@@ -258,23 +266,37 @@ export class QuizzesService {
 
   // ===================== PÚBLICO =====================
 
+  // A-70: só quiz ATIVO; sem domínio, slug ambíguo (mesmo slug em 2 domínios)
+  // é erro — nunca "o mais antigo" (mesma regra do webchat).
+  // Org sem acesso ativo (assinatura vencida/pendente/bloqueada) → quiz público indisponível (D4).
   private async resolvePublicQuiz(slug: string, domainHint?: string) {
+    const quiz = await this.resolvePublicQuizRaw(slug, domainHint);
+    if (!(await this.access.isOrgActive(quiz.organization_id))) {
+      throw new ServiceUnavailableException('Este quiz está temporariamente indisponível.');
+    }
+    return quiz;
+  }
+
+  private async resolvePublicQuizRaw(slug: string, domainHint?: string) {
     const normSlug = String(slug || '').trim().toLowerCase();
     const normDomain = domainHint ? normalizeDomain(domainHint) : '';
-    let quiz: any = null;
     if (normDomain) {
-      quiz = await this.prisma.quizzes.findFirst({
-        where: { slug: normSlug, domain: normDomain },
+      const scoped = await this.prisma.quizzes.findFirst({
+        where: { slug: normSlug, domain: normDomain, active: true },
       });
+      if (scoped) return scoped;
     }
-    if (!quiz) {
-      quiz = await this.prisma.quizzes.findFirst({
-        where: { slug: normSlug },
-        orderBy: { created_at: 'asc' },
-      });
+    const bySlug = await this.prisma.quizzes.findMany({
+      where: { slug: normSlug, active: true },
+      take: 2,
+    });
+    if (bySlug.length === 0) throw new NotFoundException('Quiz não encontrado.');
+    if (bySlug.length > 1) {
+      throw new BadRequestException(
+        'Quiz ambíguo para este slug. Informe o domínio no header x-quiz-domain.',
+      );
     }
-    if (!quiz) throw new NotFoundException('Quiz não encontrado.');
-    return quiz;
+    return bySlug[0];
   }
 
   // Split público: slug + membros ativos (domínio/slug/peso) p/ o front
@@ -353,6 +375,9 @@ export class QuizzesService {
     const quizWelcome: {
       value: { projectId: string; leadId: string } | null;
     } = { value: null };
+    // A-14: e-mail imediato só quando o vínculo lead→projeto é NOVO e o lead
+    // está ACTIVE (não bounce/spam). Decidido dentro da tx.
+    const immediateEmail: { allowed: boolean } = { allowed: false };
     const result = await this.prisma.$transaction(
       async (tx) => {
         // Registra em quiz_leads (aparece em "Leads"), SEM duplicar: dedupe por
@@ -365,17 +390,19 @@ export class QuizzesService {
           where: { organization_id: quiz.organization_id, ...dedupeWhere },
         });
 
+        // Lead já existente: rota pública só PREENCHE o que está vazio, nunca
+        // sobrescreve nome/contexto/campos já gravados (A-67).
         const lead = existingLead
           ? await tx.quiz_leads.update({
               where: { id: existingLead.id },
               data: {
-                name: name ?? existingLead.name,
-                email: email ?? existingLead.email,
-                phone: phone ?? existingLead.phone,
-                source: dto.source ?? existingLead.source ?? 'quiz',
-                context: dto.context ?? existingLead.context ?? undefined,
+                name: existingLead.name ?? name,
+                email: existingLead.email ?? email,
+                phone: existingLead.phone ?? phone,
+                source: existingLead.source ?? dto.source ?? 'quiz',
+                context: existingLead.context ?? dto.context ?? undefined,
                 custom_fields:
-                  dto.custom_fields ?? existingLead.custom_fields ?? undefined,
+                  existingLead.custom_fields ?? dto.custom_fields ?? undefined,
               },
             })
           : await tx.quiz_leads.create({
@@ -408,23 +435,39 @@ export class QuizzesService {
             context: dto.context ?? null,
           };
           if (!emailLead) {
-            emailLead = await tx.email_leads.create({
-              data: {
-                organization_id: quiz.organization_id,
-                email,
-                name: name ?? null,
-                attributes: attrs as any,
-              },
-            });
+            try {
+              emailLead = await tx.email_leads.create({
+                data: {
+                  organization_id: quiz.organization_id,
+                  email,
+                  name: name ?? null,
+                  attributes: attrs as any,
+                },
+              });
+            } catch (e: any) {
+              // Corrida (P2002 no unique org+email): rebusca em vez de 500 (A-67).
+              if (e?.code !== 'P2002') throw e;
+              emailLead = await tx.email_leads.findFirst({
+                where: { organization_id: quiz.organization_id, email },
+              });
+              if (!emailLead) throw e;
+            }
           } else {
+            // Só preenche o que está vazio (A-67): nome existente e atributos
+            // já gravados vencem os enviados pela rota pública.
+            const existingAttrs =
+              (emailLead.attributes as Record<string, any>) || {};
+            const filledAttrs: Record<string, any> = { ...existingAttrs };
+            Object.entries(attrs).forEach(([k, v]) => {
+              if (filledAttrs[k] === undefined || filledAttrs[k] === null || filledAttrs[k] === '') {
+                filledAttrs[k] = v;
+              }
+            });
             await tx.email_leads.update({
               where: { id: emailLead.id },
               data: {
-                ...(name ? { name } : {}),
-                attributes: {
-                  ...((emailLead.attributes as Record<string, any>) || {}),
-                  ...attrs,
-                } as any,
+                ...(!emailLead.name && name ? { name } : {}),
+                attributes: filledAttrs as any,
               },
             });
           }
@@ -435,18 +478,23 @@ export class QuizzesService {
             },
           });
           if (!rel) {
-            await tx.email_project_leads.create({
-              data: {
-                project_id: quiz.email_project_id,
-                lead_id: emailLead.id,
-                status: 'SUBSCRIBED',
-              } as any,
-            });
+            try {
+              await tx.email_project_leads.create({
+                data: {
+                  project_id: quiz.email_project_id,
+                  lead_id: emailLead.id,
+                  status: 'SUBSCRIBED',
+                } as any,
+              });
+            } catch (e: any) {
+              if (e?.code !== 'P2002') throw e; // corrida: vínculo já existe
+            }
             // vinculo NUEVO -> candidato a welcome (fuera de la tx)
             quizWelcome.value = {
               projectId: quiz.email_project_id,
               leadId: emailLead.id,
             };
+            immediateEmail.allowed = emailLead.global_status === 'ACTIVE';
           }
           routedTo = 'email_project';
         }
@@ -467,18 +515,22 @@ export class QuizzesService {
     }
 
     // E-mail imediato ao lead (best-effort, fora da transação). Só dispara se
-    // o quiz tem lead_email_html + projeto vinculado + e-mail do lead.
-    await this.leadEmail.maybeSend(quiz, {
-      email,
-      name,
-      attributes: {
-        phone,
-        source: dto.source ?? 'quiz',
-        ...(dto.custom_fields && typeof dto.custom_fields === 'object'
-          ? dto.custom_fields
-          : {}),
-      },
-    });
+    // o quiz tem lead_email_html + projeto vinculado + e-mail do lead E o
+    // vínculo com o projeto é novo + lead ACTIVE (A-14: nada de reenviar a
+    // cada submissão nem pra suprimido/descadastrado).
+    if (immediateEmail.allowed) {
+      await this.leadEmail.maybeSend(quiz, {
+        email,
+        name,
+        attributes: {
+          phone,
+          source: dto.source ?? 'quiz',
+          ...(dto.custom_fields && typeof dto.custom_fields === 'object'
+            ? dto.custom_fields
+            : {}),
+        },
+      });
+    }
 
     return result;
   }

@@ -234,7 +234,7 @@ export default function Catalog() {
                     ) : (
                         <Grid container spacing={2}>
                             {filtered.map((item, idx) => (
-                                <Grid item xs={12} sm={6} lg={4} key={`${item.category}-${item.name}-${idx}`}>
+                                <Grid size={{ xs: 12, sm: 6, lg: 4 }} key={`${item.category}-${item.name}-${idx}`}>
                                     <ServiceCard item={item} />
                                 </Grid>
                             ))}

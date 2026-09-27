@@ -9,6 +9,7 @@ type OverviewParams = {
 
 const DAY = 86_400_000;
 const BRT_OFFSET = 3 * 3_600_000; // Brasil sem horário de verão → UTC-3
+const ANALYTICS_TZ = 'America/Sao_Paulo';
 
 function parseDate(v?: string): Date | null {
   if (!v) return null;
@@ -16,13 +17,45 @@ function parseDate(v?: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+// Chave YYYY-MM-DD no fuso de Brasília (mesma técnica do EmailSchedule.decide):
+// o usuário enxerga o dia em BRT, não em UTC (A-90).
+const dayKeyFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: ANALYTICS_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 function dayKey(d: Date): string {
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  const map: Record<string, string> = {};
+  for (const part of dayKeyFmt.formatToParts(d)) {
+    if (part.type !== 'literal') map[part.type] = part.value;
+  }
+  return `${map.year}-${map.month}-${map.day}`;
 }
 
-function ratio(n: number, d: number): number {
+// Lista de chaves de dia (BRT) entre from e to, sem buracos, cap 180.
+function dayKeysBetween(from: Date, to: Date, cap = 180): string[] {
+  const keys: string[] = [];
+  const last = dayKey(to);
+  let t = from.getTime();
+  let prev = '';
+  for (let guard = 0; guard < cap + 2; guard++) {
+    const k = dayKey(new Date(t));
+    if (k !== prev) {
+      keys.push(k);
+      prev = k;
+      if (keys.length >= cap || k === last) break;
+    }
+    t += DAY;
+    if (t > to.getTime() + DAY) break;
+  }
+  return keys;
+}
+
+function ratio(n: number, d: number, cap = Infinity): number {
   if (!d || d <= 0) return 0;
-  return Math.round((n / d) * 10000) / 10000;
+  const r = Math.round((n / d) * 10000) / 10000;
+  return Math.min(r, cap);
 }
 
 // campos agregados de um conjunto de disparos
@@ -43,9 +76,12 @@ function emptyTotals() {
 export class EmailAnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Só disparos que SAÍRAM (sent=true): rows com falha/saldo insuficiente não
+  // contam como leads alcançados (A-90).
   private sentWhere(organizationId: string, projectId: string | undefined, from: Date, to: Date) {
     return {
       organization_id: organizationId,
+      sent: true,
       ...(projectId ? { project_id: projectId } : {}),
       run_at: { gte: from, lte: to },
     };
@@ -133,6 +169,7 @@ export class EmailAnalyticsService {
       row.delivered += s.delivered_count || 0;
       row.opens += s.open_count || 0;
       row.clicks += s.click_cta_count || 0;
+      row.unique_clicks = (row.unique_clicks || 0) + (s.click_unique_count || 0);
       row.bounces += s.bounced_count || 0;
       seriesMap.set(k, row);
 
@@ -174,14 +211,16 @@ export class EmailAnalyticsService {
       for (const pp of perProjectMap.values()) pp.project_name = nameById.get(pp.project_id) || '—';
     }
 
+    // Taxas de clique usam cliques ÚNICOS (por lead) e ficam limitadas a 100%
+    // — com o total de cliques dava >100% (A-90).
     const denom = totals.delivered > 0 ? totals.delivered : totals.leads_reached;
     const rates = {
-      open_rate: ratio(totals.opens, denom),
-      click_rate: ratio(totals.clicks, denom),
-      ctor: ratio(totals.clicks, totals.opens), // click-to-open
-      delivery_rate: ratio(totals.delivered, totals.leads_reached),
-      bounce_rate: ratio(totals.bounces, totals.leads_reached),
-      complaint_rate: ratio(totals.complaints, totals.leads_reached),
+      open_rate: ratio(totals.opens, denom, 1),
+      click_rate: ratio(totals.unique_clicks, denom, 1),
+      ctor: ratio(totals.unique_clicks, totals.opens, 1), // click-to-open
+      delivery_rate: ratio(totals.delivered, totals.leads_reached, 1),
+      bounce_rate: ratio(totals.bounces, totals.leads_reached, 1),
+      complaint_rate: ratio(totals.complaints, totals.leads_reached, 1),
     };
 
     // -------- engajamento atual dos leads (na pivô) --------
@@ -224,21 +263,17 @@ export class EmailAnalyticsService {
       growthMap.set(k, (growthMap.get(k) || 0) + 1);
     }
 
-    // -------- séries contínuas (dias vazios preenchidos, cap 180d) --------
+    // -------- séries contínuas em dias BRT (dias vazios preenchidos, cap 180d) --------
     const series: any[] = [];
     const growth: any[] = [];
-    const start = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-    const end = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate()));
-    let guard = 0;
-    for (let t = start.getTime(); t <= end.getTime() && guard < 180; t += DAY, guard++) {
-      const k = dayKey(new Date(t));
-      const r = seriesMap.get(k) || { date: k, sent: 0, delivered: 0, opens: 0, clicks: 0, bounces: 0 };
+    for (const k of dayKeysBetween(from, to)) {
+      const r = seriesMap.get(k) || { date: k, sent: 0, delivered: 0, opens: 0, clicks: 0, unique_clicks: 0, bounces: 0 };
       const d = r.delivered > 0 ? r.delivered : r.sent;
       series.push({
         ...r,
-        open_rate: ratio(r.opens, d),
-        click_rate: ratio(r.clicks, d),
-        delivery_rate: ratio(r.delivered, r.sent),
+        open_rate: ratio(r.opens, d, 1),
+        click_rate: ratio(r.unique_clicks || 0, d, 1),
+        delivery_rate: ratio(r.delivered, r.sent, 1),
       });
       growth.push({ date: k, new_leads: growthMap.get(k) || 0 });
     }
@@ -246,8 +281,8 @@ export class EmailAnalyticsService {
     const per_project = [...perProjectMap.values()]
       .map((pp) => ({
         ...pp,
-        open_rate: ratio(pp.opens, pp.delivered > 0 ? pp.delivered : pp.leads_reached),
-        click_rate: ratio(pp.clicks, pp.delivered > 0 ? pp.delivered : pp.leads_reached),
+        open_rate: ratio(pp.opens, pp.delivered > 0 ? pp.delivered : pp.leads_reached, 1),
+        click_rate: ratio(pp.unique_clicks, pp.delivered > 0 ? pp.delivered : pp.leads_reached, 1),
       }))
       .sort((a, b) => b.leads_reached - a.leads_reached);
 
@@ -263,8 +298,8 @@ export class EmailAnalyticsService {
           delivered: su.delivered,
           opens: su.opens,
           clicks: su.clicks,
-          open_rate: ratio(su.opens, d),
-          click_rate: ratio(su.clicks, d),
+          open_rate: ratio(su.opens, d, 1),
+          click_rate: ratio(su.unique_clicks, d, 1),
         };
       })
       .sort((a, b) => b.open_rate - a.open_rate)
@@ -275,13 +310,13 @@ export class EmailAnalyticsService {
       weekday: i,
       sent: w.sent,
       opens: w.opens,
-      open_rate: ratio(w.opens, w.delivered > 0 ? w.delivered : w.sent),
+      open_rate: ratio(w.opens, w.delivered > 0 ? w.delivered : w.sent, 1),
     }));
     const hours = byHour.map((h, i) => ({
       hour: i,
       sent: h.sent,
       opens: h.opens,
-      open_rate: ratio(h.opens, h.delivered > 0 ? h.delivered : h.sent),
+      open_rate: ratio(h.opens, h.delivered > 0 ? h.delivered : h.sent, 1),
     }));
 
     return {

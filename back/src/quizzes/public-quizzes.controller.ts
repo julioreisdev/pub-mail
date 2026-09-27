@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Public } from '../auth/public.decorator';
 import { QuizzesService } from './quizzes.service';
 import { CaptureQuizLeadDto } from './dto/capture-quiz-lead.dto';
@@ -23,6 +24,8 @@ export class PublicQuizzesController {
     );
   }
 
+  // A-13: 20 captações/min por IP.
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post(':slug/leads')
   @ApiOperation({ summary: 'Capturar lead público do quiz' })
   captureLead(

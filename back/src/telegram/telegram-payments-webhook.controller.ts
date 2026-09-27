@@ -1,11 +1,13 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { TelegramPaymentsService } from './telegram-payments.service';
 import { extractWebhookChargeId } from './telegram-payment-providers';
 
 // Webhook público do gateway de pagamento: /telegram/payments/webhook/:provider
 // ACK 200 sempre; extrai o id da cobrança e reconfirma o status no gateway antes de entregar.
 @ApiExcludeController()
+@SkipThrottle() // webhook do gateway — sem rate limit (A-13)
 @Controller('telegram/payments/webhook')
 export class TelegramPaymentsWebhookController {
   constructor(private readonly service: TelegramPaymentsService) {}

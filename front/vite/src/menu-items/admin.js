@@ -1,8 +1,8 @@
 // assets
-import { IconUserShield } from '@tabler/icons-react';
+import { IconUserShield, IconCreditCard } from '@tabler/icons-react';
 
 // constant
-const icons = { IconUserShield };
+const icons = { IconUserShield, IconCreditCard };
 
 // ==============================|| ADMIN MENU ITEMS (somente SUPER_ADMIN) ||============================== //
 
@@ -19,6 +19,14 @@ const admin = {
       type: 'item',
       url: '/admin/users',
       icon: icons.IconUserShield,
+      target: false
+    },
+    {
+      id: 'admin-payments',
+      title: 'Pagamentos',
+      type: 'item',
+      url: '/admin/payments',
+      icon: icons.IconCreditCard,
       target: false
     }
   ]

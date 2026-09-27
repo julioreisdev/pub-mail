@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 @Module({
   controllers: [TransactionsController],
-  providers: [TransactionsService, PrismaService],
+  // PrismaService vem do PrismaModule (@Global) — não instanciar outro pool (A-79).
+  providers: [TransactionsService],
 })
 export class TransactionsModule {}

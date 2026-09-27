@@ -37,6 +37,39 @@ function escText(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// ---- validação de valores interpolados em style="" (A-76) ----
+// Cores: só hex (#rgb/#rgba/#rrggbb/#rrggbbaa) ou rgb()/rgba() com números.
+// Qualquer outra coisa (ex.: `accent_color` do CSV com `"` ou `;`) cai no
+// fallback — nunca chega ao HTML.
+const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const RGB_RE = /^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)$/i;
+export function isValidColor(value) {
+  const v = String(value ?? '').trim();
+  return HEX_RE.test(v) || RGB_RE.test(v);
+}
+export function safeColor(value, fallback = '') {
+  const v = String(value ?? '').trim();
+  return isValidColor(v) ? v : fallback;
+}
+// Fonte: só letras/números/espaço/vírgula/aspas/hífen (ex.: 'Segoe UI', Arial, sans-serif).
+const FONT_RE = /^[A-Za-z0-9 ,'"\-]{1,120}$/;
+function safeFont(value, fallback = 'Arial, Helvetica, sans-serif') {
+  const v = String(value ?? '').trim();
+  return FONT_RE.test(v) ? v : fallback;
+}
+const ALIGN = new Set(['left', 'center', 'right', 'justify']);
+function safeAlign(value, fallback = 'left') {
+  return ALIGN.has(value) ? value : fallback;
+}
+function num(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+// style="" sempre passa por escAttr (aspas viram &quot;) — belt + suspenders.
+function styleAttr(css) {
+  return `style="${escAttr(css)}"`;
+}
+
 export function createDefaultBody() {
   return {
     background: '#f3f4f6',
@@ -146,43 +179,46 @@ function renderBlock(b) {
   const m = `margin:${b.space}px 0;`;
   switch (b.type) {
     case 'text':
-      return `<p style="${m}font-size:${b.fontSize}px;line-height:${b.lineHeight};color:${b.color};text-align:${b.align};font-weight:${b.weight};">${b.html || ''}</p>`;
+      return `<p ${styleAttr(`${m}font-size:${num(b.fontSize, 15)}px;line-height:${num(b.lineHeight, 1.6)};color:${safeColor(b.color, '#334155')};text-align:${safeAlign(b.align)};font-weight:${num(b.weight, 400)};`)}>${b.html || ''}</p>`;
     case 'image': {
       const src = String(b.src || '').trim();
       if (!src) return '';
-      const img = `<img src="${escAttr(src)}" alt="${escAttr(b.alt)}" style="width:${b.widthPct}%;max-width:100%;border-radius:${b.radius}px;display:inline-block;" />`;
+      const img = `<img src="${escAttr(src)}" alt="${escAttr(b.alt)}" ${styleAttr(`width:${num(b.widthPct, 100)}%;max-width:100%;border-radius:${num(b.radius, 0)}px;display:inline-block;`)} />`;
       const inner = b.href ? `<a href="${escAttr(resolveHref(b.href, false))}">${img}</a>` : img;
-      return `<div style="${m}text-align:${b.align};">${inner}</div>`;
+      return `<div ${styleAttr(`${m}text-align:${safeAlign(b.align, 'center')};`)}>${inner}</div>`;
     }
     case 'button': {
       const disp = b.fullWidth ? 'display:block;text-align:center;' : 'display:inline-block;';
-      return `<div style="${m}text-align:${b.align};"><a href="${escAttr(resolveHref(b.href, b.tracked))}" style="${disp}background-color:${b.bg};color:${b.color};font-size:${b.fontSize}px;font-weight:${b.weight};text-decoration:none;padding:${b.py}px ${b.px}px;border-radius:${b.radius}px;">${escText(b.text)}</a></div>`;
+      return `<div ${styleAttr(`${m}text-align:${safeAlign(b.align, 'center')};`)}><a href="${escAttr(resolveHref(b.href, b.tracked))}" ${styleAttr(`${disp}background-color:${safeColor(b.bg, '#4f46e5')};color:${safeColor(b.color, '#ffffff')};font-size:${num(b.fontSize, 15)}px;font-weight:${num(b.weight, 700)};text-decoration:none;padding:${num(b.py, 12)}px ${num(b.px, 26)}px;border-radius:${num(b.radius, 6)}px;`)}>${escText(b.text)}</a></div>`;
     }
     case 'divider':
-      return `<hr style="border:0;border-top:${b.thickness}px solid ${b.color};${m}" />`;
+      return `<hr ${styleAttr(`border:0;border-top:${num(b.thickness, 1)}px solid ${safeColor(b.color, '#e5e7eb')};${m}`)} />`;
     case 'spacer':
-      return `<div style="height:${b.height}px;"></div>`;
+      return `<div ${styleAttr(`height:${num(b.height, 16)}px;`)}></div>`;
     case 'card': {
-      const border = b.borderWidth > 0 ? `border:${b.borderWidth}px solid ${b.borderColor};` : '';
+      const border = num(b.borderWidth, 0) > 0 ? `border:${num(b.borderWidth, 1)}px solid ${safeColor(b.borderColor, '#fdba74')};` : '';
       const icon = b.icon ? `<span style="display:inline-block;vertical-align:top;font-size:22px;line-height:1.2;margin-right:10px;">${escText(b.icon)}</span>` : '';
+      // título/descrição são campos de texto puro no builder (não HTML) → escapados
       const inner =
         `<div style="display:inline-block;vertical-align:top;${b.icon ? 'max-width:82%;' : 'width:100%;'}">` +
-        `<div style="font-weight:700;font-size:${b.titleSize}px;color:${b.titleColor};line-height:1.35;">${b.title || ''}</div>` +
-        (b.text ? `<div style="font-size:${b.textSize}px;color:${b.textColor};margin-top:5px;line-height:1.55;">${b.text}</div>` : '') +
+        `<div ${styleAttr(`font-weight:700;font-size:${num(b.titleSize, 16)}px;color:${safeColor(b.titleColor, '#111827')};line-height:1.35;`)}>${escText(b.title || '')}</div>` +
+        (b.text ? `<div ${styleAttr(`font-size:${num(b.textSize, 14)}px;color:${safeColor(b.textColor, '#6b7280')};margin-top:5px;line-height:1.55;`)}>${escText(b.text).replace(/\r?\n/g, '<br />')}</div>` : '') +
         `</div>`;
-      return `<div style="${m}${border}background-color:${b.bg};border-radius:${b.radius}px;padding:${b.padding}px;text-align:${b.align};">${icon}${inner}</div>`;
+      return `<div ${styleAttr(`${m}${border}background-color:${safeColor(b.bg, '#fff7ed')};border-radius:${num(b.radius, 12)}px;padding:${num(b.padding, 16)}px;text-align:${safeAlign(b.align)};`)}>${icon}${inner}</div>`;
     }
     case 'columns': {
       const cell = (c) => {
         if ((c.kind || 'image') === 'text') {
-          return `<div style="font-size:14px;line-height:1.55;color:#334155;">${c.text || ''}</div>`;
+          // célula de texto = TextField simples (texto puro) → escapado
+          return `<div style="font-size:14px;line-height:1.55;color:#334155;">${escText(c.text || '').replace(/\r?\n/g, '<br />')}</div>`;
         }
         const src = String(c.src || '').trim();
         if (!src) return '';
-        return `<img src="${escAttr(src)}" alt="${escAttr(c.alt)}" style="width:${c.widthPct || 100}%;max-width:100%;display:inline-block;" />`;
+        return `<img src="${escAttr(src)}" alt="${escAttr(c.alt)}" ${styleAttr(`width:${num(c.widthPct, 100)}%;max-width:100%;display:inline-block;`)} />`;
       };
-      const col = (c, defAlign) => `<div style="display:inline-block;vertical-align:${b.valign};width:48%;text-align:${c.align || defAlign};">${cell(c)}</div>`;
-      return `<div style="${m}font-size:0;">${col(b.left, 'left')}<div style="display:inline-block;width:4%;"></div>${col(b.right, 'right')}</div>`;
+      const valign = ['top', 'middle', 'bottom'].includes(b.valign) ? b.valign : 'middle';
+      const col = (c, defAlign) => `<div ${styleAttr(`display:inline-block;vertical-align:${valign};width:48%;text-align:${safeAlign(c.align, defAlign)};`)}>${cell(c)}</div>`;
+      return `<div ${styleAttr(`${m}font-size:0;`)}>${col(b.left, 'left')}<div style="display:inline-block;width:4%;"></div>${col(b.right, 'right')}</div>`;
     }
     default:
       return '';
@@ -197,15 +233,18 @@ export function modelToHtml(model) {
   const pre = preheaderHtml(m.preheader);
   // barra colorida no topo do card (opcional) — cantos superiores arredondados;
   // o card abaixo fica com o topo reto pra emendar sem costura.
-  const bar = b.barColor
-    ? `<div style="max-width:${b.width}px;margin:0 auto;height:6px;background-color:${b.barColor};border-radius:${b.radius}px ${b.radius}px 0 0;"></div>\n`
+  const width = num(b.width, 600);
+  const radius = num(b.radius, 8);
+  const barColor = safeColor(b.barColor, '');
+  const bar = barColor
+    ? `<div ${styleAttr(`max-width:${width}px;margin:0 auto;height:6px;background-color:${barColor};border-radius:${radius}px ${radius}px 0 0;`)}></div>\n`
     : '';
-  const cardRadius = b.barColor ? `0 0 ${b.radius}px ${b.radius}px` : `${b.radius}px`;
+  const cardRadius = barColor ? `0 0 ${radius}px ${radius}px` : `${radius}px`;
   return (
-    `<div style="background-color:${b.background};padding:24px 10px;">\n` +
+    `<div ${styleAttr(`background-color:${safeColor(b.background, '#f3f4f6')};padding:24px 10px;`)}>\n` +
     (pre ? `${pre}\n` : '') +
     bar +
-    `<div style="max-width:${b.width}px;margin:0 auto;background-color:${b.contentBg};border-radius:${cardRadius};padding:14px ${b.paddingX}px;font-family:${b.fontFamily};color:${b.textColor};">\n` +
+    `<div ${styleAttr(`max-width:${width}px;margin:0 auto;background-color:${safeColor(b.contentBg, '#ffffff')};border-radius:${cardRadius};padding:14px ${num(b.paddingX, 28)}px;font-family:${safeFont(b.fontFamily)};color:${safeColor(b.textColor, '#1f2937')};`)}>\n` +
     `${inner}\n` +
     `</div>\n{{open_email_pixel}}\n</div>`
   );

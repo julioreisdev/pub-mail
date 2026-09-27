@@ -7,6 +7,7 @@ import Loadable from 'ui-component/Loadable';
 
 import RequireAuth from './RequireAuth';
 import RequireAdmin from './RequireAdmin';
+import RequireModule from './RequireModule';
 import ErrorBoundary from './ErrorBoundary';
 
 // pages
@@ -18,6 +19,7 @@ const DomainsPage = Loadable(lazy(() => import('views/pages/account-settings/Dom
 const IntegrationsPage = Loadable(lazy(() => import('views/pages/account-settings/IntegrationsPage')));
 const ApiStatusPage = Loadable(lazy(() => import('views/pages/account-settings/ApiStatusPage')));
 const ApiTutorialPage = Loadable(lazy(() => import('views/pages/account-settings/ApiTutorialPage')));
+const PaymentsSettingsPage = Loadable(lazy(() => import('views/pages/account-settings/PaymentsSettingsPage')));
 const EmailMarketing = Loadable(lazy(() => import('views/pages/email/EmailMarketing')));
 const EmailHelp = Loadable(lazy(() => import('views/pages/email/Help')));
 const EmailAnalytics = Loadable(lazy(() => import('views/pages/email/Analytics')));
@@ -32,6 +34,7 @@ const PostsList = Loadable(lazy(() => import('views/pages/posts/Posts')));
 const PostSchedules = Loadable(lazy(() => import('views/pages/posts/Schedules')));
 const Avatars = Loadable(lazy(() => import('views/pages/avatars/Avatars')));
 const AdminUsers = Loadable(lazy(() => import('views/pages/admin/Users')));
+const AdminPayments = Loadable(lazy(() => import('views/pages/admin/Payments')));
 const Quizzes = Loadable(lazy(() => import('views/pages/quiz/Quizzes')));
 const QuizBuilder = Loadable(lazy(() => import('views/pages/quiz/QuizBuilder')));
 const FlowsPage = Loadable(lazy(() => import('views/pages/leads/FlowsPage')));
@@ -64,6 +67,7 @@ const MainRoutes = {
 
         {
           path: 'email',
+          element: <RequireModule module="email" />, // gate por módulo liberado
           children: [
             { path: 'email-marketing', element: <EmailMarketing /> },
             { path: 'email-marketing-help', element: <EmailHelp /> },
@@ -78,6 +82,7 @@ const MainRoutes = {
 
         {
           path: 'settings',
+          element: <RequireModule module="settings" />, // gate por módulo liberado
           children: [
             { path: 'billing-account', element: <BillingAccount /> },
             { path: 'account', element: <AccountDataPage /> },
@@ -85,6 +90,7 @@ const MainRoutes = {
             { path: 'integrations', element: <IntegrationsPage /> },
             { path: 'api-status', element: <ApiStatusPage /> },
             { path: 'api-tutorial', element: <ApiTutorialPage /> },
+            { path: 'payments', element: <PaymentsSettingsPage /> },
             // compat: link antigo -> nova página
             { path: 'account-settings', element: <Navigate to="/settings/account" replace /> }
           ]
@@ -100,6 +106,7 @@ const MainRoutes = {
 
         {
           path: 'webchat',
+          element: <RequireModule module="webchat" />, // gate por módulo liberado
           children: [
             { path: 'agentes', element: <Agentes /> },
             { path: 'webchats', element: <Webchats /> },
@@ -110,6 +117,7 @@ const MainRoutes = {
 
         {
           path: 'quizzes',
+          element: <RequireModule module="quiz" />, // gate por módulo liberado
           children: [
             { index: true, element: <Quizzes /> },
             { path: 'leads', element: <Leads lockedOrigin="quiz" /> },
@@ -124,6 +132,7 @@ const MainRoutes = {
 
         {
           path: 'telegram',
+          element: <RequireModule module="telegram" />, // gate por módulo liberado
           children: [
             {
               path: 'settings',
@@ -165,13 +174,17 @@ const MainRoutes = {
           children: [
             {
               path: 'admin',
-              children: [{ path: 'users', element: <AdminUsers /> }]
+              children: [
+                { path: 'users', element: <AdminUsers /> },
+                { path: 'payments', element: <AdminPayments /> }
+              ]
             }
           ]
         },
 
         {
           path: 'posts',
+          element: <RequireModule module="webchat" />, // gate por módulo liberado
           children: [
             { path: 'list', element: <PostsList /> },
             { path: 'schedules', element: <PostSchedules /> }
@@ -179,6 +192,7 @@ const MainRoutes = {
         },
         {
           path: 'ia-content',
+          element: <RequireModule module="webchat" />, // gate por módulo liberado
           children: [{ path: 'avatars', element: <Avatars /> }]
         }
       ]

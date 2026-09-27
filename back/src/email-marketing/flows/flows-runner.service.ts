@@ -5,6 +5,7 @@ import axios from 'axios';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { SystemSettingsService } from '../../system-settings/system-settings.service';
+import { AccessService } from '../../platform-billing/access.service';
 
 function stepDelayMs(step: { delay_value: number; delay_unit: string }) {
   const v = Math.max(0, Number(step.delay_value) || 0);
@@ -33,6 +34,7 @@ export class EmailFlowsRunner {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly systemSettings: SystemSettingsService,
+    private readonly access: AccessService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -50,56 +52,69 @@ export class EmailFlowsRunner {
   }
 
   // Inscreve leads do projeto captados DEPOIS da ativação e ainda sem enrollment.
+  // A query EXCLUI os já inscritos (NOT EXISTS) e pagina em lotes — antes pegava
+  // sempre os 500 primeiros desde activated_at e, com >500 leads, ninguém do
+  // 501 em diante entrava no drip (A-05). Só inscreve SUBSCRIBED + ACTIVE (A-15).
   private async enrollNewLeads() {
     const flows = await this.prisma.email_flows.findMany({
       where: { active: true, activated_at: { not: null } },
       include: { steps: { orderBy: { position: 'asc' }, take: 1 } },
     });
 
+    const BATCH = 500;
+    const MAX_BATCHES_PER_TICK = 20; // teto por tick (10k leads) — o resto vai no próximo minuto
+
     for (const flow of flows) {
       const firstStep = (flow as any).steps?.[0];
       if (!firstStep) continue;
-
-      const pivots = await this.prisma.email_project_leads.findMany({
-        where: {
-          project_id: flow.project_id,
-          status: 'SUBSCRIBED',
-          created_at: { gte: flow.activated_at as Date },
-        },
-        include: { leads: { select: { id: true, email: true } } },
-        orderBy: { created_at: 'asc' },
-        take: 500,
-      });
-      if (pivots.length === 0) continue;
-
-      const leadIds = pivots.map((p) => p.lead_id);
-      const already = await this.prisma.email_flow_enrollments.findMany({
-        where: { flow_id: flow.id, lead_id: { in: leadIds } },
-        select: { lead_id: true },
-      });
-      const enrolled = new Set(already.map((e) => e.lead_id));
+      // Org com assinatura vencida => não inscreve ninguém (nada acontece).
+      if (!(await this.access.isOrgActive(flow.organization_id))) {
+        this.logger.debug(`pulando org=${flow.organization_id}: acesso inativo (enroll flow ${flow.id})`);
+        continue;
+      }
       const delayMs = stepDelayMs(firstStep);
 
-      for (const p of pivots) {
-        if (enrolled.has(p.lead_id)) continue;
-        const base = new Date(p.created_at as any);
-        const nextSendAt = new Date(base.getTime() + delayMs);
-        try {
-          await this.prisma.email_flow_enrollments.create({
-            data: {
-              organization_id: flow.organization_id,
-              flow_id: flow.id,
-              project_id: flow.project_id,
-              lead_id: p.lead_id,
-              email: (p as any).leads?.email ?? null,
-              next_step: 0,
-              next_send_at: nextSendAt,
-              status: 'active',
-            },
-          });
-        } catch {
-          // corrida no unique (flow_id, lead_id) — ok
+      for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch++) {
+        const pivots: Array<{ lead_id: string; created_at: Date; email: string | null }> =
+          await this.prisma.$queryRaw`
+            SELECT pl.lead_id, pl.created_at, l.email
+            FROM email_project_leads pl
+            JOIN email_leads l ON l.id = pl.lead_id
+            WHERE pl.project_id = ${flow.project_id}
+              AND pl.status = 'SUBSCRIBED'
+              AND l.global_status = 'ACTIVE'
+              AND pl.created_at >= ${flow.activated_at as Date}
+              AND NOT EXISTS (
+                SELECT 1 FROM email_flow_enrollments e
+                WHERE e.flow_id = ${flow.id} AND e.lead_id = pl.lead_id
+              )
+            ORDER BY pl.created_at ASC, pl.lead_id ASC
+            LIMIT ${BATCH}
+          `;
+        if (pivots.length === 0) break;
+
+        for (const p of pivots) {
+          const base = new Date(p.created_at as any);
+          const nextSendAt = new Date(base.getTime() + delayMs);
+          try {
+            await this.prisma.email_flow_enrollments.create({
+              data: {
+                organization_id: flow.organization_id,
+                flow_id: flow.id,
+                project_id: flow.project_id,
+                lead_id: p.lead_id,
+                email: p.email ?? null,
+                next_step: 0,
+                next_send_at: nextSendAt,
+                status: 'active',
+              },
+            });
+          } catch {
+            // corrida no unique (flow_id, lead_id) — ok
+          }
         }
+
+        if (pivots.length < BATCH) break; // acabou a fila deste fluxo
       }
     }
   }
@@ -137,6 +152,13 @@ export class EmailFlowsRunner {
       return;
     }
 
+    // Org com assinatura vencida => não envia (enrollment fica como está e
+    // volta a ser processado quando a org reativar).
+    if (!(await this.access.isOrgActive(flow.organization_id))) {
+      this.logger.debug(`pulando org=${flow.organization_id}: acesso inativo (enrollment ${en.id})`);
+      return;
+    }
+
     const steps: any[] = (flow as any).steps || [];
     const step = steps[en.next_step];
     if (!step) {
@@ -144,6 +166,19 @@ export class EmailFlowsRunner {
         where: { id: en.id },
         data: { status: 'completed' },
       });
+      return;
+    }
+
+    // Elegibilidade (A-15): o lead precisa continuar INSCRITO no projeto e
+    // ATIVO (sem bounce/spam). Se saiu, encerra a inscrição no fluxo.
+    if (!(await this.leadEligible(en))) {
+      await this.prisma.email_flow_enrollments.update({
+        where: { id: en.id },
+        data: { status: 'stopped' },
+      });
+      this.logger.log(
+        `fluxo: lead ${en.email} saiu (desinscrito/suprimido) — inscrição encerrada`,
+      );
       return;
     }
 
@@ -193,6 +228,21 @@ export class EmailFlowsRunner {
     }
   }
 
+  // Pivô SUBSCRIBED + lead ACTIVE?
+  private async leadEligible(en: any): Promise<boolean> {
+    const link = await this.prisma.email_project_leads.findUnique({
+      where: {
+        project_id_lead_id: { project_id: en.project_id, lead_id: en.lead_id },
+      },
+      select: { status: true, leads: { select: { global_status: true } } },
+    });
+    return (
+      !!link &&
+      link.status === 'SUBSCRIBED' &&
+      link.leads?.global_status === 'ACTIVE'
+    );
+  }
+
   // Abriu/clicou o e-mail do sent row informado?
   private async conditionMet(
     type: 'opened' | 'clicked',
@@ -226,6 +276,9 @@ export class EmailFlowsRunner {
       if (!project) return null;
       const sender = (project.settings as any)?.sender;
       if (!sender?.fromEmail) return null;
+
+      // Reconfere logo antes de enviar (A-15).
+      if (!(await this.leadEligible(en))) return null;
 
       // Puxa nome + atributos do lead pra popular {{name}}/{{phone}}/etc no
       // Handlebars (o runner antes mandava name:null → {{name}} vinha vazio).

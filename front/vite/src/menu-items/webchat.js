@@ -10,6 +10,7 @@ const webchat = {
   id: 'webchat',
   title: 'Webchat',
   type: 'group',
+  requiredModule: 'webchat',
   icon: icons.IconBrandHipchat,
   children: [
     {

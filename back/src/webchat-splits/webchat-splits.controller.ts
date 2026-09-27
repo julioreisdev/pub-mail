@@ -38,7 +38,7 @@ export class WebchatSplitsController {
     @Param('id') id: string,
     @Body() dto: UpdateWebchatSplitDto,
   ) {
-    return this.service.update(req.user.organizationId, id, dto.name);
+    return this.service.update(req.user.organizationId, id, dto.name, dto.slug);
   }
 
   @Delete(':id')

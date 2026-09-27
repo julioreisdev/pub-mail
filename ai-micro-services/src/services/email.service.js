@@ -62,7 +62,8 @@ FORMATO DE SAÍDA OBRIGATÓRIO EM JSON:
                     { role: "system", content: systemInstruction },
                     { role: "user", content: userPrompt }
                 ],
-                model: "llama-3.3-70b-versatile",
+                model: "openai/gpt-oss-120b", // llama-3.3-70b foi descontinuado pela Groq (set/2026)
+                reasoning_effort: "low",
                 temperature: 0.3,
                 response_format: { type: "json_object" }
             });

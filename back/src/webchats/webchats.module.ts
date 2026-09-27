@@ -11,5 +11,6 @@ import { WebchatSplitsModule } from '../webchat-splits/webchat-splits.module';
   imports: [PrismaModule, WebchatSplitsModule],
   controllers: [WebchatsController, PublicWebchatsController, WebchatLeadsController],
   providers: [WebchatsService, WebchatLeadsService],
+  exports: [WebchatsService],
 })
 export class WebchatsModule {}

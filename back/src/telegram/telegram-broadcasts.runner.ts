@@ -2,13 +2,15 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import * as tg from './telegram-api.util';
-import { noteFlood, clearFlood } from './telegram-flood.util';
+import { noteFlood, clearFlood, isCooling, hadFlood, coolingBotIds, refreshFromDb, retryAfterOf } from './telegram-flood.util';
+import { AccessService } from '../platform-billing/access.service';
 
 const RATE_PER_BOT = 25; // mensagens/seg por bot
 const MSG_INTERVAL_MS = Math.ceil(1000 / RATE_PER_BOT);
 const BATCH = 200;
 const CONCURRENCY = 40;
 const MAX_ATTEMPTS = 5;
+const RECONCILE_EVERY = 5; // lotes entre reconciliações das métricas da run (groupBy é caro em run grande)
 
 // minuto-do-dia (0..1439) em América/São_Paulo (BRT) — igual ao módulo de e-mail.
 function brtMinuteOfDay(): number {
@@ -29,11 +31,20 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
   private dispatching = false;
   private working = false;
   private botNextAt = new Map<string, number>();
-  private botCooldown = new Map<string, number>();
+  // cooldown por bot (flood-wait) = cache COMPARTILHADO em telegram-flood.util (rotativa usa o mesmo).
+  private batches = 0; // lotes processados desde a última reconciliação
+  private touchedRuns = new Set<string>(); // runs com sends tocados e métricas ainda não reconciliadas
+  // orgs com acesso inativo (assinatura vencida) → sends ficam PENDING e saem da QUERY do worker
+  // (como o flood-wait). Valor = quando reconferir (60s).
+  private inactiveOrgs = new Map<string, number>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly access: AccessService,
+  ) {}
 
   onModuleInit() {
+    void refreshFromDb(this.prisma); // carrega flood_until do banco no boot
     // Worker contínuo (não bloqueia o boot).
     this.loop().catch((e) => this.logger.error(`worker morreu: ${e?.message || e}`));
   }
@@ -55,6 +66,8 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
   // ---------------- DISPATCHER (cron a cada minuto) ----------------
   @Cron(CronExpression.EVERY_MINUTE)
   async dispatch() {
+    // sincroniza o cache de flood-wait com o banco (429 visto por outro runner / restart)
+    void refreshFromDb(this.prisma);
     if (this.dispatching) return;
     this.dispatching = true;
     try {
@@ -62,9 +75,16 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
       const runAt = new Date();
       runAt.setSeconds(0, 0);
       const bcs = await this.prisma.telegram_broadcasts.findMany({ where: { active: true } });
+      const orgOk = new Map<string, boolean>(); // 1 checagem (e 1 log) por org por tick
       for (const b of bcs) {
         const times = Array.isArray(b.times) ? (b.times as any[]) : [];
         if (!times.includes(minute)) continue;
+        if (!orgOk.has(b.organization_id)) {
+          const ok = await this.access.isOrgActive(b.organization_id);
+          orgOk.set(b.organization_id, ok);
+          if (!ok) this.logger.log(`pulando org=${b.organization_id}: acesso inativo`);
+        }
+        if (!orgOk.get(b.organization_id)) continue; // assinatura vencida → não cria run
         await this.fire(b, runAt).catch((e) => this.logger.warn(`fire broadcast ${b.id} falhou: ${e?.message || e}`));
       }
     } catch (e: any) {
@@ -103,9 +123,10 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
     }
 
     if (b.mode !== 'random') {
-      await this.prisma.telegram_broadcasts
-        .update({ where: { id: b.id }, data: { last_copy_index: (idx + 1) % copies.length } })
-        .catch(() => undefined);
+      // com delete_used a copy usada é apagada → a seguinte passa a ocupar `idx` (não avança);
+      // sem delete_used avança normalmente (o `% copies.length` na leitura dá a volta).
+      const nextIdx = b.delete_used ? idx : (idx + 1) % copies.length;
+      await this.prisma.telegram_broadcasts.update({ where: { id: b.id }, data: { last_copy_index: nextIdx } }).catch(() => undefined);
     }
 
     // resolve audiência
@@ -170,24 +191,40 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
-        const raw = await this.prisma.telegram_broadcast_sends.findMany({
-          where: { status: 'PENDING' },
+        // Sends de bots em flood-wait ficam de fora da QUERY (não só do lote): 200 PENDING de um
+        // bot floodado não ocupam a cabeça da fila nem travam os outros bots por horas. Voltam a
+        // ser lidos sozinhos quando o cooldown expira.
+        const cooling = coolingBotIds();
+        const nowMs = Date.now();
+        for (const [oid, until] of this.inactiveOrgs) if (until <= nowMs) this.inactiveOrgs.delete(oid);
+        const inactive = [...this.inactiveOrgs.keys()];
+        let batch = await this.prisma.telegram_broadcast_sends.findMany({
+          where: {
+            status: 'PENDING',
+            ...(cooling.length ? { bot_id: { notIn: cooling } } : {}),
+            ...(inactive.length ? { organization_id: { notIn: inactive } } : {}),
+          },
           orderBy: { id: 'asc' },
           take: BATCH,
         });
-        if (!raw.length) {
-          await this.sleep(2500);
-          continue;
+        // Org com assinatura vencida → sends ficam PENDING (sem envio, sem FAILED) e saem das
+        // próximas queries por 60s, pra não ocuparem a cabeça da fila dos outros.
+        for (const oid of new Set(batch.map((s) => s.organization_id))) {
+          if (this.inactiveOrgs.has(oid)) continue;
+          if (await this.access.isOrgActive(oid)) continue;
+          this.inactiveOrgs.set(oid, Date.now() + 60_000);
+          this.logger.debug(`pulando org=${oid}: acesso inativo`);
         }
-        // Pula sends de bots em flood-wait: deixa-os PENDING e NÃO bloqueia o worker (nem
-        // hammera o Telegram). Assim um bot floodado não trava os outros. Volta a processá-los
-        // sozinho quando o cooldown expira.
-        const batch = raw.filter((s) => !this.cooling(s.bot_id));
+        if (this.inactiveOrgs.size) batch = batch.filter((s) => !this.inactiveOrgs.has(s.organization_id));
         if (!batch.length) {
+          // fila vazia → fecha as métricas das runs pendentes de reconciliação
+          if (this.touchedRuns.size) await this.reconcileRuns();
           await this.sleep(2500);
           continue;
         }
         await this.processBatch(batch);
+        this.batches++;
+        if (this.batches >= RECONCILE_EVERY) await this.reconcileRuns();
       } catch (e: any) {
         this.logger.warn(`loop tick falhou: ${e?.message || e}`);
         await this.sleep(2000);
@@ -195,18 +232,21 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
     }
   }
 
-  // true = bot em flood-wait; não deve receber chamada nem "typing" agora.
+  // true = bot em flood-wait; não deve receber chamada agora.
   private cooling(botId: string): boolean {
-    return Date.now() < (this.botCooldown.get(botId) || 0);
+    return isCooling(botId);
   }
 
-  private async gate(botId: string) {
+  // Token-bucket por bot (~25 msg/s). Devolve false se o bot entrou em flood-wait: o chamador
+  // deixa o send PENDING e segue — NÃO dorme até o fim do cooldown (isso congelava os 40 workers).
+  private async gate(botId: string): Promise<boolean> {
+    if (this.cooling(botId)) return false;
     const now = Date.now();
-    const cd = this.botCooldown.get(botId) || 0;
-    const na = Math.max(now, this.botNextAt.get(botId) || 0, cd);
+    const na = Math.max(now, this.botNextAt.get(botId) || 0);
     this.botNextAt.set(botId, na + MSG_INTERVAL_MS);
     const wait = na - now;
     if (wait > 0) await this.sleep(wait);
+    return !this.cooling(botId);
   }
 
   private async processBatch(batch: any[]) {
@@ -259,8 +299,15 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, worker));
 
-    // reconcilia métricas das runs tocadas
-    const runIds = [...new Set(batch.map((s) => s.run_id))];
+    for (const s of batch) this.touchedRuns.add(s.run_id);
+  }
+
+  // Reconcilia métricas das runs tocadas (groupBy por run). Roda a cada RECONCILE_EVERY lotes
+  // e quando a fila esvazia — não a cada lote (O(n²) em run grande).
+  private async reconcileRuns() {
+    const runIds = [...this.touchedRuns];
+    this.touchedRuns.clear();
+    this.batches = 0;
     for (const rid of runIds) {
       const grouped = await this.prisma.telegram_broadcast_sends.groupBy({
         by: ['status'],
@@ -306,8 +353,12 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
       return;
     }
 
-    for (const m of messages) {
-      await this.gate(s.bot_id);
+    // retomada: num retry começa da próxima mensagem ainda não entregue (msg_index persistido
+    // a cada mensagem enviada) — não reenvia as que o lead já recebeu.
+    const startAt = Math.min(Math.max(0, Number(s.msg_index) || 0), messages.length);
+    for (let mi = startAt; mi < messages.length; mi++) {
+      const m = messages[mi];
+      if (!(await this.gate(s.bot_id))) return; // bot entrou em flood-wait → fica PENDING, segue o worker
       const media = m.media;
       const caption = this.interpolate(String(m.text || ''), info);
       const rows: any[] = [];
@@ -316,24 +367,25 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
         else if (btn?.url) rows.push([{ text: btn.label || 'Abrir', url: btn.url }]);
       }
       const extra = rows.length ? { reply_markup: { inline_keyboard: rows } } : {};
+      // (sem sendChatAction por mensagem: dobrava as chamadas à API em massa; o delay_seconds
+      // já dá o ritmo humano.)
       let r: any;
+      let mediaResult: any = null;
       if (media && media.url && media.type) {
-        const action = media.type === 'voice' ? 'record_voice' : media.type === 'video' ? 'upload_video' : 'upload_photo';
-        await tg.sendChatAction(token, String(s.tg_chat_id), action).catch(() => undefined);
-        r = await tg.sendMediaUrl(token, String(s.tg_chat_id), media.type, media.url, caption || undefined, extra);
+        // legenda >1024 → mídia sem legenda + texto (com os botões) em mensagem separada
+        r = await tg.sendMediaWithText(token, String(s.tg_chat_id), media.type, media.url, caption, extra);
+        mediaResult = r.media?.ok ? r.media.result : null;
       } else {
-        await tg.sendChatAction(token, String(s.tg_chat_id), 'typing').catch(() => undefined);
         r = await tg.sendMessage(token, String(s.tg_chat_id), caption || '…', extra);
       }
 
       if (!r.ok) {
         if (r.error_code === 429) {
           // Honra o retry_after REAL do Telegram (pode ser horas em flood). Sem ele, 30s.
-          const retry = Math.min(Number(r?.parameters?.retry_after) || 30, 6 * 3600);
-          this.botCooldown.set(s.bot_id, Date.now() + retry * 1000);
-          await noteFlood(this.prisma, s.bot_id, r); // marca no card do bot (aviso no front)
+          const retry = retryAfterOf(r);
+          await noteFlood(this.prisma, s.bot_id, r); // cache compartilhado + card do bot (aviso no front)
           this.logger.warn(`broadcast: bot ${s.bot_id} em flood-wait ${retry}s (429).`);
-          return; // fica PENDING, tenta de novo depois
+          return; // fica PENDING (com msg_index), tenta de novo depois
         }
         if (r.error_code === 403) {
           await this.setSend(s.id, 'BLOCKED', { last_error: r.description || 'Bloqueado.' });
@@ -353,19 +405,22 @@ export class TelegramBroadcastsRunner implements OnModuleInit {
       }
 
       // log OUT (aparece nas DMs)
+      const mr = mediaResult || r.result;
       let fileId: string | null = null;
-      if (media?.type === 'photo') fileId = Array.isArray(r.result?.photo) ? r.result.photo[r.result.photo.length - 1]?.file_id : null;
-      else if (media?.type) fileId = r.result?.[media.type]?.file_id || null;
+      if (media?.type === 'photo') fileId = Array.isArray(mr?.photo) ? mr.photo[mr.photo.length - 1]?.file_id : null;
+      else if (media?.type) fileId = mr?.[media.type]?.file_id || null;
       await this.logOut(s, caption, media, r.result?.message_id, fileId);
+
+      // persiste o progresso: um retry (429/erro transitório) recomeça da próxima mensagem
+      if (mi + 1 < messages.length) {
+        await this.prisma.telegram_broadcast_sends.update({ where: { id: s.id }, data: { msg_index: mi + 1 } }).catch(() => undefined);
+      }
 
       if (m.delay_seconds) await this.sleep(Math.min(10, Math.max(0, Number(m.delay_seconds))) * 1000);
     }
 
     // enviou com sucesso → se o bot estava marcado em flood, limpa o aviso do card.
-    if (this.botCooldown.has(s.bot_id)) {
-      this.botCooldown.delete(s.bot_id);
-      await clearFlood(this.prisma, s.bot_id);
-    }
+    if (hadFlood(s.bot_id)) await clearFlood(this.prisma, s.bot_id);
     await this.setSend(s.id, 'DONE', { sent_at: new Date() });
   }
 

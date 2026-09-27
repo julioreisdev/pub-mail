@@ -29,7 +29,7 @@ import { patch, post, remove } from '../../../api/api';
 
 const getErrorMessage = (err, fallback = 'Ocorreu um erro') =>
   err?.response?.data?.message || err?.response?.data?.error || err?.message || fallback;
-const DEFAULT_AGENT_MODEL = 'llama-3.3-70b-versatile';
+const DEFAULT_AGENT_MODEL = 'openai/gpt-oss-120b';
 const DEFAULT_AGENT_TEMPERATURE = 0.7;
 const DEFAULT_AGENT_MAX_TOKENS = 500;
 

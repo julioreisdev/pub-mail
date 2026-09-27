@@ -96,6 +96,14 @@ export class SystemSettingsService {
   ): Promise<SystemSettingsRow> {
     const setIfDefined = (value: string | undefined) =>
       value !== undefined ? this.normalizeNullableString(value) : undefined;
+    // Segredos mascarados na resposta (A-19): se o front devolver o eco
+    // mascarado ("••") ou vazio, NÃO mexe no valor salvo.
+    const setSecretIfNew = (value: string | undefined) => {
+      if (value === undefined) return undefined;
+      const trimmed = String(value).trim();
+      if (!trimmed || trimmed.includes('••')) return undefined;
+      return trimmed;
+    };
 
     const orgData = {
       groq_api_keys: setIfDefined(dto.groq_api_keys),
@@ -104,8 +112,8 @@ export class SystemSettingsService {
       mistral_api_keys: setIfDefined(dto.mistral_api_keys),
       openrouter_api_keys: setIfDefined(dto.openrouter_api_keys),
       sambanova_api_keys: setIfDefined(dto.sambanova_api_keys),
-      resend_api_key: setIfDefined(dto.resend_api_key),
-      resend_webhook_secret: setIfDefined(dto.resend_webhook_secret),
+      resend_api_key: setSecretIfNew(dto.resend_api_key),
+      resend_webhook_secret: setSecretIfNew(dto.resend_webhook_secret),
     };
     await this.prisma.organization_settings.upsert({
       where: { organization_id: organizationId },
@@ -215,13 +223,30 @@ export class SystemSettingsService {
       }
       const json = (await response.json()) as { success?: boolean; data?: any; message?: string };
       if (!json.success) throw new Error(json.message || 'Falha ao consultar status das chaves.');
-      return json.data ?? {};
+      return this.maskAiKeysStatus(json.data ?? {});
     } catch (err: any) {
       this.logger.error(`Falha ao consultar status das chaves de IA: ${err?.message || err}`);
       throw new InternalServerErrorException(
         'Falha ao consultar status das chaves de IA. Verifique se o serviço de IA está no ar.',
       );
     }
+  }
+
+  // O micro devolve `providers[].keys[].api_key` em claro — mascara antes de
+  // sair do back (A-19): fica `key_masked`, a chave crua é descartada.
+  private maskAiKeysStatus(data: any) {
+    if (!data || typeof data !== 'object') return data;
+    const providers = Array.isArray(data.providers) ? data.providers : [];
+    return {
+      ...data,
+      providers: providers.map((p: any) => ({
+        ...p,
+        keys: (Array.isArray(p?.keys) ? p.keys : []).map((k: any) => {
+          const { api_key, ...rest } = k || {};
+          return { ...rest, key_masked: this.maskKey(String(api_key || '')) };
+        }),
+      })),
+    };
   }
 
   private bundleOf(org: any): AiProviderKeysBundle {

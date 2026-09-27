@@ -39,10 +39,7 @@ function flattenProviderKeys(providerKeysObject) {
 // Ordena candidatos por provider priority (ASC) e, dentro do mesmo provider,
 // por last_used_at ASC (a chave que foi usada há mais tempo entra primeiro
 // → round-robin natural). Inválidas, esgotadas e em cooldown saem.
-async function selectCandidates(allCandidates) {
-  const ids = allCandidates.map((c) => c.id);
-  const states = await keyStateStore.getStates(ids);
-
+async function selectCandidates(allCandidates, states) {
   const enriched = allCandidates
     .map((c) => ({ ...c, state: states[c.id] }))
     .filter((c) => c.state.status === 'healthy');
@@ -85,24 +82,42 @@ async function recordOutcome(candidate, result) {
  * @param {object} args.providerKeys - { groq: [...], cerebras: [...], ... }
  * @param {object} args.payload - { messages, temperature, maxTokens }
  * @param {boolean} [args.allowDegrade=true] - Se true, tenta fallback Groq 8B se todos falharem
+ * @param {number} [args.deadlineMs] - Prazo TOTAL (ms) pra todas as tentativas; vem do
+ *   back (`deadline_ms`, ~85s) pra não estourar o timeout dele. Sem valor = sem prazo.
  * @returns {Promise<{ provider, model, data, raw }>}
  * @throws {Error} se nenhuma chave funcionar
  */
-export async function callAi({ providerKeys, payload, allowDegrade = true }) {
+export async function callAi({ providerKeys, payload, allowDegrade = true, deadlineMs }) {
   const allCandidates = flattenProviderKeys(providerKeys);
   if (allCandidates.length === 0) {
     throw new Error('Nenhuma chave de provider configurada.');
   }
 
-  const candidates = await selectCandidates(allCandidates);
+  const startedAt = Date.now();
+  const hasDeadline = Number.isFinite(deadlineMs) && deadlineMs > 0;
+  // Tempo restante do deadline (ms) ou Infinity. <= 0 => parar de tentar.
+  const remaining = () => (hasDeadline ? deadlineMs - (Date.now() - startedAt) : Infinity);
+  // Menos de 3s restantes não dá pra completar uma chamada útil.
+  const outOfTime = () => hasDeadline && remaining() < 3000;
+
+  const states = await keyStateStore.getStates(allCandidates.map((c) => c.id));
+  const candidates = await selectCandidates(allCandidates, states);
   if (candidates.length === 0) {
     // Todas em cooldown / esgotadas — tenta a primeira mesmo assim
     // (o estado pode ter sido injustamente marcado; uma tentativa não vai matar)
     candidates.push(allCandidates[0]);
   }
 
+  // Providers que deram `fatal` (modelo inexistente/payload inválido): as
+  // outras chaves do mesmo provider vão falhar igual — pula todas (A-69).
+  const skipProviders = new Set();
   const errors = [];
   for (const candidate of candidates) {
+    if (skipProviders.has(candidate.provider)) continue;
+    if (outOfTime()) {
+      errors.push(`deadline de ${deadlineMs}ms atingido antes de tentar ${candidate.provider}`);
+      break;
+    }
     const adapter = getAdapter(candidate.provider);
     if (!adapter) continue;
 
@@ -110,6 +125,7 @@ export async function callAi({ providerKeys, payload, allowDegrade = true }) {
       const result = await adapter.chat({
         apiKey: candidate.apiKey,
         payload,
+        timeoutMs: hasDeadline ? remaining() : undefined,
       });
       await recordOutcome(candidate, result);
       if (result.ok) {
@@ -121,10 +137,10 @@ export async function callAi({ providerKeys, payload, allowDegrade = true }) {
         };
       }
       errors.push(`${candidate.provider}/${candidate.id}: ${result.errorKind} — ${result.error}`);
-      // Se for fatal (payload bug, model não existe), não vale tentar outras keys do MESMO provider
-      // mas de outro provider sim. Continua o loop.
       if (result.errorKind === 'fatal') {
-        // skip outras keys do mesmo provider (apenas as desse)
+        skipProviders.add(candidate.provider);
+        // eslint-disable-next-line no-console
+        console.warn(`[ai-router] ${candidate.provider}: erro fatal (adapter/modelo) — pulando as demais chaves deste provider. ${result.error}`);
         continue;
       }
     } catch (err) {
@@ -134,17 +150,24 @@ export async function callAi({ providerKeys, payload, allowDegrade = true }) {
     }
   }
 
-  // Última cartada: degrade para Groq 8B (14k req/dia/conta) se houver chaves Groq
-  if (allowDegrade) {
-    const groqKeys = allCandidates.filter((c) => c.provider === 'groq');
+  // Última cartada: degrade para o fallbackModel da Groq se houver chaves Groq.
+  // Só chaves em estado utilizável (pula invalid/daily_exhausted) e dentro do prazo.
+  if (allowDegrade && !outOfTime()) {
+    const groqKeys = allCandidates.filter((c) => {
+      if (c.provider !== 'groq') return false;
+      const st = states[c.id]?.status || 'healthy';
+      return st !== 'invalid' && st !== 'daily_exhausted';
+    });
     if (groqKeys.length > 0) {
       const groqAdapter = getAdapter('groq');
       for (const candidate of groqKeys) {
+        if (outOfTime()) break;
         try {
           const result = await groqAdapter.chat({
             apiKey: candidate.apiKey,
             payload,
             modelOverride: groqAdapter.fallbackModel,
+            timeoutMs: hasDeadline ? remaining() : undefined,
           });
           await recordOutcome(candidate, result);
           if (result.ok) {

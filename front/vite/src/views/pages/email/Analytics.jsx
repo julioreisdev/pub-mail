@@ -79,7 +79,9 @@ function KpiCard({ icon: Icon, label, value, sub, color, deltaInfo }) {
             display: 'grid',
             placeItems: 'center',
             color: color || 'text.secondary',
-            bgcolor: (t) => alpha(typeof color === 'string' && color.startsWith('#') ? color : t.palette.text.primary, 0.12)
+            // cor custom (hex) → tint via alpha (valor estático, não depende do tema);
+            // neutro → token 'action.selected' (troca sozinho no dark)
+            bgcolor: typeof color === 'string' && color.startsWith('#') ? alpha(color, 0.12) : 'action.selected'
           }}
         >
           {Icon ? <Icon size={19} stroke={1.7} /> : null}
@@ -296,7 +298,7 @@ export default function Analytics() {
         <Box sx={{ p: { xs: 2, md: 2.5 } }}>
           <Stack direction={{ xs: 'column', lg: 'row' }} spacing={1.5} alignItems={{ lg: 'center' }} justifyContent="space-between">
             <Stack direction="row" alignItems="center" spacing={1.25}>
-              <Box sx={{ width: 40, height: 40, borderRadius: 2.5, display: 'grid', placeItems: 'center', color: 'primary.main', bgcolor: (t) => alpha(t.palette.primary.main, 0.14) }}>
+              <Box sx={{ width: 40, height: 40, borderRadius: 2.5, display: 'grid', placeItems: 'center', color: 'primary.main', bgcolor: (t) => `rgba(${t.vars.palette.primary.mainChannel} / 0.14)` }}>
                 <IconCalendarStats size={22} stroke={1.7} />
               </Box>
               <Box>

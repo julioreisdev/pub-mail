@@ -9,8 +9,10 @@ import IconButton from '@mui/material/IconButton';
 
 // project imports
 import Footer from './Footer';
+import NavigationScroll from 'layout/NavigationScroll';
 import Sidebar from './Sidebar';
 import MainContentStyled from './MainContentStyled';
+import AccessGate from './AccessGate';
 import Loader from 'ui-component/Loader';
 import Breadcrumbs from 'ui-component/extended/Breadcrumbs';
 
@@ -75,7 +77,11 @@ export default function MainLayout() {
           sx={{ px: { xs: 0 }, pt: { xs: 5, md: 0 }, minHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}
         >
           <Breadcrumbs />
-          <Outlet />
+          <NavigationScroll />
+          {/* assinatura/módulos: trava a tela se a conta precisa pagar; boas-vindas; aviso de renovação */}
+          <AccessGate>
+            <Outlet />
+          </AccessGate>
           <Footer />
         </Box>
       </MainContentStyled>
