@@ -1,14 +1,15 @@
 // Módulos do Pub Mail (espelho de back/src/platform-billing/modules.const.ts).
 // Usado pelo menu, pelas rotas, pelo dashboard e pelos modais de acesso.
-import { IconMailBolt, IconBrandHipchat, IconListLetters, IconBrandTelegram, IconSettings } from '@tabler/icons-react';
+import { IconMailBolt, IconBrandHipchat, IconListLetters, IconBrandTelegram, IconBrandWhatsapp, IconSettings } from '@tabler/icons-react';
 
-export const ALL_MODULES = ['email', 'webchat', 'quiz', 'telegram', 'settings'];
+export const ALL_MODULES = ['email', 'webchat', 'quiz', 'telegram', 'whatsapp', 'settings'];
 
 export const MODULE_DEFS = {
   email: { key: 'email', label: 'E-mail Marketing', description: 'Projetos, templates, automações e analytics', Icon: IconMailBolt, color: '#f59e0b' },
   webchat: { key: 'webchat', label: 'Webchat com IA', description: 'Chat com IA, funis e vendas por PIX', Icon: IconBrandHipchat, color: '#377EF0' },
   quiz: { key: 'quiz', label: 'Quizzes', description: 'Quizzes, captação e anúncios', Icon: IconListLetters, color: '#a855f7' },
   telegram: { key: 'telegram', label: 'Telegram', description: 'Bots, broadcasts e conteúdo VIP', Icon: IconBrandTelegram, color: '#2AABEE' },
+  whatsapp: { key: 'whatsapp', label: 'WhatsApp', description: 'Chat, status, contatos e broadcasts', Icon: IconBrandWhatsapp, color: '#25D366' },
   settings: { key: 'settings', label: 'Configurações', description: 'Conta, domínios, integrações e chaves', Icon: IconSettings, color: '#64748b' }
 };
 

@@ -54,10 +54,11 @@ Este guia foi escrito para ser seguido **de cima para baixo, sem pular etapas**,
 19. [HTTPS com certbot (Let's Encrypt)](#19-https-com-certbot)
 20. [Verificação final (checklist)](#20-verificação-final)
 21. [Pós-instalação (o que configurar dentro do painel)](#21-pós-instalação)
-22. [Atualizando o sistema (redeploy de front, back e micros)](#22-atualizando-o-sistema)
-23. [Operação do dia a dia (logs, banco, backup)](#23-operação-do-dia-a-dia)
-24. [Solução de problemas (todas as armadilhas conhecidas)](#24-solução-de-problemas)
-25. [Instalando uma segunda cópia (outra empresa / outro domínio)](#25-instalando-uma-segunda-cópia)
+22. [WhatsApp (OpenWA em Docker) — opcional](#22-whatsapp-openwa-em-docker--opcional)
+23. [Atualizando o sistema (redeploy de front, back e micros)](#23-atualizando-o-sistema)
+24. [Operação do dia a dia (logs, banco, backup)](#24-operação-do-dia-a-dia)
+25. [Solução de problemas (todas as armadilhas conhecidas)](#25-solução-de-problemas)
+26. [Instalando uma segunda cópia (outra empresa / outro domínio)](#26-instalando-uma-segunda-cópia)
 
 ---
 
@@ -531,7 +532,7 @@ Os valores entram **no build** — mudar exige rebuild do front.
 ```
 # unset CI
 # cd /opt/pub-mail/back
-# yarn --version                       # 4.10.3 (se mostrar 1.22 → veja a seção 24)
+# yarn --version                       # 4.10.3 (se mostrar 1.22 → veja a seção 25)
 # yarn install
 # test -d node_modules/@nestjs/core && echo INSTALL_OK
 # yarn prisma migrate deploy           # cria todas as tabelas no banco vazio
@@ -704,7 +705,7 @@ Teste rápido da API por dentro do servidor (400 = está respondendo e validando
 # curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8000/auth/login -H 'Content-Type: application/json' -d '{}'
 ```
 
-**✅ Resultado esperado:** `active active active`; as três portas aparecem no `ss`; o `journalctl` mostra `Nest application successfully started`; o `curl` responde `400`. Se um serviço estiver `failed`, veja o motivo com `journalctl -u pubmail-back -n 50 --no-pager` (os erros mais comuns estão na seção 24).
+**✅ Resultado esperado:** `active active active`; as três portas aparecem no `ss`; o `journalctl` mostra `Nest application successfully started`; o `curl` responde `400`. Se um serviço estiver `failed`, veja o motivo com `journalctl -u pubmail-back -n 50 --no-pager` (os erros mais comuns estão na seção 25).
 
 ---
 
@@ -890,11 +891,121 @@ Tudo abaixo é feito **dentro do painel**, por organização (nada é compartilh
 
 ---
 
-## 22. Atualizando o sistema
+## 22. WhatsApp (OpenWA em Docker) — opcional
+
+O módulo WhatsApp do Pub Mail usa o **OpenWA** (gateway open source) rodando em Docker, **só em loopback** (`127.0.0.1:2785`). O back fala com ele por HTTP e recebe eventos por webhook. Instale só se for usar o módulo.
+
+### 22.1 Docker
+
+```bash
+apt-get install -y docker.io docker-compose-v2
+systemctl enable --now docker
+```
+
+### 22.2 OpenWA
+
+```bash
+mkdir -p /opt/openwa/data && cd /opt/openwa
+umask 077
+cat > .env <<EOF2
+API_MASTER_KEY=pm_$(openssl rand -hex 24)
+API_KEY_PEPPER=$(openssl rand -hex 16)
+ENGINE_TYPE=whatsapp-web.js
+PORT=2785
+NODE_ENV=production
+AUTO_START_SESSIONS=true
+MAX_CONCURRENT_SESSIONS=8
+SESSION_DATA_PATH=/app/data/sessions
+DATABASE_TYPE=sqlite
+WEBHOOK_SSRF_PROTECT=true
+SSRF_ALLOWED_HOSTS=host.docker.internal
+RESOLVE_LID_TO_PHONE=true
+SEND_PACING_ENABLED=false
+EOF2
+umask 022
+cat > docker-compose.yml <<'EOF2'
+services:
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.23.7
+    container_name: openwa
+    restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:2785:2785"]
+    volumes: ["./data:/app/data"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    mem_limit: 3g
+    pids_limit: 2048
+    shm_size: 1g
+EOF2
+docker compose pull && docker compose up -d
+sleep 20 && curl -s http://127.0.0.1:2785/api/health     # {"status":"ok"}
+```
+
+> **Engine:** `whatsapp-web.js` gasta 300–500 MB de RAM por número conectado (Chrome headless). Em uma VPS de 8 GB cabem ~6–8 organizações; acima disso, VPS dedicada ao OpenWA. Não troque de engine com sessões ativas. **Atualize o OpenWA só manualmente** (troque a tag da imagem, `docker compose pull && up -d`): o projeto lança várias versões por semana com mudanças incompatíveis.
+
+### 22.3 Firewall (o container precisa alcançar o back)
+
+O webhook do OpenWA chega no back pelo endereço `host.docker.internal:8000`. O `ufw` bloqueia esse tráfego por padrão:
+
+```bash
+ufw allow from 172.16.0.0/12 to any port 8000 proto tcp comment 'openwa -> pubmail back'
+docker exec openwa node -e "fetch('http://host.docker.internal:8000/auth/me').then(r=>console.log(r.status))"   # 401 = alcançou
+```
+
+### 22.4 `.env` do back
+
+```bash
+KEY=$(grep ^API_MASTER_KEY= /opt/openwa/.env | cut -d= -f2)
+cat >> /opt/pub-mail/back/.env <<EOF2
+
+# ---- WhatsApp (OpenWA em Docker, só loopback) ----
+OPENWA_URL=http://127.0.0.1:2785/api
+OPENWA_API_KEY=$KEY
+OPENWA_WEBHOOK_BASE=http://host.docker.internal:8000
+# WHATSAPP_MEDIA_QUOTA_MB=2048   # cota de mídia por organização (padrão 2 GB)
+EOF2
+mkdir -p /opt/pub-mail/back/protected/whatsapp && chmod 750 /opt/pub-mail/back/protected/whatsapp
+systemctl restart pubmail-back
+```
+
+### 22.5 Backup do volume (sessões WhatsApp)
+
+O volume `/opt/openwa/data` guarda as credenciais das sessões pareadas. Sem backup, um disco perdido obriga todo cliente a escanear o QR de novo. Script + timer diário (04:30 UTC, 7 dias de retenção):
+
+```bash
+mkdir -p /opt/backups/openwa /opt/openwa/bin && chmod 700 /opt/backups
+cat > /opt/openwa/bin/backup.sh <<'EOF2'
+#!/bin/bash
+set -euo pipefail
+DEST=/opt/backups/openwa; STAMP=$(date +%F)
+docker pause openwa >/dev/null 2>&1 || true
+tar -czf "$DEST/openwa-data-$STAMP.tar.gz" -C /opt/openwa data .env docker-compose.yml || { docker unpause openwa; exit 1; }
+docker unpause openwa >/dev/null 2>&1 || true
+chmod 600 "$DEST"/*.tar.gz
+find "$DEST" -name 'openwa-data-*.tar.gz' -mtime +7 -delete
+EOF2
+chmod 700 /opt/openwa/bin/backup.sh
+printf '[Unit]\nDescription=Backup OpenWA\n[Service]\nType=oneshot\nExecStart=/opt/openwa/bin/backup.sh\n' > /etc/systemd/system/openwa-backup.service
+printf '[Unit]\nDescription=Backup diário OpenWA\n[Timer]\nOnCalendar=*-*-* 04:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/openwa-backup.timer
+systemctl daemon-reload && systemctl enable --now openwa-backup.timer
+```
+
+### 22.6 Operação
+
+```bash
+cd /opt/openwa && docker compose ps            # healthy?
+docker compose logs --tail 100                 # logs do gateway
+docker stats --no-stream openwa                # RAM (sobe ~400 MB por sessão)
+journalctl -u pubmail-back -n 100 | grep -i whatsapp
+```
+
+Depois disso, no painel: **Administração → Usuários** libera o módulo **WhatsApp** por usuário; o cliente conecta em **WhatsApp → Configurações** (tutorial em `WhatsApp - Como conectar.pdf`).
+
+## 23. Atualizando o sistema
 
 Regras de ouro: **nunca** envie `.env`; confira antes se o servidor não tem versão mais nova do arquivo (`md5sum` local × servidor); reinicie o back **só** se o build passou sem `error TS`.
 
-### 22.1 Front (mudou algo em `front/vite/src`)
+### 23.1 Front (mudou algo em `front/vite/src`)
 
 Build numa pasta temporária + troca atômica: se o build falhar, o site continua no ar com a versão anterior.
 
@@ -907,7 +1018,7 @@ $ ssh pubmail-prod 'cd /opt/pub-mail/front/vite && export NODE_OPTIONS=--max-old
 
 Os usuários precisam de *hard refresh* (Cmd/Ctrl+Shift+R) — o nome dos bundles muda. Se mudou dependência (`package.json`), rode `unset CI; yarn install` antes do build.
 
-### 22.2 Back (mudou `back/src`, `schema.prisma` ou migration nova)
+### 23.2 Back (mudou `back/src`, `schema.prisma` ou migration nova)
 
 ```
 $ tar -czf - back/src back/prisma | ssh pubmail-prod 'tar -xzf - -C /opt/pub-mail'
@@ -924,7 +1035,7 @@ EOF2
 
 Migration nova = pasta `back/prisma/migrations/<timestamp>_nome/migration.sql` (timestamp maior que o último) + alteração correspondente no `schema.prisma`. Toda tabela nova deve ser criada com `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`.
 
-### 22.3 Micros
+### 23.3 Micros
 
 ```
 $ tar -czf - ai-micro-services/src | ssh pubmail-prod 'tar -xzf - -C /opt/pub-mail && systemctl restart pubmail-ai'
@@ -935,7 +1046,7 @@ $ tar -czf - email-micro-services/*.js | ssh pubmail-prod 'tar -xzf - -C /opt/pu
 
 ---
 
-## 23. Operação do dia a dia
+## 24. Operação do dia a dia
 
 ### Logs
 
@@ -977,7 +1088,7 @@ Basta rodar o seed de novo (seção 13) com a nova `SEED_ADMIN_PASSWORD`.
 
 ---
 
-## 24. Solução de problemas
+## 25. Solução de problemas
 
 | Sintoma | Causa | Solução |
 |---|---|---|
@@ -1000,7 +1111,7 @@ Basta rodar o seed de novo (seção 13) com a nova `SEED_ADMIN_PASSWORD`.
 
 ---
 
-## 25. Instalando uma segunda cópia
+## 26. Instalando uma segunda cópia
 
 Para outra empresa/domínio, **repita o tutorial inteiro em outro servidor**: banco, segredos, `.env`, seed, contas de Resend/Telegram/gateway — nada é compartilhado. Só o código é o mesmo. Checklist do que muda entre instalações:
 

@@ -12,6 +12,7 @@ import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { CreateClientDto } from '../platform-billing/dto/billing.dto';
 import { AccessService } from '../platform-billing/access.service';
+import { WhatsAppSessionsService } from '../whatsapp/whatsapp-sessions.service';
 import { ALL_MODULES, normalizeModules } from '../platform-billing/modules.const';
 
 const userSelect = {
@@ -36,7 +37,7 @@ function asRole(value: any, fallback: users_role): users_role {
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService, private readonly access: AccessService) {}
+  constructor(private prisma: PrismaService, private readonly access: AccessService, private readonly whatsapp: WhatsAppSessionsService) {}
 
   // ---- Organização OCULTA (conta do desenvolvedor) ----
   // Org com hidden=true (e seus usuários) é tratada como INEXISTENTE pela API admin para
@@ -166,7 +167,9 @@ export class AdminService {
     await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=0');
-        try {
+        // WhatsApp: desloga/apaga a sessão no OpenWA (best-effort) antes de apagar as linhas.
+    await this.whatsapp.destroyForOrg(id).catch(() => undefined);
+    try {
           // Netas (sem organization_id) — via subquery no pai.
           await tx.$executeRawUnsafe(
             'DELETE FROM transactions WHERE wallet_id IN (SELECT id FROM wallets WHERE organization_id = ?)',
@@ -246,6 +249,19 @@ export class AdminService {
           await tx.billing_cards.deleteMany(where);
           await tx.wallets.deleteMany(where);
           await tx.organization_settings.deleteMany(where); // chaves de API da org
+          await tx.whatsapp_schedules.deleteMany(where);
+          await tx.whatsapp_chat_filters.deleteMany(where);
+          await tx.whatsapp_broadcast_sends.deleteMany(where);
+          await tx.whatsapp_broadcast_runs.deleteMany(where);
+          await tx.whatsapp_broadcast_copies.deleteMany(where);
+          await tx.whatsapp_broadcasts.deleteMany(where);
+          await tx.whatsapp_statuses.deleteMany(where);
+          await tx.whatsapp_messages.deleteMany(where);
+          await tx.whatsapp_chats.deleteMany(where);
+          await tx.whatsapp_contacts.deleteMany(where);
+          await tx.whatsapp_media.deleteMany(where); // metadados; arquivos em protected/whatsapp/<org> ficam p/ limpeza
+          await tx.whatsapp_session_events.deleteMany(where);
+          await tx.whatsapp_sessions.deleteMany(where); // sessão WhatsApp (gateway já limpo antes da transação)
           await tx.platform_payments.deleteMany(where); // cobranças de assinatura
           await tx.organization_access.deleteMany(where); // plano de acesso
 

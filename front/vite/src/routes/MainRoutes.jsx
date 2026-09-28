@@ -40,7 +40,6 @@ const QuizBuilder = Loadable(lazy(() => import('views/pages/quiz/QuizBuilder')))
 const FlowsPage = Loadable(lazy(() => import('views/pages/leads/FlowsPage')));
 const RecyclePage = Loadable(lazy(() => import('views/pages/leads/RecyclePage')));
 const TriggersPage = Loadable(lazy(() => import('views/pages/leads/TriggersPage')));
-const TelegramPlaceholder = Loadable(lazy(() => import('views/pages/telegram/TelegramPlaceholder')));
 const TelegramSettings = Loadable(lazy(() => import('views/pages/telegram/TelegramSettings')));
 const TelegramDMs = Loadable(lazy(() => import('views/pages/telegram/TelegramDMs')));
 const TelegramFlows = Loadable(lazy(() => import('views/pages/telegram/TelegramFlows')));
@@ -48,6 +47,12 @@ const TelegramGroups = Loadable(lazy(() => import('views/pages/telegram/Telegram
 const TelegramBroadcasts = Loadable(lazy(() => import('views/pages/telegram/TelegramBroadcasts')));
 const TelegramRotators = Loadable(lazy(() => import('views/pages/telegram/TelegramRotators')));
 const TelegramPayments = Loadable(lazy(() => import('views/pages/telegram/TelegramPayments')));
+const WhatsAppSettings = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppSettings')));
+const WhatsAppChat = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppChat')));
+const WhatsAppContacts = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppContacts')));
+const WhatsAppStatus = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppStatus')));
+const WhatsAppBroadcasts = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppBroadcasts')));
+const WhatsAppSchedules = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppSchedules')));
 
 // ==============================|| MAIN ROUTING (PROTECTED) ||============================== //
 
@@ -130,6 +135,18 @@ const MainRoutes = {
           children: [{ path: 'automations', element: <Navigate to="/email/flows" replace /> }]
         },
 
+        {
+          path: 'whatsapp',
+          element: <RequireModule module="whatsapp" />, // gate por módulo liberado
+          children: [
+            { path: 'settings', element: <WhatsAppSettings /> },
+            { path: 'chat', element: <WhatsAppChat /> },
+            { path: 'status', element: <WhatsAppStatus /> },
+            { path: 'contacts', element: <WhatsAppContacts /> },
+            { path: 'broadcasts', element: <WhatsAppBroadcasts /> },
+            { path: 'schedules', element: <WhatsAppSchedules /> }
+          ]
+        },
         {
           path: 'telegram',
           element: <RequireModule module="telegram" />, // gate por módulo liberado

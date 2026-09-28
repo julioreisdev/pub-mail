@@ -1,6 +1,6 @@
 // Módulos do Pub Mail que o superadmin libera POR USUÁRIO (users.modules).
 // "Administração" não é módulo: é exclusivo do role SUPER_ADMIN.
-export const MODULES = ['email', 'webchat', 'quiz', 'telegram', 'settings'] as const;
+export const MODULES = ['email', 'webchat', 'quiz', 'telegram', 'whatsapp', 'settings'] as const;
 export type ModuleKey = (typeof MODULES)[number];
 export const ALL_MODULES: ModuleKey[] = [...MODULES];
 
@@ -33,6 +33,7 @@ const ROUTE_MODULES: Array<[string, ModuleKey]> = [
   ['/quiz-leads', 'quiz'],
   ['/quiz-splits', 'quiz'],
   ['/telegram', 'telegram'],
+  ['/whatsapp', 'whatsapp'],
   ['/system-settings', 'settings'],
   ['/payments', 'settings'],
   ['/organizations', 'settings'],
@@ -67,5 +68,6 @@ export const MODULE_LABELS: Record<ModuleKey, string> = {
   webchat: 'Webchat',
   quiz: 'Quizzes',
   telegram: 'Telegram',
+  whatsapp: 'WhatsApp',
   settings: 'Configurações',
 };

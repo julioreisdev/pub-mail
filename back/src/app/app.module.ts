@@ -41,6 +41,7 @@ import { DashboardModule } from 'src/dashboard/dashboard.module';
 import { TelegramModule } from 'src/telegram/telegram.module';
 import { PaymentsModule } from 'src/payments/payments.module';
 import { PlatformBillingModule } from 'src/platform-billing/platform-billing.module';
+import { WhatsAppModule } from 'src/whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -87,6 +88,7 @@ import { PlatformBillingModule } from 'src/platform-billing/platform-billing.mod
     TelegramModule,
     PaymentsModule,
     PlatformBillingModule, // assinaturas do Pub Mail + módulos por usuário (AccessInterceptor global)
+    WhatsAppModule, // WhatsApp via OpenWA (Docker, loopback)
   ],
   controllers: [],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

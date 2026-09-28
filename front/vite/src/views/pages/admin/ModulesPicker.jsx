@@ -10,7 +10,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import ButtonBase from '@mui/material/ButtonBase';
 
-import { IconMailBolt, IconMessageChatbot, IconListLetters, IconBrandTelegram, IconSettings, IconCheck } from '@tabler/icons-react';
+import { IconMailBolt, IconMessageChatbot, IconListLetters, IconBrandTelegram, IconBrandWhatsapp, IconSettings, IconCheck } from '@tabler/icons-react';
 
 export const MODULE_DEFS = [
   {
@@ -24,6 +24,7 @@ export const MODULE_DEFS = [
   { key: 'webchat', label: 'Webchat', short: 'WC', description: 'Chat com IA, funis e vendas', Icon: IconMessageChatbot, color: 'info' },
   { key: 'quiz', label: 'Quizzes', short: 'QZ', description: 'Quizzes e captação', Icon: IconListLetters, color: 'secondary' },
   { key: 'telegram', label: 'Telegram', short: 'TG', description: 'Bots, broadcasts e VIP', Icon: IconBrandTelegram, color: 'info' },
+  { key: 'whatsapp', label: 'WhatsApp', short: 'WA', description: 'Chat, status, contatos e broadcasts', Icon: IconBrandWhatsapp, color: 'success' },
   {
     key: 'settings',
     label: 'Configurações',

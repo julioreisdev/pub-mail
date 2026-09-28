@@ -86,6 +86,16 @@ O fluxo típico: captar leads (webchat, quiz, formulário no site, Telegram) →
 - **Mensagem rotativa (prova social)**: uma mensagem que é **editada em loop** ("Fulano acabou de aderir…") em grupos/canais ou nas DMs, sempre como última mensagem, com travas anti-flood (cadência mínima, teto de edições por lead, detecção de lead que saiu).
 - **Pagamentos / VIP**: `/vip` → planos → **PIX** (Mercado Pago ou PushinPay, QR + copia-e-cola com botão de copiar) → validação real no gateway → **link de convite de uso único** para o grupo/canal VIP. **Assinaturas por tempo** com lembrete, expiração (remove do VIP) e renovação. Mensagens do checkout totalmente configuráveis. Botão de plano também em broadcasts, automações e fluxo.
 
+### WhatsApp
+Módulo por organização (1 número), sobre o gateway open source **OpenWA** (Docker, loopback):
+- **Configurações**: conectar por QR ou código, perfil (foto/nome/recado), teste, importar do celular, aquecimento com toggle de responsabilidade.
+- **Chat**: conversas e grupos com fotos, mídia, citação, encaminhar, reagir, editar, apagar, enquetes, áudio gravado; filtros personalizados (abas com os contatos/grupos que você escolher).
+- **Contatos**: agenda do celular + contatos salvos na organização (sobrevivem à troca de número), tags, importar/exportar CSV.
+- **Status**: texto/imagem/vídeo/áudio, agora ou agendado.
+- **Agendamentos**: mensagem pontual para contatos/grupos em dia e hora; some da lista depois de enviada.
+- **Broadcasts**: audiência por contatos/tags/grupos, copies com rotação, horários diários, aquecimento por organização, histórico por envio.
+Ban é um risco real de qualquer cliente não-oficial: número dedicado + aquecimento. Plano e decisões: `docs/plano-modulo-whatsapp.md`; tutorial do cliente: `WhatsApp - Como conectar.pdf`.
+
 ### Administração, Integrações e Conta
 
 ![Integrações](docs/images/integracoes.png)
@@ -216,6 +226,8 @@ No **Construtor de Funil**, uma sequência pode terminar em **💳 Cobrança PIX
 | `HTTP_BODY_LIMIT`, `UPLOAD_MAX_FILE_SIZE_BYTES` | — | Limites de upload |
 
 Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda, e-mail do certbot) ficam no banco (`system_settings`) e são editadas em **Integrações**.
+
+- `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_WEBHOOK_BASE` — gateway WhatsApp (OpenWA em Docker, loopback); `WHATSAPP_MEDIA_QUOTA_MB` (cota de mídia por org, padrão 2048)
 
 ### AI micro
 

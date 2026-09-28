@@ -1476,3 +1476,272 @@ model platform_payments {
   @@index([status], map: "idx_ppay_status")
   @@index([provider_charge_id], map: "idx_ppay_charge")
 }
+
+// ===== WhatsApp (via OpenWA) =====
+// 1 sessão por organização. `status` espelha o OpenWA: none|created|initializing|qr_ready|authenticating|ready|disconnected|action_required|failed
+model whatsapp_sessions {
+  id                String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String    @unique(map: "uk_wasess_org") @db.Char(36)
+  openwa_session_id String?   @db.VarChar(64)
+  openwa_name       String?   @db.VarChar(64)
+  status            String    @default("none") @db.VarChar(24)
+  phone             String?   @db.VarChar(32)
+  push_name         String?   @db.VarChar(255)
+  webhook_id        String?   @db.VarChar(64)
+  webhook_secret    String?   @db.VarChar(128)
+  paired_at         DateTime? @db.DateTime(3)
+  last_status_at    DateTime? @db.DateTime(3)
+  last_event_at     DateTime? @db.DateTime(3)
+  last_qr_at        DateTime? @db.DateTime(3)
+  restricted_at     DateTime? @db.DateTime(3)
+  disconnected_at   DateTime? @db.DateTime(3)
+  last_restart_at   DateTime? @db.DateTime(3)
+  last_error        String?   @db.VarChar(500)
+  pacing_enabled    Boolean   @default(true)
+  warmup_ack_at     DateTime? @db.DateTime(3)
+  settings          Json?
+  created_at        DateTime  @default(now()) @db.DateTime(0)
+  updated_at        DateTime  @updatedAt @db.DateTime(0)
+  events            whatsapp_session_events[]
+
+  @@index([openwa_session_id], map: "idx_wasess_openwa")
+}
+
+model whatsapp_session_events {
+  id              String            @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  session_id      String            @db.Char(36)
+  organization_id String            @db.Char(36)
+  event           String            @db.VarChar(48)
+  idempotency_key String?           @unique(map: "uk_waevt_idem") @db.VarChar(191)
+  payload         Json?
+  created_at      DateTime          @default(now()) @db.DateTime(3)
+  session         whatsapp_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_waevt_session")
+
+  @@index([session_id, created_at], map: "idx_waevt_session_created")
+}
+
+model whatsapp_media {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  kind            String    @db.VarChar(16)
+  mime            String    @db.VarChar(128)
+  filename        String?   @db.VarChar(255)
+  size_bytes      BigInt    @default(0)
+  storage_path    String    @db.VarChar(512)
+  sha1            String?   @db.Char(40)
+  expires_at      DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, created_at], map: "idx_wamedia_org")
+  @@index([expires_at], map: "idx_wamedia_expires")
+}
+
+// Contato conhecido pela org. `saved` = guardado na organização (sobrevive à troca de número).
+model whatsapp_contacts {
+  id                   String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id      String    @db.Char(36)
+  wa_id                String    @db.VarChar(64)
+  phone                String?   @db.VarChar(32)
+  lid                  String?   @db.VarChar(64)
+  name                 String?   @db.VarChar(255)
+  push_name            String?   @db.VarChar(255)
+  is_business          Boolean   @default(false)
+  is_my_contact        Boolean   @default(false)
+  is_blocked           Boolean   @default(false)
+  saved                Boolean   @default(false)
+  tags                 Json?
+  notes                String?   @db.VarChar(500)
+  source               String    @default("session") @db.VarChar(16)
+  profile_pic_media_id String?   @db.Char(36)
+  last_message_at      DateTime? @db.DateTime(3)
+  synced_at            DateTime? @db.DateTime(3)
+  created_at           DateTime  @default(now()) @db.DateTime(0)
+  updated_at           DateTime  @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id, wa_id], map: "uk_wacontact_org_wa")
+  @@index([organization_id, phone], map: "idx_wacontact_org_phone")
+  @@index([organization_id, saved], map: "idx_wacontact_org_saved")
+}
+
+model whatsapp_chats {
+  id                     String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id        String    @db.Char(36)
+  chat_id                String    @db.VarChar(64)
+  kind                   String    @default("individual") @db.VarChar(16)
+  name                   String?   @db.VarChar(255)
+  unread_count           Int       @default(0)
+  last_message_at        DateTime? @db.DateTime(3)
+  last_message_preview   String?   @db.VarChar(255)
+  last_message_direction String?   @db.VarChar(4)
+  archived               Boolean   @default(false)
+  pinned                 Boolean   @default(false)
+  muted                  Boolean   @default(false)
+  group_meta             Json?
+  synced_at              DateTime? @db.DateTime(3)
+  created_at             DateTime  @default(now()) @db.DateTime(0)
+  updated_at             DateTime  @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id, chat_id], map: "uk_wachat_org_chat")
+  @@index([organization_id, last_message_at], map: "idx_wachat_org_last")
+}
+
+model whatsapp_messages {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  chat_id         String    @db.VarChar(64)
+  wa_message_id   String    @db.VarChar(191)
+  direction       String    @db.VarChar(4)
+  type            String    @default("text") @db.VarChar(16)
+  body            String?   @db.Text
+  media_id        String?   @db.Char(36)
+  media_omitted   Boolean   @default(false)
+  from_jid        String?   @db.VarChar(64)
+  sender_name     String?   @db.VarChar(255)
+  quoted_wa_id    String?   @db.VarChar(191)
+  quoted_preview  String?   @db.VarChar(255)
+  forwarded       Boolean   @default(false)
+  ack             Int       @default(0) @db.TinyInt
+  reactions       Json?
+  edited          Boolean   @default(false)
+  revoked         Boolean   @default(false)
+  extra           Json?
+  error           String?   @db.VarChar(255)
+  sent_by_user_id String?   @db.Char(36)
+  timestamp       DateTime  @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@unique([organization_id, wa_message_id], map: "uk_wamsg_org_wa")
+  @@index([organization_id, chat_id, timestamp], map: "idx_wamsg_org_chat_ts")
+  @@index([organization_id, chat_id, updated_at], map: "idx_wamsg_org_chat_upd")
+}
+
+// Status (stories): agora ou agendado (cron em BRT). status: pending|posting|posted|failed|canceled
+model whatsapp_statuses {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  type            String    @default("text") @db.VarChar(8)
+  body            String?   @db.Text
+  bg_color        String?   @db.VarChar(16)
+  font            Int?      @db.TinyInt
+  media_id        String?   @db.Char(36)
+  schedule_at     DateTime? @db.DateTime(3)
+  status          String    @default("pending") @db.VarChar(12)
+  wa_status_id    String?   @db.VarChar(191)
+  error           String?   @db.VarChar(255)
+  posted_at       DateTime? @db.DateTime(3)
+  created_by      String?   @db.Char(36)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, schedule_at], map: "idx_wastatus_org_sched")
+  @@index([status, schedule_at], map: "idx_wastatus_due")
+}
+
+// Broadcasts (espelho do Telegram): targets {contacts:'saved'|'all'|[ids], tags:[], groups:[chat_ids]}, times[] = minuto-do-dia BRT
+model whatsapp_broadcasts {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  name            String    @db.VarChar(255)
+  targets         Json?
+  times           Json?
+  mode            String    @default("sequential") @db.VarChar(16)
+  delete_used     Boolean   @default(false)
+  active          Boolean   @default(false)
+  last_copy_index Int       @default(0)
+  interval_ms     Int       @default(4000)
+  risk_ack_at     DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+  copies          whatsapp_broadcast_copies[]
+  runs            whatsapp_broadcast_runs[]
+
+  @@index([organization_id], map: "idx_wabc_org")
+}
+
+model whatsapp_broadcast_copies {
+  id              String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  broadcast_id    String              @db.Char(36)
+  organization_id String              @db.Char(36)
+  position        Int                 @default(0)
+  messages        Json?
+  created_at      DateTime            @default(now()) @db.DateTime(0)
+  broadcast       whatsapp_broadcasts @relation(fields: [broadcast_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabccopy_bc")
+
+  @@index([broadcast_id, position], map: "idx_wabccopy_bc")
+}
+
+model whatsapp_broadcast_runs {
+  id              String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  broadcast_id    String              @db.Char(36)
+  organization_id String              @db.Char(36)
+  run_at          DateTime            @db.DateTime(0)
+  copy_id         String?             @db.Char(36)
+  messages        Json?
+  total           Int                 @default(0)
+  sent            Int                 @default(0)
+  failed          Int                 @default(0)
+  blocked         Int                 @default(0)
+  status          String              @default("running") @db.VarChar(12)
+  finished_at     DateTime?           @db.DateTime(3)
+  created_at      DateTime            @default(now()) @db.DateTime(3)
+  broadcast       whatsapp_broadcasts @relation(fields: [broadcast_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcrun_bc")
+  sends           whatsapp_broadcast_sends[]
+
+  @@unique([broadcast_id, run_at], map: "uk_wabcrun_bc_at")
+  @@index([organization_id, created_at], map: "idx_wabcrun_org")
+}
+
+// status: PENDING|DONE|FAILED|BLOCKED|PACED (limite do dia → volta amanhã)
+model whatsapp_broadcast_sends {
+  id              String                  @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                  @db.Char(36)
+  broadcast_id    String                  @db.Char(36)
+  run_id          String                  @db.Char(36)
+  target_kind     String                  @db.VarChar(8)
+  chat_id         String                  @db.VarChar(64)
+  contact_id      String?                 @db.Char(36)
+  status          String                  @default("PENDING") @db.VarChar(8)
+  attempts        Int                     @default(0)
+  msg_index       Int                     @default(0)
+  next_at         DateTime?               @db.DateTime(3)
+  last_error      String?                 @db.VarChar(500)
+  created_at      DateTime                @default(now()) @db.DateTime(3)
+  sent_at         DateTime?               @db.DateTime(3)
+  run             whatsapp_broadcast_runs @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcsend_run")
+
+  @@index([status, organization_id, next_at], map: "idx_wabcsend_queue")
+  @@index([run_id], map: "idx_wabcsend_run")
+}
+
+// Filtros personalizados do chat (abas com contatos/grupos escolhidos)
+model whatsapp_chat_filters {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(60)
+  chat_ids        Json?
+  position        Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, position], map: "idx_wafilter_org")
+}
+
+// Agendamento pontual: mensagens p/ N contatos/grupos em data/hora. status: pending|sending|sent|failed|canceled
+model whatsapp_schedules {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  targets         Json?
+  messages        Json?
+  schedule_at     DateTime  @db.DateTime(3)
+  status          String    @default("pending") @db.VarChar(12)
+  results         Json?
+  error           String?   @db.VarChar(255)
+  sent_at         DateTime? @db.DateTime(3)
+  created_by      String?   @db.Char(36)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, schedule_at], map: "idx_wasched_org")
+  @@index([status, schedule_at], map: "idx_wasched_due")
+}

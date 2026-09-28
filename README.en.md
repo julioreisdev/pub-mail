@@ -86,6 +86,16 @@ Typical flow: capture leads (webchat, quiz, website form, Telegram) → nurture 
 - **Rotating message (social proof)**: one message **edited in a loop** ("Someone just joined…") in groups/channels or in DMs, always kept as the last message, with anti-flood guards (minimum cadence, per-lead edit cap, detection of leads who left).
 - **Payments / VIP**: `/vip` → plans → **PIX** (Mercado Pago or PushinPay, QR + copy-paste with a copy button) → real gateway validation → **single-use invite link** to the VIP group/channel. **Time-based subscriptions** with reminder, expiration (removes from VIP) and renewal. Fully configurable checkout messages. Plan button also available in broadcasts, automations and flows.
 
+### WhatsApp
+Per-organization module (one number), built on the open-source **OpenWA** gateway (Docker, loopback):
+- **Settings**: connect via QR or pairing code, profile (photo/name/about), test message, import from phone, warm-up with a responsibility toggle.
+- **Chat**: conversations and groups with photos, media, quotes, forward, react, edit, delete, polls, recorded audio; custom filters (tabs with the contacts/groups you pick).
+- **Contacts**: phone address book + contacts saved to the organization (survive a number change), tags, CSV import/export.
+- **Status**: text/image/video/audio, now or scheduled.
+- **Scheduled messages**: one-off message to contacts/groups at a date and time; leaves the list once sent.
+- **Broadcasts**: audience by contacts/tags/groups, rotating copies, daily times, per-organization warm-up, per-send history.
+Bans are a real risk with any unofficial client: dedicated number + warm-up. Plan: `docs/plano-modulo-whatsapp.md`.
+
 ### Administration, Integrations and Account
 
 ![Integrations](docs/images/integracoes.png)
@@ -216,6 +226,8 @@ In the **Funnel Builder**, a sequence can end with **💳 PIX charge**: set the 
 | `HTTP_BODY_LIMIT`, `UPLOAD_MAX_FILE_SIZE_BYTES` | — | Upload limits |
 
 Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live in the database (`system_settings`) and are edited under **Integrations**.
+
+- `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_WEBHOOK_BASE` — WhatsApp gateway (OpenWA in Docker, loopback); `WHATSAPP_MEDIA_QUOTA_MB` (media quota per org, default 2048)
 
 ### AI micro
 
