@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebchatPaymentsService } from './webchat-payments.service';
+import { WhatsAppChargesService } from '../whatsapp/whatsapp-charges.service';
 
 const BRL = (cents: number) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-// Vendas unificadas (Webchat + Telegram) — mescla em memória e pagina.
+// Vendas unificadas (Webchat + Telegram + cobranças do WhatsApp) — mescla em memória e pagina.
 @Injectable()
 export class PaymentsSalesService {
-  constructor(private readonly prisma: PrismaService, private readonly webchat: WebchatPaymentsService) {}
+  constructor(private readonly prisma: PrismaService, private readonly webchat: WebchatPaymentsService, private readonly whatsapp: WhatsAppChargesService) {}
 
   private async telegramSales(orgId: string, status?: string) {
     const where: any = { organization_id: orgId };
@@ -42,16 +43,17 @@ export class PaymentsSalesService {
     const status = String(opts.status || 'all');
     const page = Math.max(1, parseInt(opts.page, 10) || 1);
     const pageSize = Math.min(50, Math.max(5, parseInt(opts.page_size, 10) || 15));
-    const [wc, tg]: [any[], any[]] = await Promise.all([
-      channel === 'telegram' ? Promise.resolve([] as any[]) : this.webchat.listSales(orgId, { status }),
-      channel === 'webchat' ? Promise.resolve([] as any[]) : this.telegramSales(orgId, status),
+    const [wc, tg, wa]: [any[], any[], any[]] = await Promise.all([
+      channel === 'all' || channel === 'webchat' ? this.webchat.listSales(orgId, { status }) : Promise.resolve([] as any[]),
+      channel === 'all' || channel === 'telegram' ? this.telegramSales(orgId, status) : Promise.resolve([] as any[]),
+      channel === 'all' || channel === 'whatsapp' ? this.whatsapp.listSales(orgId, status).catch(() => [] as any[]) : Promise.resolve([] as any[]),
     ]);
     // Filtros em memória (busca livre + período) — volumes por org são pequenos
     // e a mescla dos dois canais já acontece aqui.
     const q = String(opts.q || '').trim().toLowerCase();
     const from = opts.from ? new Date(String(opts.from)) : null;
     const to = opts.to ? new Date(String(opts.to)) : null;
-    const all = [...wc, ...tg]
+    const all = [...wc, ...tg, ...wa]
       .filter((s) => {
         if (q && !`${s.title} ${s.source_name} ${s.customer} ${s.provider}`.toLowerCase().includes(q)) return false;
         const t = new Date(s.created_at).getTime();
@@ -72,6 +74,7 @@ export class PaymentsSalesService {
       by_channel: {
         webchat: { paid: wc.filter((s) => s.status === 'PAID').length, revenue: BRL(wc.filter((s) => s.status === 'PAID').reduce((a, s) => a + s.amount_cents, 0)) },
         telegram: { paid: tg.filter((s) => s.status === 'PAID').length, revenue: BRL(tg.filter((s) => s.status === 'PAID').reduce((a, s) => a + s.amount_cents, 0)) },
+        whatsapp: { paid: wa.filter((s) => s.status === 'PAID').length, revenue: BRL(wa.filter((s) => s.status === 'PAID').reduce((a, s) => a + s.amount_cents, 0)) },
       },
     };
   }

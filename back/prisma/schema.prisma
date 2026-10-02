@@ -1484,6 +1484,7 @@ model whatsapp_sessions {
   organization_id   String    @unique(map: "uk_wasess_org") @db.Char(36)
   openwa_session_id String?   @db.VarChar(64)
   openwa_name       String?   @db.VarChar(64)
+  engine            String    @default("wwjs") @db.VarChar(16)
   status            String    @default("none") @db.VarChar(24)
   phone             String?   @db.VarChar(32)
   push_name         String?   @db.VarChar(255)
@@ -1548,6 +1549,7 @@ model whatsapp_contacts {
   is_business          Boolean   @default(false)
   is_my_contact        Boolean   @default(false)
   is_blocked           Boolean   @default(false)
+  opted_out_at         DateTime? @db.DateTime(3)
   saved                Boolean   @default(false)
   tags                 Json?
   notes                String?   @db.VarChar(500)
@@ -1561,6 +1563,7 @@ model whatsapp_contacts {
   @@unique([organization_id, wa_id], map: "uk_wacontact_org_wa")
   @@index([organization_id, phone], map: "idx_wacontact_org_phone")
   @@index([organization_id, saved], map: "idx_wacontact_org_saved")
+  @@index([organization_id, opted_out_at], map: "idx_wacontact_org_optout")
 }
 
 model whatsapp_chats {
@@ -1578,11 +1581,118 @@ model whatsapp_chats {
   muted                  Boolean   @default(false)
   group_meta             Json?
   synced_at              DateTime? @db.DateTime(3)
+  tags                   Json?
+  flag_overrides         Json?
+  service_status         String    @default("none") @db.VarChar(16)
+  assigned_user_id       String?   @db.Char(36)
+  service_started_at     DateTime? @db.DateTime(3)
+  service_last_human_at  DateTime? @db.DateTime(3)
+  service_closed_at      DateTime? @db.DateTime(3)
+  last_inbound_at        DateTime? @db.DateTime(3)
+  last_outbound_at       DateTime? @db.DateTime(3)
+  stage_id               String?   @db.Char(36)
+  deal_cents             Int?
+  stage_moved_at         DateTime? @db.DateTime(3)
   created_at             DateTime  @default(now()) @db.DateTime(0)
   updated_at             DateTime  @updatedAt @db.DateTime(0)
 
   @@unique([organization_id, chat_id], map: "uk_wachat_org_chat")
+  @@index([organization_id, stage_id], map: "idx_wachat_org_stage")
   @@index([organization_id, last_message_at], map: "idx_wachat_org_last")
+  @@index([organization_id, service_status], map: "idx_wachat_org_service")
+  @@index([organization_id, assigned_user_id], map: "idx_wachat_org_assigned")
+}
+
+model whatsapp_tags {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(40)
+  color           String   @default("#25D366") @db.VarChar(16)
+  position        Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id, name], map: "uk_watag_org_name")
+}
+
+model whatsapp_quick_replies {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  shortcut        String   @db.VarChar(40)
+  title           String?  @db.VarChar(80)
+  text            String?  @db.Text
+  media_id        String?  @db.Char(36)
+  position        Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id, shortcut], map: "uk_waqr_org_shortcut")
+}
+
+model whatsapp_service_events {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  chat_id         String   @db.VarChar(64)
+  event           String   @db.VarChar(32)
+  user_id         String?  @db.Char(36)
+  meta            Json?
+  created_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, chat_id, created_at], map: "idx_wasvc_org_chat")
+}
+
+model whatsapp_bot_flows {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @unique(map: "uk_wabot_org") @db.Char(36)
+  name            String    @default("Fluxo do bot") @db.VarChar(120)
+  active          Boolean   @default(false)
+  definition      Json?
+  settings        Json?
+  published_at    DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+}
+
+model whatsapp_bot_sessions {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  chat_id         String    @db.VarChar(64)
+  flow_id         String?   @db.Char(36)
+  node_id         String?   @db.VarChar(64)
+  status          String    @default("active") @db.VarChar(16)
+  vars            Json?
+  retries         Int       @default(0)
+  wait_until      DateTime? @db.DateTime(3)
+  payment_id      String?   @db.Char(36)
+  started_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @updatedAt @db.DateTime(3)
+
+  @@unique([organization_id, chat_id], map: "uk_wabs_org_chat")
+  @@index([status, wait_until], map: "idx_wabs_status_wait")
+}
+
+model whatsapp_payments {
+  id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String    @db.Char(36)
+  chat_id            String    @db.VarChar(64)
+  bot_session_id     String?   @db.Char(36)
+  node_id            String?   @db.VarChar(64)
+  provider           String    @db.VarChar(32)
+  provider_charge_id String?   @db.VarChar(128)
+  amount_cents       Int
+  description        String?   @db.VarChar(255)
+  status             String    @default("PENDING") @db.VarChar(16)
+  pix_code           String?   @db.Text
+  qr_base64          String?   @db.MediumText
+  expires_at         DateTime? @db.DateTime(3)
+  paid_at            DateTime? @db.DateTime(3)
+  context            Json?
+  created_at         DateTime  @default(now()) @db.DateTime(3)
+  updated_at         DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, chat_id], map: "idx_wapay_org_chat")
+  @@index([status, expires_at], map: "idx_wapay_status")
+  @@index([provider_charge_id], map: "idx_wapay_charge")
 }
 
 model whatsapp_messages {
@@ -1744,4 +1854,235 @@ model whatsapp_schedules {
 
   @@index([organization_id, schedule_at], map: "idx_wasched_org")
   @@index([status, schedule_at], map: "idx_wasched_due")
+}
+
+model whatsapp_contact_statuses {
+  id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String    @db.Char(36)
+  wa_status_id     String    @db.VarChar(191)
+  contact_jid      String    @db.VarChar(64)
+  chat_id          String    @db.VarChar(64)
+  contact_name     String?   @db.VarChar(255)
+  type             String    @default("text") @db.VarChar(16)
+  caption          String?   @db.Text
+  background_color String?   @db.VarChar(16)
+  font             Int?
+  media_id         String?   @db.Char(36)
+  media_omitted    Boolean   @default(false)
+  posted_at        DateTime  @db.DateTime(3)
+  expires_at       DateTime  @db.DateTime(3)
+  viewed_at        DateTime? @db.DateTime(3)
+  created_at       DateTime  @default(now()) @db.DateTime(3)
+
+  @@unique([organization_id, wa_status_id], map: "uk_wacs_org_status")
+  @@index([organization_id, expires_at], map: "idx_wacs_org_expires")
+}
+
+// WhatsApp CRM (02/10/2026): produtos/serviços, clientes (contato promovido) e assinaturas.
+// FKs só no banco (org/contato/cliente ON DELETE CASCADE; produto SET NULL).
+model whatsapp_crm_settings {
+  organization_id String   @id @db.Char(36)
+  custom_fields   Json?
+  charge          Json?
+  pipeline        Json?
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+}
+
+model whatsapp_products {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(120)
+  description     String?  @db.VarChar(500)
+  price_cents     Int      @default(0)
+  billing         String   @default("once") @db.VarChar(16)
+  active          Boolean  @default(true)
+  position        Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, active, position], map: "idx_waprod_org")
+}
+
+model whatsapp_customers {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  contact_id      String    @db.Char(36)
+  name            String    @db.VarChar(255)
+  doc             String?   @db.VarChar(20)
+  email           String?   @db.VarChar(255)
+  address         Json?
+  notes           String?   @db.Text
+  custom          Json?
+  status          String    @default("active") @db.VarChar(16)
+  since           DateTime? @db.Date
+  created_by      String?   @db.Char(36)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@unique([organization_id, contact_id], map: "uk_wacust_contact")
+  @@index([organization_id, status], map: "idx_wacust_org_status")
+  @@index([organization_id, name], map: "idx_wacust_org_name")
+}
+
+model whatsapp_subscriptions {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  customer_id     String    @db.Char(36)
+  product_id      String?   @db.Char(36)
+  product_name    String    @db.VarChar(120)
+  price_cents     Int       @default(0)
+  billing         String    @default("monthly") @db.VarChar(16)
+  due_day         Int?      @db.TinyInt
+  status          String    @default("active") @db.VarChar(16)
+  started_at      DateTime? @db.Date
+  next_due_at     DateTime? @db.Date
+  last_paid_at    DateTime? @db.DateTime(3)
+  canceled_at     DateTime? @db.DateTime(3)
+  notes           String?   @db.VarChar(500)
+  created_at      DateTime  @default(now()) @db.DateTime(0)
+  updated_at      DateTime  @updatedAt @db.DateTime(0)
+
+  @@index([customer_id, status], map: "idx_wasub_customer")
+  @@index([organization_id, status, next_due_at], map: "idx_wasub_org_due")
+  @@index([product_id], map: "idx_wasub_product")
+}
+
+model whatsapp_charges {
+  id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String    @db.Char(36)
+  customer_id      String    @db.Char(36)
+  subscription_id  String?   @db.Char(36)
+  product_id       String?   @db.Char(36)
+  chat_id          String    @db.VarChar(64)
+  kind             String    @default("pix") @db.VarChar(8)
+  amount_cents     Int
+  description      String    @db.VarChar(255)
+  due_at           DateTime  @db.Date
+  status           String    @default("PENDING") @db.VarChar(16)
+  origin           String    @default("manual") @db.VarChar(16)
+  provider         String?   @db.VarChar(32)
+  pix_charge_id    String?   @db.VarChar(128)
+  pix_code         String?   @db.Text
+  pix_qr_media_id  String?   @db.Char(36)
+  pix_expires_at   DateTime? @db.DateTime(3)
+  boleto_charge_id String?   @db.VarChar(128)
+  boleto_url       String?   @db.VarChar(500)
+  boleto_barcode   String?   @db.VarChar(80)
+  boleto_digitable String?   @db.VarChar(80)
+  boleto_expires_at DateTime? @db.DateTime(3)
+  paid_via         String?   @db.VarChar(16)
+  paid_at          DateTime? @db.DateTime(3)
+  paid_manual_by   String?   @db.Char(36)
+  sent_at          DateTime? @db.DateTime(3)
+  reminders        Json?
+  error            String?   @db.VarChar(255)
+  created_by       String?   @db.Char(36)
+  created_at       DateTime  @default(now()) @db.DateTime(3)
+  updated_at       DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, status, due_at], map: "idx_wachg_org_status_due")
+  @@index([customer_id, created_at], map: "idx_wachg_customer")
+  @@index([subscription_id, due_at], map: "idx_wachg_sub_due")
+  @@index([pix_charge_id], map: "idx_wachg_pix")
+  @@index([boleto_charge_id], map: "idx_wachg_boleto")
+}
+
+// Plugin WordPress "Tradutor Invisível" vinculado à conta (FKs só no banco, ON DELETE CASCADE).
+model wp_plugin_licenses {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  key_hash        String    @db.Char(64)
+  key_prefix      String    @db.VarChar(20)
+  key_enc         String    @db.Text
+  created_by      String?   @db.Char(36)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  revoked_at      DateTime? @db.DateTime(3)
+  last_check_at   DateTime? @db.DateTime(3)
+
+  @@unique([key_hash], map: "uk_wplic_hash")
+  @@index([organization_id, revoked_at], map: "idx_wplic_org")
+}
+
+model wp_plugin_sites {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  license_id      String   @db.Char(36)
+  organization_id String   @db.Char(36)
+  site_host       String   @db.VarChar(190)
+  site_url        String   @db.VarChar(255)
+  plugin_version  String?  @db.VarChar(20)
+  wp_version      String?  @db.VarChar(20)
+  php_version     String?  @db.VarChar(20)
+  last_active     Boolean  @default(true)
+  checks          Int      @default(0)
+  first_seen_at   DateTime @default(now()) @db.DateTime(3)
+  last_seen_at    DateTime @default(now()) @db.DateTime(3)
+
+  @@unique([license_id, site_host], map: "uk_wpsite_lic_host")
+  @@index([organization_id, last_seen_at], map: "idx_wpsite_org")
+}
+
+// WhatsApp CRM fase 3 (02/10/2026): funil (Kanban), tarefas e notas internas. FK org no banco (CASCADE).
+model whatsapp_pipeline_stages {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(60)
+  color           String   @default("#3B82F6") @db.VarChar(16)
+  position        Int      @default(0)
+  kind            String   @default("open") @db.VarChar(8)
+  actions         Json?
+  created_at      DateTime @default(now()) @db.DateTime(0)
+  updated_at      DateTime @updatedAt @db.DateTime(0)
+
+  @@index([organization_id, position], map: "idx_wastage_org")
+}
+
+model whatsapp_tasks {
+  id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String    @db.Char(36)
+  title            String    @db.VarChar(160)
+  description      String?   @db.Text
+  due_at           DateTime? @db.DateTime(3)
+  assigned_user_id String?   @db.Char(36)
+  chat_id          String?   @db.VarChar(64)
+  customer_id      String?   @db.Char(36)
+  done_at          DateTime? @db.DateTime(3)
+  done_by          String?   @db.Char(36)
+  reminded_at      DateTime? @db.DateTime(3)
+  created_by       String?   @db.Char(36)
+  created_at       DateTime  @default(now()) @db.DateTime(3)
+  updated_at       DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, done_at, due_at], map: "idx_watask_org_due")
+  @@index([organization_id, assigned_user_id], map: "idx_watask_org_user")
+  @@index([organization_id, chat_id], map: "idx_watask_org_chat")
+}
+
+model whatsapp_chat_notes {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  chat_id         String   @db.VarChar(64)
+  user_id         String?  @db.Char(36)
+  text            String   @db.Text
+  pinned          Boolean  @default(false)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+  updated_at      DateTime @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, chat_id, created_at], map: "idx_wanote_org_chat")
+}
+
+// WhatsApp CRM fase 4 (02/10/2026): satisfação pós-atendimento. FK org no banco (CASCADE).
+model whatsapp_ratings {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  chat_id         String    @db.VarChar(64)
+  user_id         String?   @db.Char(36)
+  score           Int?      @db.TinyInt
+  comment         String?   @db.Text
+  asked_at        DateTime  @default(now()) @db.DateTime(3)
+  answered_at     DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, asked_at], map: "idx_warating_org_asked")
+  @@index([organization_id, user_id], map: "idx_warating_org_user")
+  @@index([organization_id, chat_id], map: "idx_warating_org_chat")
 }

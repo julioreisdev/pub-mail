@@ -13,6 +13,7 @@ import NavigationScroll from 'layout/NavigationScroll';
 import Sidebar from './Sidebar';
 import MainContentStyled from './MainContentStyled';
 import AccessGate from './AccessGate';
+import WaTaskAlerts from './WaTaskAlerts';
 import Loader from 'ui-component/Loader';
 import Breadcrumbs from 'ui-component/extended/Breadcrumbs';
 
@@ -73,13 +74,12 @@ export default function MainLayout() {
 
       {/* main content */}
       <MainContentStyled {...{ borderRadius, open: downMD ? false : drawerOpen }}>
-        <Box
-          sx={{ px: { xs: 0 }, pt: { xs: 5, md: 0 }, minHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}
-        >
+        <Box sx={{ px: { xs: 0 }, pt: { xs: 5, md: 0 }, minHeight: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
           <Breadcrumbs />
           <NavigationScroll />
           {/* assinatura/módulos: trava a tela se a conta precisa pagar; boas-vindas; aviso de renovação */}
           <AccessGate>
+            <WaTaskAlerts />
             <Outlet />
           </AccessGate>
           <Footer />

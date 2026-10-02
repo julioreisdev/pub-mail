@@ -200,6 +200,11 @@ const fetcherWithConfig = ([url, config]) => get(url, config);
  * ============================
  */
 
+/** Renova o access token (uma renovação por vez). Usado pelo WebSocket quando o token expira. */
+export function refreshAccessToken() {
+    return ensureRefresh();
+}
+
 export { api, get, post, put, patch, remove, fetcher, fetcherWithParams, fetcherWithConfig };
 
 export default api;

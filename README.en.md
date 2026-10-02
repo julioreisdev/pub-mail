@@ -17,6 +17,8 @@ A **multi-tenant** marketing and automation platform: **AI-powered webchats**, *
   - [Email Marketing](#email-marketing)
   - [Leads and Automations](#leads-and-automations)
   - [Telegram](#telegram)
+  - [WhatsApp](#whatsapp)
+  - [WordPress — Invisible Translator](#wordpress--invisible-translator)
   - [Administration, Integrations and Account](#administration-integrations-and-account)
 - [Architecture](#architecture)
 - [Stack](#stack)
@@ -87,14 +89,25 @@ Typical flow: capture leads (webchat, quiz, website form, Telegram) → nurture 
 - **Payments / VIP**: `/vip` → plans → **PIX** (Mercado Pago or PushinPay, QR + copy-paste with a copy button) → real gateway validation → **single-use invite link** to the VIP group/channel. **Time-based subscriptions** with reminder, expiration (removes from VIP) and renewal. Fully configurable checkout messages. Plan button also available in broadcasts, automations and flows.
 
 ### WhatsApp
-Per-organization module (one number), built on the open-source **OpenWA** gateway (Docker, loopback):
-- **Settings**: connect via QR or pairing code, profile (photo/name/about), test message, import from phone, warm-up with a responsibility toggle.
-- **Chat**: conversations and groups with photos, media, quotes, forward, react, edit, delete, polls, recorded audio; custom filters (tabs with the contacts/groups you pick).
+Per-organization module (1 number) on top of the open-source **OpenWA** gateway (Docker, loopback), with **real-time** updates (WebSocket):
+- **Settings**: connect by QR or code, profile (photo/name/about), test, **connection engine** (direct/Baileys, recommended, or WhatsApp Web; one-click migration), **phone sync** with live progress, warm-up, attendance (auto-close after X h, agent signature), **labels**, **quick replies** and connection diagnostics.
+- **Chat**: chats and groups with photos and every media type (download), quote, forward, react, edit, delete, polls, voice notes; read/unread synced with the phone; filters (Unread, DMs, Groups, My attendances, custom and advanced filters by label, attendance, agent and "no reply for X h"); **attendance** (assume, transfer, queue, close, send to bot, history) with automatic labels (Bot, agent, Queue); `/shortcut` quick replies.
+- **Bot flow**: visual builder (messages with media, numbered options, validated questions with variables, conditions, labels, wait, **PIX charge**, hand off to an agent, close) + simulator; audience in test mode, by label or everyone; business hours; the bot stops when a human replies and comes back after X h.
 - **Contacts**: phone address book + contacts saved to the organization (survive a number change), tags, CSV import/export.
-- **Status**: text/image/video/audio, now or scheduled.
-- **Scheduled messages**: one-off message to contacts/groups at a date and time; leaves the list once sent.
-- **Broadcasts**: audience by contacts/tags/groups, rotating copies, daily times, per-organization warm-up, per-send history.
-Bans are a real risk with any unofficial client: dedicated number + warm-up. Plan: `docs/plano-modulo-whatsapp.md`.
+- **Status**: view and reply to contacts' statuses; post text/image/video/audio now or scheduled.
+- **Schedules**: one-off message to contacts/groups at a date and time; disappears from the list once sent.
+- **Broadcasts**: audience by contacts/tags/groups, rotating copies, daily times, per-organization warm-up, per-run history.
+- **Customer-service CRM** (Oct 2, 2026): **Products** (price, one-off/monthly/quarterly/yearly billing) and **Customers** (promoted contact, tax id, e-mail, address, custom fields, subscriptions with due dates, CSV import/export) with a side panel in the chat and `{{cliente.*}}` variables in any message; **Charges** by PIX and/or boleto (Mercado Pago) sent in the conversation, automatic recurring charges before the due date, reminder cadence, automatic confirmation, receipt and an "Overdue" label; Kanban **pipeline** (stages with actions: message, labels, task; auto-entry and "paid → stage"), **Tasks** with due alerts and **internal notes**; **Metrics** (first response, resolution, per agent/label, satisfaction, charges), **satisfaction survey** on close, **automatic queue distribution** (round robin / least busy among online agents) and **LGPD/GDPR opt-out** (a stop word removes the contact from bulk sends). Plan: `docs/plano-whatsapp-crm.md`; customer guide (PT): `WhatsApp - CRM e Cobranças.pdf`.
+Bans are a real risk with any unofficial client: dedicated number + warm-up. Plans: `docs/plano-modulo-whatsapp.md` and `docs/plano-whatsapp-v2.md`.
+
+### WordPress — Invisible Translator
+
+WordPress plugin ("Tradutor Invisível") that shows every post and page in the language of each visitor's browser, with no buttons or pop-ups (built for paid traffic to many countries from a single piece of content). Code in `wordpress/tradutor-invisivel/`, build and test kit in `wordpress/tradutor-invisivel-dev/`, plan and results in `docs/plano-tradutor-invisivel.md`.
+
+- **WordPress → Tradução Invisível** (`wordpress` module): **Download plugin** button (the `.zip` already carries the account key), 3 installation steps, list of the sites using the plugin and **Generate a new key**. Unlimited sites.
+- **License tied to the account:** the plugin checks its license with Pub Mail every hour (every 5 min while stopped) and only accepts a **signed** answer (Ed25519). Expired, blocked or without the module = the plugin stops immediately (no grace period) and comes back by itself after renewal. **Automatic updates** through WordPress itself, with the package served by Pub Mail.
+- **100% of the page and the address in the visitor's language:** it also translates everything around the post (menus, other posts, comments, theme texts — these from their English originals) and switches the address bar (`/grow-tomatoes/` → `/cultivando-tomates-em-casa/`), which opens the same page when shared. Tested with Twenty Twenty-Five, Kadence and Twenty Twenty-One.
+- **Standalone edition:** `/tradutor-invisivel.zip` (repository root) works without a license, for separate sale.
 
 ### Administration, Integrations and Account
 
@@ -227,7 +240,8 @@ In the **Funnel Builder**, a sequence can end with **💳 PIX charge**: set the 
 
 Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live in the database (`system_settings`) and are edited under **Integrations**.
 
-- `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_WEBHOOK_BASE` — WhatsApp gateway (OpenWA in Docker, loopback); `WHATSAPP_MEDIA_QUOTA_MB` (media quota per org, default 2048)
+- `WP_PLUGIN_SIGNING_KEY` (signs the WordPress plugin license; never change it once you have customers), `APP_PUBLIC_URL` and `WP_PLUGIN_SOURCE_DIR` (optional)
+- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (WhatsApp gateway with the Baileys engine, recommended) and `OPENWA_URL` / `OPENWA_API_KEY` (whatsapp-web.js gateway, optional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (media quota per org, default 2048)
 
 ### AI micro
 
@@ -314,7 +328,7 @@ Three units — `pubmail-back` (`node dist/src/main.js`, port 8000, **runs as ro
 
 - **Front** vhost (platform domain): `root /opt/pub-mail/front/vite/dist` + `try_files $uri /index.html`.
 - **API** vhost (`api.<domain>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **before** `location / { proxy_pass http://127.0.0.1:8000; }`.
-- `000-default-deny` (`default_server` returning 444) for unknown hosts.
+- `000-default-deny` (`default_server` returning 444) and `000-default-deny-ssl` (`default_server` on 443 with `ssl_reject_handshake on`) for unknown hosts.
 - `certbot --nginx --redirect -d <front> -d www.<front> -d api.<front>` (plus a 443 `server` for `www.<front>` returning `301` to the apex). Customer domains are provisioned by the system itself (automatic vhost + certbot when clicking "Verify DNS").
 - Firewall: only **80/443** (plus whatever admin access the infra team defines).
 

@@ -249,6 +249,22 @@ export class AdminService {
           await tx.billing_cards.deleteMany(where);
           await tx.wallets.deleteMany(where);
           await tx.organization_settings.deleteMany(where); // chaves de API da org
+          await tx.whatsapp_ratings.deleteMany(where);
+          await tx.whatsapp_tasks.deleteMany(where); // CRM do WhatsApp (tarefas, notas, funil, cobranças, assinaturas, clientes, produtos)
+          await tx.whatsapp_chat_notes.deleteMany(where);
+          await tx.whatsapp_pipeline_stages.deleteMany(where);
+          await tx.whatsapp_charges.deleteMany(where);
+          await tx.whatsapp_subscriptions.deleteMany(where);
+          await tx.whatsapp_customers.deleteMany(where);
+          await tx.whatsapp_products.deleteMany(where);
+          await tx.whatsapp_crm_settings.deleteMany(where);
+          await tx.whatsapp_contact_statuses.deleteMany(where);
+          await tx.whatsapp_payments.deleteMany(where);
+          await tx.whatsapp_bot_sessions.deleteMany(where);
+          await tx.whatsapp_bot_flows.deleteMany(where);
+          await tx.whatsapp_service_events.deleteMany(where);
+          await tx.whatsapp_quick_replies.deleteMany(where);
+          await tx.whatsapp_tags.deleteMany(where);
           await tx.whatsapp_schedules.deleteMany(where);
           await tx.whatsapp_chat_filters.deleteMany(where);
           await tx.whatsapp_broadcast_sends.deleteMany(where);
@@ -262,6 +278,8 @@ export class AdminService {
           await tx.whatsapp_media.deleteMany(where); // metadados; arquivos em protected/whatsapp/<org> ficam p/ limpeza
           await tx.whatsapp_session_events.deleteMany(where);
           await tx.whatsapp_sessions.deleteMany(where); // sessão WhatsApp (gateway já limpo antes da transação)
+          await tx.wp_plugin_sites.deleteMany(where); // plugin WordPress (sites e chaves)
+          await tx.wp_plugin_licenses.deleteMany(where);
           await tx.platform_payments.deleteMany(where); // cobranças de assinatura
           await tx.organization_access.deleteMany(where); // plano de acesso
 

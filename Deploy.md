@@ -55,7 +55,7 @@ Este guia foi escrito para ser seguido **de cima para baixo, sem pular etapas**,
 20. [Verificação final (checklist)](#20-verificação-final)
 21. [Pós-instalação (o que configurar dentro do painel)](#21-pós-instalação)
 22. [WhatsApp (OpenWA em Docker) — opcional](#22-whatsapp-openwa-em-docker--opcional)
-23. [Atualizando o sistema (redeploy de front, back e micros)](#23-atualizando-o-sistema)
+23. [Atualizando o sistema (redeploy de front, back, micros e plugin WordPress)](#23-atualizando-o-sistema)
 24. [Operação do dia a dia (logs, banco, backup)](#24-operação-do-dia-a-dia)
 25. [Solução de problemas (todas as armadilhas conhecidas)](#25-solução-de-problemas)
 26. [Instalando uma segunda cópia (outra empresa / outro domínio)](#26-instalando-uma-segunda-cópia)
@@ -89,7 +89,7 @@ Pastas importantes no servidor:
 /opt/pub-mail/front/vite/dist/ build do front (o que o nginx serve)
 /root/pubmail.secrets          segredos gerados na instalação (600)
 /etc/systemd/system/pubmail-*.service
-/etc/nginx/sites-available/{pubmail-front,pubmail-api,000-default-deny}
+/etc/nginx/sites-available/{pubmail-front,pubmail-api,000-default-deny,000-default-deny-ssl}
 ```
 
 ---
@@ -263,6 +263,7 @@ JWT_ACCESS_SECRET=$(openssl rand -hex 32)
 JWT_REFRESH_SECRET=$(openssl rand -hex 32)
 IA_SERVICE_KEY=$(openssl rand -hex 32)
 EMAIL_SERVICE_KEY=$(openssl rand -hex 32)
+WP_PLUGIN_SIGNING_KEY=$(openssl rand -hex 32)
 EOF2
 # chmod 600 /root/pubmail.secrets
 # umask 022     # ← IMPORTANTE: volte o umask ao normal antes de criar outros arquivos
@@ -380,6 +381,7 @@ Em ambos os casos, confira:
 
 - `uploads/` é servido **diretamente pelo nginx** (precisa de 755).
 - `protected/` guarda os produtos vendidos no webchat; é lido só pelo back e entregue por URL assinada. **Não** pode aparecer em nenhum `location` do nginx.
+- `wordpress/tradutor-invisivel/` (vem junto com o código) é o plugin WordPress do módulo **WordPress**: o back monta dele o `.zip` que cada cliente baixa, com a chave da conta embutida. Confira que os scripts compilados existem: `ls /opt/pub-mail/wordpress/tradutor-invisivel/assets/*.min.js` (3 arquivos). Ao atualizar o plugin, envie essa pasta de novo — os sites dos clientes recebem a versão nova pela atualização automática do WordPress.
 
 **✅ Resultado esperado:** `ls /opt/pub-mail` mostra `back  ai-micro-services  email-micro-services  front  README.md …`; a busca por `.env` não lista nada (os `.env` são criados na seção 11).
 
@@ -432,6 +434,7 @@ SOCIAL_POST_SCHEDULE_TOKENS_COST=0
 AVATAR_GENERATION_TOKENS_COST=0
 HTTP_BODY_LIMIT=200mb
 STRIPE_SECRET_KEY=sk_test_disabled_placeholder
+WP_PLUGIN_SIGNING_KEY=$WP_PLUGIN_SIGNING_KEY
 EOF2
 
 # cat > /opt/pub-mail/ai-micro-services/.env <<EOF2
@@ -491,6 +494,9 @@ EOF2
 | `EMAIL_TOKENS_FOR_ONE_LEAD` … `AVATAR_GENERATION_TOKENS_COST` | `0` | Custos internos em "tokens" (carteira). Com `0` nada é cobrado. |
 | `HTTP_BODY_LIMIT` | `200mb` | Limite do body JSON/urlencoded do Express. Casa com o `client_max_body_size` do nginx. |
 | `STRIPE_SECRET_KEY` | `sk_test_disabled_placeholder` | **Não pode ficar vazio**: o `BillingService` lança erro no boot e o back não sobe. O placeholder é inerte porque o Stripe está desligado no front. |
+| `WP_PLUGIN_SIGNING_KEY` | aleatório (hex 32) | Módulo **WordPress**: assina a verificação de licença dos plugins "Tradutor Invisível" instalados nos sites dos clientes. **Nunca troque depois de ter clientes**: os plugins instalados deixariam de aceitar as respostas até atualizarem. Sem ela, o back deriva uma do `JWT_ACCESS_SECRET` (e aí trocar o JWT pararia os plugins). |
+| `APP_PUBLIC_URL` (opcional) | `https://SEU-DOMINIO` | Endereço do painel usado no botão "Abrir o Pub Mail" do plugin. Padrão: `PUBLIC_API_URL` sem o `api.`. |
+| `WP_PLUGIN_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/tradutor-invisivel` | Pasta com o código do plugin, de onde o back monta o `.zip` de cada cliente. Padrão: `../wordpress/tradutor-invisivel` a partir de `back/`. |
 
 ### 11.2 Micro de IA (`ai-micro-services/.env`)
 
@@ -770,13 +776,26 @@ EOF2
 # cat > /etc/nginx/sites-available/000-default-deny <<'EOF2'
 server { listen 80 default_server; listen [::]:80 default_server; server_name _; return 444; }
 EOF2
+# cat > /etc/nginx/sites-available/000-default-deny-ssl <<'EOF2'
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+EOF2
 ```
+
+- O primeiro arquivo recusa, na porta 80, qualquer endereço que não seja um site cadastrado.
+- O segundo faz o mesmo na porta 443. Sem ele, o nginx entrega o **primeiro site com HTTPS que encontrar** (normalmente a API) para o IP puro, para subdomínios inventados e para domínio de cliente cujo certificado ainda não saiu. Foi isso que fez um quiz aparecer como "Cannot GET /quiz/…" quando o certificado dele falhou. Com a regra, esses acessos recebem erro de SSL (no Cloudflare, erro 525), que aponta direto para o certificado.
+- `ssl_reject_handshake` não precisa de certificado (nginx 1.19.4 ou mais novo), então pode ser criado antes do certbot. Ele não atrapalha a emissão: a validação do Let's Encrypt acontece pela porta 80.
 
 ### 17.4 Ativar
 
 ```
 # rm -f /etc/nginx/sites-enabled/default
 # ln -sf /etc/nginx/sites-available/000-default-deny /etc/nginx/sites-enabled/000-default-deny
+# ln -sf /etc/nginx/sites-available/000-default-deny-ssl /etc/nginx/sites-enabled/000-default-deny-ssl
 # ln -sf /etc/nginx/sites-available/pubmail-front  /etc/nginx/sites-enabled/pubmail-front
 # ln -sf /etc/nginx/sites-available/pubmail-api    /etc/nginx/sites-enabled/pubmail-api
 # sed -i 's/^\s*# server_tokens off;/\tserver_tokens off;/' /etc/nginx/nginx.conf
@@ -893,7 +912,9 @@ Tudo abaixo é feito **dentro do painel**, por organização (nada é compartilh
 
 ## 22. WhatsApp (OpenWA em Docker) — opcional
 
-O módulo WhatsApp do Pub Mail usa o **OpenWA** (gateway open source) rodando em Docker, **só em loopback** (`127.0.0.1:2785`). O back fala com ele por HTTP e recebe eventos por webhook. Instale só se for usar o módulo.
+O módulo WhatsApp do Pub Mail usa o **OpenWA** (gateway open source) rodando em Docker, **só em loopback**. O back fala com ele por HTTP, recebe eventos por webhook e empurra tudo para o navegador por WebSocket (`/realtime`, já coberto pelo `Upgrade` do vhost da API). Instale só se for usar o módulo.
+
+O OpenWA roda **um motor por container**. Use o motor **Baileys**: ele baixa as mídias que os clientes enviam, faz a sincronização inicial do celular e gasta ~100 MB por número. O motor `whatsapp-web.js` **não baixa mídia recebida** desde julho de 2026 (defeito da biblioteca, sem correção) e só fica documentado como alternativa.
 
 ### 22.1 Docker
 
@@ -902,46 +923,59 @@ apt-get install -y docker.io docker-compose-v2
 systemctl enable --now docker
 ```
 
-### 22.2 OpenWA
+### 22.2 OpenWA com o motor Baileys (recomendado)
 
 ```bash
-mkdir -p /opt/openwa/data && cd /opt/openwa
+mkdir -p /opt/openwa-baileys/data && cd /opt/openwa-baileys
 umask 077
 cat > .env <<EOF2
-API_MASTER_KEY=pm_$(openssl rand -hex 24)
-API_KEY_PEPPER=$(openssl rand -hex 16)
-ENGINE_TYPE=whatsapp-web.js
+API_MASTER_KEY=$(openssl rand -hex 32)
+API_KEY_PEPPER=$(openssl rand -hex 32)
+ENGINE_TYPE=baileys
 PORT=2785
 NODE_ENV=production
 AUTO_START_SESSIONS=true
-MAX_CONCURRENT_SESSIONS=8
+MAX_CONCURRENT_SESSIONS=40
 SESSION_DATA_PATH=/app/data/sessions
 DATABASE_TYPE=sqlite
 WEBHOOK_SSRF_PROTECT=true
 SSRF_ALLOWED_HOSTS=host.docker.internal
 RESOLVE_LID_TO_PHONE=true
 SEND_PACING_ENABLED=false
+BAILEYS_MARK_ONLINE_ON_CONNECT=false
+BAILEYS_BROWSER_NAME=Ubuntu
+SIMULATE_TYPING=false
+WEBHOOK_MEDIA_INLINE_MAX_BYTES=8388608
+WEBHOOK_MAX_PAYLOAD_BYTES=12582912
+RATE_LIMIT_SHORT_LIMIT=100
+RATE_LIMIT_MEDIUM_LIMIT=3000
+RATE_LIMIT_LONG_LIMIT=100000
 EOF2
 umask 022
 cat > docker-compose.yml <<'EOF2'
 services:
-  openwa:
+  openwa-baileys:
     image: ghcr.io/rmyndharis/openwa:0.23.7
-    container_name: openwa
+    container_name: openwa-baileys
     restart: unless-stopped
     env_file: .env
-    ports: ["127.0.0.1:2785:2785"]
+    ports: ["127.0.0.1:2786:2785"]
     volumes: ["./data:/app/data"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    mem_limit: 3g
-    pids_limit: 2048
-    shm_size: 1g
+    mem_limit: 1536m
+    pids_limit: 512
 EOF2
 docker compose pull && docker compose up -d
-sleep 20 && curl -s http://127.0.0.1:2785/api/health     # {"status":"ok"}
+sleep 20 && curl -s http://127.0.0.1:2786/api/health     # {"status":"ok"}
 ```
 
-> **Engine:** `whatsapp-web.js` gasta 300–500 MB de RAM por número conectado (Chrome headless). Em uma VPS de 8 GB cabem ~6–8 organizações; acima disso, VPS dedicada ao OpenWA. Não troque de engine com sessões ativas. **Atualize o OpenWA só manualmente** (troque a tag da imagem, `docker compose pull && up -d`): o projeto lança várias versões por semana com mudanças incompatíveis.
+- `BAILEYS_MARK_ONLINE_ON_CONNECT=false` é importante: sem isso o celular do cliente para de receber notificações enquanto o gateway estiver conectado.
+- `SIMULATE_TYPING=false`: o Pub Mail faz o próprio "digitando…" no bot; o do OpenWA atrasaria cada mensagem enviada pelo painel.
+- Os dois `WEBHOOK_*` fazem mídia de até 8 MB chegar direto no webhook; acima disso o Pub Mail baixa pela rota de mídia do gateway.
+- Os `RATE_LIMIT_*` sobem o limite da API do gateway (o padrão é 100 requisições por minuto). O único cliente é o back do Pub Mail, que atende todas as organizações e carrega dezenas de fotos de uma vez; com o padrão, avatares e mídias de status falham com 429. Aplique o mesmo no gateway whatsapp-web.js, se usar.
+- **Atualize o OpenWA só manualmente** (troque a tag da imagem, `docker compose pull && up -d`): o projeto lança várias versões por semana com mudanças incompatíveis.
+
+> **Alternativa (não recomendada): motor whatsapp-web.js.** Mesmo passo a passo em `/opt/openwa`, com `ENGINE_TYPE=whatsapp-web.js`, porta `127.0.0.1:2785:2785`, `mem_limit: 3g`, `pids_limit: 2048`, `shm_size: 1g` (Chrome headless, 300–500 MB por número) e as variáveis `OPENWA_URL`/`OPENWA_API_KEY` no back. O Pub Mail aceita os dois gateways ao mesmo tempo (motor por conexão, com botão de migrar em Configurações), mas neste motor as mídias recebidas não chegam.
 
 ### 22.3 Firewall (o container precisa alcançar o back)
 
@@ -949,19 +983,21 @@ O webhook do OpenWA chega no back pelo endereço `host.docker.internal:8000`. O 
 
 ```bash
 ufw allow from 172.16.0.0/12 to any port 8000 proto tcp comment 'openwa -> pubmail back'
-docker exec openwa node -e "fetch('http://host.docker.internal:8000/auth/me').then(r=>console.log(r.status))"   # 401 = alcançou
+docker exec openwa-baileys node -e "fetch('http://host.docker.internal:8000/auth/me').then(r=>console.log(r.status))"   # 401 = alcançou
 ```
 
 ### 22.4 `.env` do back
 
 ```bash
-KEY=$(grep ^API_MASTER_KEY= /opt/openwa/.env | cut -d= -f2)
+KEY=$(grep ^API_MASTER_KEY= /opt/openwa-baileys/.env | cut -d= -f2)
 cat >> /opt/pub-mail/back/.env <<EOF2
 
 # ---- WhatsApp (OpenWA em Docker, só loopback) ----
-OPENWA_URL=http://127.0.0.1:2785/api
-OPENWA_API_KEY=$KEY
+OPENWA_BAILEYS_URL=http://127.0.0.1:2786/api
+OPENWA_BAILEYS_API_KEY=$KEY
+WHATSAPP_DEFAULT_ENGINE=baileys
 OPENWA_WEBHOOK_BASE=http://host.docker.internal:8000
+# OPENWA_URL / OPENWA_API_KEY   # só se também rodar o gateway whatsapp-web.js (porta 2785)
 # WHATSAPP_MEDIA_QUOTA_MB=2048   # cota de mídia por organização (padrão 2 GB)
 EOF2
 mkdir -p /opt/pub-mail/back/protected/whatsapp && chmod 750 /opt/pub-mail/back/protected/whatsapp
@@ -970,19 +1006,23 @@ systemctl restart pubmail-back
 
 ### 22.5 Backup do volume (sessões WhatsApp)
 
-O volume `/opt/openwa/data` guarda as credenciais das sessões pareadas. Sem backup, um disco perdido obriga todo cliente a escanear o QR de novo. Script + timer diário (04:30 UTC, 7 dias de retenção):
+O volume `data/` de cada gateway guarda as credenciais das sessões pareadas. Sem backup, um disco perdido obriga todo cliente a escanear o QR de novo. Script + timer diário (04:30 UTC, 7 dias de retenção) cobrindo os gateways que existirem:
 
 ```bash
 mkdir -p /opt/backups/openwa /opt/openwa/bin && chmod 700 /opt/backups
 cat > /opt/openwa/bin/backup.sh <<'EOF2'
 #!/bin/bash
 set -euo pipefail
-DEST=/opt/backups/openwa; STAMP=$(date +%F)
-docker pause openwa >/dev/null 2>&1 || true
-tar -czf "$DEST/openwa-data-$STAMP.tar.gz" -C /opt/openwa data .env docker-compose.yml || { docker unpause openwa; exit 1; }
-docker unpause openwa >/dev/null 2>&1 || true
-chmod 600 "$DEST"/*.tar.gz
-find "$DEST" -name 'openwa-data-*.tar.gz' -mtime +7 -delete
+DEST=/opt/backups/openwa; mkdir -p "$DEST"; STAMP=$(date +%F)
+backup_one() {  # $1=container $2=pasta do compose $3=prefixo
+  [ -d "$2" ] || return 0
+  docker pause "$1" >/dev/null 2>&1 || true
+  if tar -czf "$DEST/$3-$STAMP.tar.gz" -C "$2" data .env docker-compose.yml; then chmod 600 "$DEST/$3-$STAMP.tar.gz"; fi
+  docker unpause "$1" >/dev/null 2>&1 || true
+}
+backup_one openwa /opt/openwa openwa-data
+backup_one openwa-baileys /opt/openwa-baileys openwa-baileys-data
+find "$DEST" -name 'openwa-*-*.tar.gz' -mtime +7 -delete
 EOF2
 chmod 700 /opt/openwa/bin/backup.sh
 printf '[Unit]\nDescription=Backup OpenWA\n[Service]\nType=oneshot\nExecStart=/opt/openwa/bin/backup.sh\n' > /etc/systemd/system/openwa-backup.service
@@ -993,13 +1033,14 @@ systemctl daemon-reload && systemctl enable --now openwa-backup.timer
 ### 22.6 Operação
 
 ```bash
-cd /opt/openwa && docker compose ps            # healthy?
+cd /opt/openwa-baileys && docker compose ps    # healthy?
 docker compose logs --tail 100                 # logs do gateway
-docker stats --no-stream openwa                # RAM (sobe ~400 MB por sessão)
+docker stats --no-stream                       # RAM dos gateways
 journalctl -u pubmail-back -n 100 | grep -i whatsapp
+curl -s "https://api.<SEU_DOMINIO>/realtime/?EIO=4&transport=polling"   # WebSocket do painel: responde 0{"sid":…}
 ```
 
-Depois disso, no painel: **Administração → Usuários** libera o módulo **WhatsApp** por usuário; o cliente conecta em **WhatsApp → Configurações** (tutorial em `WhatsApp - Como conectar.pdf`).
+Depois disso, no painel: **Administração → Usuários** libera o módulo **WhatsApp** por usuário; o cliente conecta em **WhatsApp → Configurações** (tutorial em `WhatsApp - Como conectar.pdf`). Em **Configurações → Diagnóstico da conexão** o painel mostra se o gateway responde, o motor em uso e as mídias recebidas nas últimas 24 h.
 
 ## 23. Atualizando o sistema
 
@@ -1043,6 +1084,17 @@ $ tar -czf - email-micro-services/*.js | ssh pubmail-prod 'tar -xzf - -C /opt/pu
 ```
 
 (Se mudou dependência: `unset CI; yarn install` na pasta antes do restart.)
+
+### 23.4 Plugin WordPress "Tradutor Invisível" (mudou `wordpress/tradutor-invisivel`)
+
+Compile os scripts na sua máquina (kit em `wordpress/tradutor-invisivel-dev`, com `npm install` feito uma vez) e envie a pasta do plugin. Não precisa reiniciar nada: o back lê a pasta a cada download e a versão pelo cabeçalho do arquivo principal.
+
+```
+$ (cd wordpress/tradutor-invisivel-dev && npm test)          # compila assets/*.min.js e roda os testes
+$ tar -czf - wordpress/tradutor-invisivel | ssh pubmail-prod 'tar -xzf - -C /opt/pub-mail'
+```
+
+Suba o `Version:` do plugin (e o `TRINV_VERSION`) a cada entrega: os sites dos clientes veem a versão nova em até 6 h e o WordPress atualiza sozinho.
 
 ---
 

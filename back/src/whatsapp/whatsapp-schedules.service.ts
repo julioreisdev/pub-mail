@@ -8,6 +8,9 @@ import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppContactsService, isGroupJid, phoneFromJid } from './whatsapp-contacts.service';
 import { fillVars } from './whatsapp-broadcasts.service';
+import { WhatsAppCrmService } from './whatsapp-crm.service';
+import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
 
 // Agendamento PONTUAL: N mensagens para N contatos/grupos em data/hora (BRT vindo do front em ISO).
 // Alternativa ao broadcast para casos únicos. Depois de enviado sai da lista de pendentes
@@ -28,6 +31,9 @@ export class WhatsAppSchedulesService {
     private readonly inbound: WhatsAppInboundService,
     private readonly contacts: WhatsAppContactsService,
     private readonly access: AccessService,
+    private readonly attendance: WhatsAppAttendanceService,
+    private readonly presenter: WhatsAppPresenter,
+    private readonly crm: WhatsAppCrmService,
   ) {}
 
   private normTargets(raw: unknown) {
@@ -42,7 +48,7 @@ export class WhatsAppSchedulesService {
   private async names(orgId: string, chatIds: string[]) {
     const [chats, contacts] = await Promise.all([
       chatIds.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, chat_id: { in: chatIds } }, select: { chat_id: true, name: true, kind: true } }) : [],
-      chatIds.length ? this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { in: chatIds } }, select: { wa_id: true, name: true, push_name: true, phone: true } }) : [],
+      chatIds.length ? this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { in: chatIds } }, select: { wa_id: true, name: true, push_name: true, phone: true, opted_out_at: true } }) : [],
     ]);
     const cm = new Map(chats.map((c) => [c.chat_id, c] as [string, any]));
     const km = new Map(contacts.map((c) => [c.wa_id, c] as [string, any]));
@@ -154,7 +160,10 @@ export class WhatsAppSchedulesService {
     }
     const results: any[] = [];
     for (const t of targets) {
-      const vars = { nome: t.contact?.name || t.contact?.push_name || '', name: t.contact?.name || t.contact?.push_name || '', telefone: t.contact?.phone || phoneFromJid(t.chat_id), phone: t.contact?.phone || phoneFromJid(t.chat_id) };
+      // LGPD: quem pediu para não receber fica de fora dos agendamentos (envio em lote)
+      if (t.contact?.opted_out_at) { results.push({ chat_id: t.chat_id, name: t.name, status: 'skipped', error: 'Contato descadastrado (LGPD)' }); continue; }
+      const vars: Record<string, string> = { nome: t.contact?.name || t.contact?.push_name || '', name: t.contact?.name || t.contact?.push_name || '', telefone: t.contact?.phone || phoneFromJid(t.chat_id), phone: t.contact?.phone || phoneFromJid(t.chat_id) };
+      if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(orgId, t.chat_id).catch(() => ({})));
       try {
         for (const m of msgs) {
           if (m.delay_seconds) { await this.openwa.typing(row.openwa_session_id, t.chat_id, 'typing').catch(() => undefined); await sleep(m.delay_seconds * 1000); }
@@ -170,8 +179,14 @@ export class WhatsAppSchedulesService {
             r = await this.openwa.sendText(row.openwa_session_id, t.chat_id, text);
           }
           const at = r?.timestamp ? new Date(Number(r.timestamp) * 1000) : new Date();
-          await this.prisma.whatsapp_messages.create({ data: { organization_id: orgId, chat_id: t.chat_id, wa_message_id: String(r?.messageId || `sch_${Date.now()}_${Math.random().toString(36).slice(2)}`), direction: 'OUT', type, body: text || null, media_id: m.media_id, ack: 1, timestamp: at, extra: { scheduled: true, schedule_id: id } } }).catch(() => undefined);
+          const waId = String(r?.messageId || `sch_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+          await this.prisma.whatsapp_messages
+            .create({ data: { organization_id: orgId, chat_id: t.chat_id, wa_message_id: waId, direction: 'OUT', type, body: text || null, media_id: m.media_id, ack: 1, timestamp: at, extra: { scheduled: true, schedule_id: id } } })
+            .catch(async (e: any) => {
+              if (e?.code === 'P2002') await this.prisma.whatsapp_messages.update({ where: { organization_id_wa_message_id: { organization_id: orgId, wa_message_id: waId } }, data: { extra: { scheduled: true, schedule_id: id } } }).catch(() => undefined);
+            });
           await this.inbound.bumpChat(orgId, t.chat_id, { type, body: text, direction: 'OUT', at });
+          this.presenter.message(orgId, { waId });
         }
         results.push({ chat_id: t.chat_id, name: t.name, status: 'sent', sent_at: new Date().toISOString() });
       } catch (e: any) {

@@ -1,8 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
+import Badge from '@mui/material/Badge';
 import Box from '@mui/material/Box';
+import ButtonBase from '@mui/material/ButtonBase';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
@@ -28,6 +30,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import { keyframes } from '@mui/material/styles';
 
 import {
+  IconAdjustmentsHorizontal,
   IconAlertCircle,
   IconArchive,
   IconArchiveOff,
@@ -35,6 +38,7 @@ import {
   IconArrowDown,
   IconArrowForwardUp,
   IconArrowLeft,
+  IconBolt,
   IconBrandWhatsapp,
   IconChartBar,
   IconCheck,
@@ -49,6 +53,7 @@ import {
   IconExternalLink,
   IconFileText,
   IconFolder,
+  IconHeadset,
   IconMailOpened,
   IconMapPin,
   IconMessages,
@@ -56,6 +61,8 @@ import {
   IconMoodSmile,
   IconPaperclip,
   IconPencil,
+  IconPhoneIncoming,
+  IconPhoneOutgoing,
   IconPhoto,
   IconPin,
   IconPinned,
@@ -63,11 +70,16 @@ import {
   IconPlayerStopFilled,
   IconPlus,
   IconRefresh,
+  IconRobot,
   IconSearch,
   IconSend,
+  IconTag,
   IconTrash,
   IconUser,
   IconUsersGroup,
+  IconUserDollar,
+  IconReceipt2,
+  IconVideo,
   IconVolume,
   IconVolumeOff,
   IconX
@@ -77,6 +89,37 @@ import { get, post, put, remove } from 'api/api';
 import { TgEmptyState, TgAvatar, TgModal, TgListSkeleton, TgConfirmDialog } from 'views/pages/telegram/ui';
 import { WaPageHeader, WaSessionBanner } from './waKit';
 import WaChatPicker from './WaChatPicker';
+import { useRealtimeEvent, useRealtimeStatus } from 'realtime/useRealtime';
+import { useAuth } from 'contexts/AuthContext';
+import ScrollChipsRow from './chat/ScrollChipsRow';
+import AudioPlayer from './chat/AudioPlayer';
+import { contactsOfMessage } from './chat/vcard';
+import {
+  ADV_DEFAULT,
+  ActiveAdvChips,
+  AdvancedFiltersPopover,
+  advActiveCount,
+  advMatches,
+  advToParams,
+  loadAdv,
+  saveAdv
+} from './chat/AdvancedFilters';
+import { AttendanceMenu, ServiceHistoryDialog, TagsPopover, TransferDialog } from './chat/Attendance';
+import CustomerPanel from './chat/CustomerPanel';
+import ChargeDialog from './crm/ChargeDialog';
+import { QuickRepliesPopper, fillQuickReply, filterQuickReplies, quickMediaKind, quickMediaMeta } from './chat/QuickReplies';
+import {
+  ACTIVE_FG,
+  MoreChip,
+  ServiceTag,
+  TagChip,
+  THIN_SCROLL,
+  WAIT_TONE,
+  firstName,
+  fmtCount,
+  fmtWait,
+  serviceInfo
+} from './chat/chatKit';
 import {
   WA_GREEN,
   WA_DARK,
@@ -103,19 +146,29 @@ import {
 // envio otimista (ack 0 → reconciliado pela resposta/polling), rascunho por chat.
 // ============================================================================
 
+// Tempo real vem pelo WebSocket (wa:message / wa:chat). O polling fica como reserva:
+// lento com a conexão em tempo real de pé, rápido se ela cair.
 const LIST_POLL_MS = 10000;
 const MSG_POLL_MS = 3000;
+const LIST_POLL_RT_MS = 60000;
+const MSG_POLL_RT_MS = 30000;
 const PAGE = 50;
 const GROUP_GAP_MS = 3 * 60 * 1000;
 const enc = (v) => encodeURIComponent(String(v));
 
 const blink = keyframes`0%{opacity:1}50%{opacity:.25}100%{opacity:1}`;
+const flashKf = keyframes`0%{background-color:rgba(37,211,102,0)}15%{background-color:rgba(37,211,102,.28)}70%{background-color:rgba(37,211,102,.16)}100%{background-color:rgba(37,211,102,0)}`;
+const popIn = keyframes`from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}`;
+const WAIT_MIN_MS = 10 * 60 * 1000; // "aguardando há…" só depois de 10 min sem resposta
 
+// chips fixos: id → contagem em /whatsapp/chats/counts
 const FILTERS = [
-  { id: 'all', label: 'Todos' },
-  { id: 'unread', label: 'Não lidos' },
-  { id: 'groups', label: 'Grupos' },
-  { id: 'archived', label: 'Arquivados' }
+  { id: 'all', label: 'Todos', count: 'all' },
+  { id: 'unread', label: 'Não lidos', count: 'unread', strong: true },
+  { id: 'dms', label: 'DMs', count: 'dms' },
+  { id: 'groups', label: 'Grupos', count: 'groups' },
+  { id: 'mine', label: 'Meus atendimentos', count: 'mine', strong: true },
+  { id: 'archived', label: 'Arquivados', count: 'archived' }
 ];
 const BUILTIN_FILTER_IDS = new Set(FILTERS.map((f) => f.id));
 const isCustomFilter = (id) => Boolean(id) && !BUILTIN_FILTER_IDS.has(id);
@@ -134,7 +187,7 @@ const TYPE_LABEL = {
   audio: '🎵 Áudio',
   voice: '🎤 Mensagem de voz',
   document: '📄 Documento',
-  sticker: '🩷 Figurinha',
+  sticker: '🖼️ Figurinha',
   location: '📍 Localização',
   contact: '👤 Contato',
   poll: '📊 Enquete',
@@ -262,17 +315,21 @@ function AckTicks({ ack, error, pending }) {
 // ----------------------------------------------------------------------------
 // Item da lista de conversas
 // ----------------------------------------------------------------------------
-const ChatListItem = memo(function ChatListItem({ chat, active, onClick }) {
+const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now }) {
   const kind = kindOfChat(chat);
   const isGroup = chat.kind === 'group';
   const preview = chat.last_message_preview || (isGroup ? `${chat.group_meta?.participants_count ?? '—'} participantes` : 'Sem mensagens');
   const unread = Number(chat.unread_count) || 0;
+  const svc = chat.kind === 'individual' ? serviceInfo(chat.service, { compact: true }) : null;
+  const tags = Array.isArray(chat.tags) ? chat.tags.filter((t) => t && t.name) : [];
+  const waitMs = now && chat.waiting_reply && chat.last_inbound_at ? now - new Date(chat.last_inbound_at).getTime() : 0;
+  const waiting = waitMs > WAIT_MIN_MS;
   return (
     <Stack
       direction="row"
       spacing={1.25}
       alignItems="center"
-      onClick={onClick}
+      onClick={() => onOpen(chat)}
       sx={{
         px: 1.25,
         py: 1,
@@ -317,6 +374,19 @@ const ChatListItem = memo(function ChatListItem({ chat, active, onClick }) {
             ) : null}
             {preview}
           </Typography>
+          {waiting ? (
+            <Tooltip title={`Aguardando resposta há ${fmtWait(waitMs)}`} disableInteractive>
+              <Stack
+                direction="row"
+                spacing={0.25}
+                alignItems="center"
+                sx={[WAIT_TONE, { flexShrink: 0, fontSize: 11, fontWeight: 700, lineHeight: 1, whiteSpace: 'nowrap' }]}
+              >
+                <IconClock size={12} stroke={2.2} />
+                <span>há {fmtWait(waitMs)}</span>
+              </Stack>
+            </Tooltip>
+          ) : null}
           {chat.muted ? <IconVolumeOff size={14} style={{ opacity: 0.55, flexShrink: 0 }} /> : null}
           {chat.pinned ? <IconPinned size={14} style={{ opacity: 0.55, flexShrink: 0 }} /> : null}
           {unread ? (
@@ -339,6 +409,21 @@ const ChatListItem = memo(function ChatListItem({ chat, active, onClick }) {
             </Box>
           ) : null}
         </Stack>
+        {svc || tags.length ? (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5, minWidth: 0, overflow: 'hidden' }}>
+            {svc ? <ServiceTag info={svc} /> : null}
+            {tags.slice(0, 2).map((t) => (
+              <TagChip key={t.id} tag={t} />
+            ))}
+            <MoreChip
+              n={Math.max(0, tags.length - 2)}
+              title={tags
+                .slice(2)
+                .map((t) => t.name)
+                .join(', ')}
+            />
+          </Stack>
+        ) : null}
       </Box>
     </Stack>
   );
@@ -365,25 +450,117 @@ function DateSeparator({ label }) {
 // ----------------------------------------------------------------------------
 // Renderizadores de mídia / tipos especiais
 // ----------------------------------------------------------------------------
-function MediaOmitted({ label }) {
+// Mídia que ainda não temos o arquivo: explica o motivo em vez de só "não disponível".
+//  - sem motivo → o servidor está baixando (chega sozinho pelo tempo real);
+//  - history    → mensagem anterior à conexão (o WhatsApp não reenvia o arquivo);
+//  - unavailable/error → o WhatsApp não entregou; dá pra tentar de novo.
+function MediaOmitted({ msg, label = 'Mídia' }) {
+  const [busy, setBusy] = useState(false);
+  const info = msg?.media_info || {};
+  const reason = info.reason || null;
+  const meta = [info.filename, info.size ? fmtBytes(info.size) : null].filter(Boolean).join(' · ');
+  const retry = async (e) => {
+    e?.stopPropagation?.();
+    if (!msg?.id || busy) return;
+    setBusy(true);
+    try {
+      const r = await post(`/whatsapp/messages/${enc(msg.id)}/media/retry`);
+      if (r && r.ok === false) toast('O WhatsApp ainda não entregou esse arquivo.', { icon: '⏳' });
+    } catch (err) {
+      toast.error(errMsg(err, 'Não foi possível baixar.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const downloading = !reason || busy;
+  const text = downloading
+    ? `Baixando ${label.toLowerCase()}…`
+    : reason === 'history'
+      ? `${label} de antes da conexão — veja no celular`
+      : `${label} não pôde ser baixado do WhatsApp`;
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ opacity: 0.75, py: 0.25 }}>
-      <IconAlertCircle size={16} />
-      <Typography variant="body2" sx={{ fontStyle: 'italic' }}>
-        {label || 'Mídia não disponível'}
-      </Typography>
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      sx={[
+        dual({ bgcolor: 'rgba(0,0,0,.05)' }, { bgcolor: 'rgba(255,255,255,.06)' }),
+        { py: 0.75, px: 1, borderRadius: 1.5, mb: msg?.body ? 0.5 : 0, maxWidth: 320 }
+      ]}
+    >
+      {downloading ? (
+        <CircularProgress size={16} thickness={5} sx={{ color: 'inherit', opacity: 0.7 }} />
+      ) : (
+        <IconAlertCircle size={18} style={{ opacity: 0.75, flexShrink: 0 }} />
+      )}
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body2" sx={{ fontStyle: 'italic', opacity: 0.85, lineHeight: 1.3 }}>
+          {text}
+        </Typography>
+        {meta ? (
+          <Typography variant="caption" sx={{ opacity: 0.6 }} noWrap display="block">
+            {meta}
+          </Typography>
+        ) : null}
+      </Box>
+      {!downloading && reason !== 'history' ? (
+        <Tooltip title="Tentar de novo">
+          <IconButton size="small" onClick={retry} sx={{ color: 'inherit' }}>
+            <IconRefresh size={16} />
+          </IconButton>
+        </Tooltip>
+      ) : null}
     </Stack>
+  );
+}
+
+// Botão de baixar sobreposto à foto/vídeo
+function MediaDownload({ url }) {
+  if (!url) return null;
+  return (
+    <Tooltip title="Baixar">
+      <IconButton
+        size="small"
+        component="a"
+        href={dlUrl(url)}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="wa-media-dl"
+        sx={{
+          position: 'absolute',
+          top: 6,
+          right: 6,
+          bgcolor: 'rgba(0,0,0,.45)',
+          color: '#fff',
+          opacity: 0,
+          transition: 'opacity .15s',
+          '&:hover': { bgcolor: 'rgba(0,0,0,.65)' }
+        }}
+      >
+        <IconDownload size={16} />
+      </IconButton>
+    </Tooltip>
   );
 }
 
 function ImageBody({ msg, onOpen }) {
   const url = msg.media?.url;
-  if (!url) return <MediaOmitted label="Foto não disponível" />;
+  if (!url) return <MediaOmitted msg={msg} label="Foto" />;
   return (
     <Box
       onClick={() => onOpen(url, msg.body)}
-      sx={{ cursor: 'zoom-in', borderRadius: 1.5, overflow: 'hidden', maxWidth: 320, mb: msg.body ? 0.5 : 0, position: 'relative' }}
+      sx={{
+        cursor: 'zoom-in',
+        borderRadius: 1.5,
+        overflow: 'hidden',
+        maxWidth: 320,
+        mb: msg.body ? 0.5 : 0,
+        position: 'relative',
+        '&:hover .wa-media-dl': { opacity: 1 }
+      }}
     >
+      {!msg.uploading ? <MediaDownload url={url} /> : null}
       <img
         src={url}
         alt={msg.body || 'imagem'}
@@ -401,9 +578,20 @@ function ImageBody({ msg, onOpen }) {
 
 function VideoBody({ msg }) {
   const url = msg.media?.url;
-  if (!url) return <MediaOmitted label="Vídeo não disponível" />;
+  if (!url) return <MediaOmitted msg={msg} label="Vídeo" />;
   return (
-    <Box sx={{ borderRadius: 1.5, overflow: 'hidden', maxWidth: 320, mb: msg.body ? 0.5 : 0, bgcolor: '#000' }}>
+    <Box
+      sx={{
+        borderRadius: 1.5,
+        overflow: 'hidden',
+        maxWidth: 320,
+        mb: msg.body ? 0.5 : 0,
+        bgcolor: '#000',
+        position: 'relative',
+        '&:hover .wa-media-dl': { opacity: 1 }
+      }}
+    >
+      <MediaDownload url={url} />
       <video src={url} controls preload="metadata" style={{ display: 'block', width: '100%', maxHeight: 360 }} />
     </Box>
   );
@@ -412,25 +600,43 @@ function VideoBody({ msg }) {
 function AudioBody({ msg }) {
   const url = msg.media?.url;
   const voice = msg.type === 'voice';
-  if (!url) return <MediaOmitted label={voice ? 'Mensagem de voz não disponível' : 'Áudio não disponível'} />;
+  if (!url) return <MediaOmitted msg={msg} label={voice ? 'Áudio de voz' : 'Áudio'} />;
   return (
-    <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 240, mb: msg.body ? 0.5 : 0 }}>
-      <Box
-        sx={{
-          width: 34,
-          height: 34,
-          borderRadius: '50%',
-          flexShrink: 0,
-          display: 'grid',
-          placeItems: 'center',
-          color: '#fff',
-          bgcolor: voice ? WA_GREEN : '#8696a0'
-        }}
+    <Box sx={{ mb: msg.body ? 0.5 : 0 }}>
+      <AudioPlayer url={url} voice={voice} out={msg.direction === 'OUT'} />
+    </Box>
+  );
+}
+
+// Chamada de voz/vídeo: pílula de sistema centralizada (não é um balão)
+function CallPill({ msg }) {
+  const out = msg.direction === 'OUT';
+  const body = String(msg.body || '').trim();
+  const video = /v[íi]deo/i.test(body);
+  const Icon = video ? IconVideo : out ? IconPhoneOutgoing : IconPhoneIncoming;
+  const label = body && !/^📞/.test(body) ? body : `${video ? 'Chamada de vídeo' : 'Chamada de voz'} ${out ? 'realizada' : 'recebida'}`;
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', my: 1, px: 2 }}>
+      <Stack
+        direction="row"
+        spacing={0.75}
+        alignItems="center"
+        sx={[
+          dual({ bgcolor: '#ffffff', color: '#54656f' }, { bgcolor: '#182229', color: '#8696a0' }),
+          { px: 1.5, py: 0.6, borderRadius: 2, fontSize: 12, fontWeight: 600, boxShadow: '0 1px 1px rgba(0,0,0,.08)', maxWidth: 420 }
+        ]}
       >
-        {voice ? <IconMicrophone size={18} /> : <IconFileText size={18} />}
-      </Box>
-      <audio src={url} controls preload="metadata" style={{ height: 36, maxWidth: 260, width: '100%' }} />
-    </Stack>
+        <Box sx={{ color: out ? WA_DARK : '#f15c6d', display: 'grid', placeItems: 'center' }}>
+          <Icon size={15} />
+        </Box>
+        <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
+        </Box>
+        <Box component="span" sx={{ opacity: 0.7, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+          · {fmtTime(msg.timestamp)}
+        </Box>
+      </Stack>
+    </Box>
   );
 }
 
@@ -445,7 +651,7 @@ function DocumentBody({ msg }) {
       alignItems="center"
       sx={[
         dual({ bgcolor: 'rgba(0,0,0,.05)' }, { bgcolor: 'rgba(255,255,255,.06)' }),
-        { p: 1, borderRadius: 1.5, minWidth: 240, maxWidth: 340, mb: msg.body && msg.body !== m?.filename ? 0.5 : 0 }
+        { p: 1, borderRadius: 1.5, minWidth: 'min(240px, 100%)', maxWidth: 340, mb: msg.body && msg.body !== m?.filename ? 0.5 : 0 }
       ]}
     >
       <Box
@@ -500,7 +706,14 @@ function LocationBody({ msg }) {
       rel="noopener noreferrer"
       sx={[
         dual({ bgcolor: 'rgba(0,0,0,.05)' }, { bgcolor: 'rgba(255,255,255,.06)' }),
-        { p: 1, borderRadius: 1.5, minWidth: 220, textDecoration: 'none', color: 'inherit', cursor: ok ? 'pointer' : 'default' }
+        {
+          p: 1,
+          borderRadius: 1.5,
+          minWidth: 'min(220px, 100%)',
+          textDecoration: 'none',
+          color: 'inherit',
+          cursor: ok ? 'pointer' : 'default'
+        }
       ]}
     >
       <Box
@@ -535,7 +748,7 @@ function PollBody({ msg }) {
   const options = Array.isArray(poll.options) ? poll.options : [];
   const total = options.reduce((a, o) => a + (Number(o.votes) || 0), 0);
   return (
-    <Box sx={{ minWidth: 240, maxWidth: 340 }}>
+    <Box sx={{ minWidth: 'min(240px, 100%)', maxWidth: 340 }}>
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.75 }}>
         <IconChartBar size={16} />
         <Typography variant="body2" sx={{ fontWeight: 700 }}>
@@ -570,41 +783,99 @@ function PollBody({ msg }) {
   );
 }
 
+// Contato compartilhado: um ou mais vCards → cartões com nome, empresa, telefone e "Conversar".
 function ContactBody({ msg }) {
-  const raw = msg.extra?.contact;
-  const c = Array.isArray(raw) ? raw[0] : raw || {};
-  const name = c.name || c.displayName || c.display_name || c.formattedName || msg.body || 'Contato';
-  const phone = c.phone || c.number || (Array.isArray(c.phones) ? c.phones[0] : '') || '';
+  const [, setSearchParams] = useSearchParams();
+  const [opening, setOpening] = useState('');
+  const cards = useMemo(() => contactsOfMessage(msg), [msg]);
+  const openPhone = async (digits) => {
+    setOpening(digits);
+    try {
+      const chat = await post('/whatsapp/chats/open', { phone: digits });
+      if (chat?.chat_id)
+        setSearchParams((prev) => {
+          const n = new URLSearchParams(prev);
+          n.set('chat', chat.chat_id);
+          return n;
+        });
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível abrir a conversa.'));
+    } finally {
+      setOpening('');
+    }
+  };
+  const boxSx = dual(
+    { bgcolor: 'rgba(0,0,0,.05)', borderColor: 'rgba(0,0,0,.08)' },
+    { bgcolor: 'rgba(255,255,255,.06)', borderColor: 'rgba(255,255,255,.1)' }
+  );
+  if (!cards.length) {
+    return (
+      <Stack direction="row" spacing={1} alignItems="center" sx={[boxSx, { p: 1, borderRadius: 1.5, width: 240, maxWidth: '100%' }]}>
+        <TgAvatar name="Contato" size={36} kind="contact" icon={IconUser} />
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          Contato compartilhado
+        </Typography>
+      </Stack>
+    );
+  }
   return (
-    <Stack
-      direction="row"
-      spacing={1.25}
-      alignItems="center"
-      sx={[dual({ bgcolor: 'rgba(0,0,0,.05)' }, { bgcolor: 'rgba(255,255,255,.06)' }), { p: 1, borderRadius: 1.5, minWidth: 220 }]}
-    >
-      <TgAvatar name={name} size={40} kind="contact" icon={IconUser} />
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-          {name}
+    <Stack spacing={0.75} sx={{ width: 280, maxWidth: '100%' }}>
+      {cards.slice(0, 3).map((c, i) => {
+        const phone = c.phones[0];
+        return (
+          <Box key={i} sx={[boxSx, { borderRadius: 1.5, overflow: 'hidden' }]}>
+            <Stack direction="row" spacing={1.25} alignItems="center" sx={{ p: 1 }}>
+              <TgAvatar name={c.name || 'Contato'} size={40} kind="contact" icon={IconUser} />
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap title={c.name}>
+                  {c.name || 'Contato'}
+                </Typography>
+                {c.org ? (
+                  <Typography variant="caption" sx={{ display: 'block', opacity: 0.7 }} noWrap title={c.org}>
+                    {c.org}
+                  </Typography>
+                ) : null}
+                <Typography variant="caption" sx={{ display: 'block', opacity: 0.7 }} noWrap>
+                  {phone ? fmtPhone(phone) : 'sem número'}
+                  {c.phones.length > 1 ? ` · +${c.phones.length - 1}` : ''}
+                </Typography>
+              </Box>
+            </Stack>
+            {phone ? (
+              <ButtonBase
+                onClick={() => openPhone(phone)}
+                disabled={Boolean(opening)}
+                sx={[
+                  dual({ color: '#027eb5' }, { color: '#53bdeb' }),
+                  { width: '100%', py: 0.8, fontSize: 13, fontWeight: 700, borderTop: '1px solid', borderColor: 'inherit' },
+                  boxSx
+                ]}
+              >
+                {opening === phone ? 'Abrindo…' : 'Conversar'}
+              </ButtonBase>
+            ) : null}
+          </Box>
+        );
+      })}
+      {cards.length > 3 ? (
+        <Typography variant="caption" sx={{ opacity: 0.7, px: 0.5 }}>
+          + {cards.length - 3} contatos
         </Typography>
-        <Typography variant="caption" sx={{ opacity: 0.7 }}>
-          {fmtPhone(phone) || 'sem número'}
-        </Typography>
-      </Box>
+      ) : null}
     </Stack>
   );
 }
 
 function StickerBody({ msg }) {
   const url = msg.media?.url;
-  if (!url) return <MediaOmitted label="Figurinha não disponível" />;
+  if (!url) return <MediaOmitted msg={msg} label="Figurinha" />;
   return <img src={url} alt="figurinha" style={{ display: 'block', width: 140, height: 140, objectFit: 'contain' }} loading="lazy" />;
 }
 
 // ----------------------------------------------------------------------------
 // Balão de mensagem
 // ----------------------------------------------------------------------------
-const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, onMenu, onImage, onRetry, onReact }) {
+const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, flash, onMenu, onImage, onRetry, onReact, onQuote }) {
   const out = msg.direction === 'OUT';
   const revoked = msg.revoked || msg.type === 'revoked';
   const sticker = msg.type === 'sticker' && !revoked;
@@ -665,16 +936,35 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, o
         body = null;
         break;
       default:
-        body = <MediaOmitted label="Mensagem não suportada" />;
+        body = (
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ opacity: 0.75, py: 0.25 }}>
+            <IconAlertCircle size={16} />
+            <Typography variant="body2" sx={{ fontStyle: 'italic' }}>
+              Tipo de mensagem que o painel ainda não mostra — veja no celular
+            </Typography>
+          </Stack>
+        );
     }
   }
   const showCaption =
     !revoked && msg.type !== 'text' && msg.body && !['poll', 'location', 'contact'].includes(msg.type) && msg.body !== msg.media?.filename;
   const showText = !revoked && msg.type === 'text';
-  const metaTail = (msg.edited ? 44 : 0) + 40 + (out ? 20 : 0);
+  const scheduled = Boolean(msg.extra?.scheduled);
+  const byBot = out && Boolean(msg.extra?.bot);
+  const metaTail = (msg.edited ? 48 : 0) + (scheduled ? 16 : 0) + 40 + (out ? 20 : 0);
 
   return (
-    <Stack direction="row" justifyContent={out ? 'flex-end' : 'flex-start'} sx={{ px: { xs: 1, md: 4 }, mt: first ? 1 : 0.25 }}>
+    <Stack
+      direction="row"
+      data-msgid={msg.id}
+      justifyContent={out ? 'flex-end' : 'flex-start'}
+      sx={{
+        px: { xs: 1, md: 4 },
+        mt: first ? 1 : 0.25,
+        borderRadius: 1,
+        animation: flash ? `${flashKf} 1.8s ease-out` : 'none'
+      }}
+    >
       <Box
         sx={{
           maxWidth: { xs: '86%', md: '68%' },
@@ -697,6 +987,10 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, o
                 : dual({ bgcolor: '#ffffff', color: '#111b21' }, { bgcolor: '#202c33', color: '#e9edef' }),
             {
               position: 'relative',
+              // nunca mais larga que a coluna (conteúdo sem quebra — nome, vCard, link — não empurra a conversa)
+              maxWidth: '100%',
+              minWidth: 0,
+              overflowWrap: 'anywhere',
               px: sticker ? 0 : 1.1,
               pt: sticker ? 0 : 0.6,
               pb: sticker ? 0 : 0.5,
@@ -731,8 +1025,22 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, o
             </Typography>
           ) : null}
 
+          {byBot && !revoked ? (
+            <Stack
+              direction="row"
+              spacing={0.4}
+              alignItems="center"
+              sx={[dual({ color: '#6D28D9' }, { color: '#C4B5FD' }), { mb: 0.25, pr: 2.5 }]}
+            >
+              <IconRobot size={13} />
+              <Typography variant="caption" sx={{ fontWeight: 800, fontSize: 11 }}>
+                Bot
+              </Typography>
+            </Stack>
+          ) : null}
+
           {msg.forwarded && !revoked ? (
-            <Stack direction="row" spacing={0.4} alignItems="center" sx={{ opacity: 0.6, mb: 0.25 }}>
+            <Stack direction="row" spacing={0.4} alignItems="center" sx={{ opacity: 0.6, mb: 0.25, pr: 2.5 }}>
               <IconArrowForwardUp size={13} />
               <Typography variant="caption" sx={{ fontStyle: 'italic', fontSize: 11 }}>
                 Encaminhada
@@ -742,9 +1050,32 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, o
 
           {msg.quoted && !revoked ? (
             <Box
+              role="button"
+              tabIndex={0}
+              title="Ir para a mensagem respondida"
+              onClick={(e) => {
+                e.stopPropagation();
+                onQuote(msg.quoted.wa_message_id);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onQuote(msg.quoted.wa_message_id);
+              }}
               sx={[
-                dual({ bgcolor: 'rgba(0,0,0,.06)' }, { bgcolor: 'rgba(0,0,0,.25)' }),
-                { borderLeft: '4px solid', borderLeftColor: WA_GREEN, borderRadius: 1, px: 1, py: 0.5, mb: 0.6, maxWidth: 360 }
+                dual(
+                  { bgcolor: 'rgba(0,0,0,.06)', '&:hover': { bgcolor: 'rgba(0,0,0,.1)' } },
+                  { bgcolor: 'rgba(0,0,0,.25)', '&:hover': { bgcolor: 'rgba(0,0,0,.35)' } }
+                ),
+                {
+                  borderLeft: '4px solid',
+                  borderLeftColor: WA_GREEN,
+                  borderRadius: 1,
+                  px: 1,
+                  py: 0.5,
+                  mb: 0.6,
+                  maxWidth: 360,
+                  cursor: 'pointer',
+                  transition: 'background-color .12s ease'
+                }
               ]}
             >
               <Typography variant="caption" sx={{ display: 'block', opacity: 0.8, fontSize: 12 }} noWrap>
@@ -789,7 +1120,14 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, o
                 ...(showText || showCaption ? { position: 'absolute', right: 7, bottom: 5 } : { mt: 0.35 })
               }}
             >
-              {msg.edited ? <span style={{ fontStyle: 'italic' }}>editada</span> : null}
+              {msg.edited ? <span style={{ fontStyle: 'italic' }}>Editada</span> : null}
+              {scheduled ? (
+                <Tooltip title="Enviada por agendamento" disableInteractive>
+                  <Box component="span" sx={{ display: 'inline-grid', placeItems: 'center' }}>
+                    <IconClock size={12} />
+                  </Box>
+                </Tooltip>
+              ) : null}
               <span>{fmtTime(msg.timestamp)}</span>
               {out ? <AckTicks ack={msg.ack} error={msg.error} pending={msg.pending || msg.uploading} /> : null}
             </Stack>
@@ -963,7 +1301,15 @@ function ChatFilterModal({ open, initial, connected, onClose, onSaved }) {
 export default function WhatsAppChat() {
   const isNarrow = useMediaQuery('(max-width:860px)');
   const [searchParams, setSearchParams] = useSearchParams();
+  // identidade do setter muda a cada troca de URL; via ref, openChat fica estável (linhas memoizadas)
+  const setSearchParamsRef = useRef(setSearchParams);
+  setSearchParamsRef.current = setSearchParams;
   const { session, loading: sessionLoading, connected } = useWaSession(15000);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const myId = user?.user?.id || null;
+  const myIdRef = useRef(myId);
+  myIdRef.current = myId;
   // gateway fora → leitura continua (histórico da org), mas nada que dependa do WhatsApp é chamado
   const connectedRef = useRef(false);
   connectedRef.current = connected;
@@ -974,6 +1320,90 @@ export default function WhatsAppChat() {
   const [list, setList] = useState({ items: [], total: 0, page: 1, pages: 1 });
   const [listLoading, setListLoading] = useState(false);
   const listSeq = useRef(0);
+
+  // relógio de 1 min p/ "aguardando há…" (só as linhas que aguardam recebem o valor)
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 60000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // ---------------- contagens dos chips ----------------
+  const [counts, setCounts] = useState(null);
+  const countsTimer = useRef(null);
+  const loadCounts = useCallback(async () => {
+    try {
+      const r = await get('/whatsapp/chats/counts');
+      if (r && typeof r === 'object') setCounts(r);
+    } catch {
+      /* contagens são cosméticas */
+    }
+  }, []);
+  // agrupa rajadas de eventos (1 busca a cada ~1,5 s no máximo)
+  const scheduleCounts = useCallback(() => {
+    if (countsTimer.current) return;
+    countsTimer.current = window.setTimeout(() => {
+      countsTimer.current = null;
+      loadCounts();
+    }, 1500);
+  }, [loadCounts]);
+  useEffect(() => {
+    loadCounts();
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'hidden') loadCounts();
+    }, 60000);
+    return () => {
+      window.clearInterval(id);
+      if (countsTimer.current) window.clearTimeout(countsTimer.current);
+      countsTimer.current = null;
+    };
+  }, [loadCounts]);
+
+  // ---------------- configurações do atendimento (só leitura aqui) ----------------
+  // mark_read_on_open=false → abrir/ler a conversa no painel não marca como lida no WhatsApp
+  const svcCfgRef = useRef({ mark_read_on_open: true });
+  useEffect(() => {
+    get('/whatsapp/service-settings')
+      .then((r) => {
+        if (r && typeof r === 'object') svcCfgRef.current = r;
+      })
+      .catch(() => {});
+  }, []);
+  const autoRead = () => svcCfgRef.current?.mark_read_on_open !== false;
+
+  // ---------------- etiquetas e atendentes da organização ----------------
+  const [orgTags, setOrgTags] = useState([]);
+  const [tagsLoaded, setTagsLoaded] = useState(false);
+  const [attendants, setAttendants] = useState([]);
+  const loadTags = useCallback(async () => {
+    try {
+      const r = await get('/whatsapp/tags');
+      setOrgTags((Array.isArray(r) ? r : r?.items || []).slice().sort((a, b) => (a.position ?? 0) - (b.position ?? 0)));
+      setTagsLoaded(true);
+    } catch {
+      /* sem etiquetas: a tela segue funcionando */
+    }
+  }, []);
+  useEffect(() => {
+    loadTags();
+    get('/whatsapp/attendants')
+      .then((r) => setAttendants(Array.isArray(r) ? r : r?.items || []))
+      .catch(() => {});
+  }, [loadTags]);
+
+  // ---------------- filtros avançados (persistidos no navegador) ----------------
+  const [adv, setAdv] = useState(loadAdv);
+  const advRef = useRef(adv);
+  advRef.current = adv;
+  const [advAnchor, setAdvAnchor] = useState(null);
+  useEffect(() => saveAdv(adv), [adv]);
+  // etiqueta apagada em outro lugar some do filtro salvo
+  useEffect(() => {
+    if (!tagsLoaded || !adv.tags.length) return;
+    const known = new Set(orgTags.map((t) => t.id));
+    if (adv.tags.some((id) => !known.has(id))) setAdv((a) => ({ ...a, tags: a.tags.filter((id) => known.has(id)) }));
+  }, [tagsLoaded, orgTags, adv.tags]);
+  const advCount = advActiveCount(adv);
 
   // ---------------- filtros personalizados ("pastas") ----------------
   const [customFilters, setCustomFilters] = useState([]);
@@ -1065,14 +1495,27 @@ export default function WhatsAppChat() {
   const activeRef = useRef(null);
   activeRef.current = active;
   const [messages, setMessages] = useState([]);
+  const messagesRef = useRef([]);
+  messagesRef.current = messages;
+  const filterRef = useRef(null);
+  filterRef.current = filter;
+  const msgTickRef = useRef(null);
   const [msgLoading, setMsgLoading] = useState(false);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const sinceRef = useRef(null);
   const msgSeq = useRef(0);
   const threadRef = useRef(null);
-  const atBottomRef = useRef(true);
+  // "grudado no fim": true enquanto o usuário não rolar para cima. Mídia que carrega
+  // depois (fotos/vídeos/áudios) ou o composer crescendo re-rolam para o fim.
+  const pinnedRef = useRef(true);
+  const smoothNextRef = useRef(false);
+  const lastTopRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
+  const [unseen, setUnseen] = useState(0);
+  const [flashId, setFlashId] = useState(null);
+  const flashTimer = useRef(null);
+  const anchorRef = useRef(null); // {el, top} p/ manter a posição ao carregar mensagens antigas
   const lastReadRef = useRef({});
 
   // ---------------- composer ----------------
@@ -1093,6 +1536,12 @@ export default function WhatsAppChat() {
   const [rec, setRec] = useState(null); // {recorder, startedAt}
   const [recElapsed, setRecElapsed] = useState(0);
   const recCancelRef = useRef(false);
+  const composerBoxRef = useRef(null);
+  // respostas rápidas: lista (cache), popup {mode:'slash'|'button', query, index} e anexo pendente
+  const [qrList, setQrList] = useState(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qr, setQr] = useState(null);
+  const [qrMedia, setQrMedia] = useState(null); // {media, shortcut}
 
   // ---------------- popups ----------------
   const [emoji, setEmoji] = useState(null); // {anchor, mode:'compose'|'react', msg}
@@ -1106,6 +1555,33 @@ export default function WhatsAppChat() {
   const [pollDlg, setPollDlg] = useState(null); // {name, options:[], multiple, loading}
   const [locDlg, setLocDlg] = useState(null); // {lat,lng,description,loading}
   const [groupDrawer, setGroupDrawer] = useState(null); // {loading, info}
+  const [customerOpen, setCustomerOpen] = useState(false); // painel "Cliente" (CRM)
+  const [charge, setCharge] = useState(null); // {customer, products} → diálogo "Cobrar"
+  const [chargeBusy, setChargeBusy] = useState(false);
+  const openCharge = async () => {
+    if (!active?.chat_id || chargeBusy) return;
+    setChargeBusy(true);
+    try {
+      const [r, prods] = await Promise.all([
+        get(`/whatsapp/customers/by-chat/${encodeURIComponent(active.chat_id)}`),
+        get('/whatsapp/products').catch(() => [])
+      ]);
+      if (!r?.customer) {
+        toast('Cadastre este contato como cliente para cobrar.', { icon: '💳' });
+        setCustomerOpen(true);
+        return;
+      }
+      setCharge({ customer: r.customer, products: Array.isArray(prods) ? prods : [] });
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível abrir a cobrança.'));
+    } finally {
+      setChargeBusy(false);
+    }
+  };
+  const [tagsAnchor, setTagsAnchor] = useState(null);
+  const [svcAnchor, setSvcAnchor] = useState(null);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // ============================================================ lista
   const loadList = useCallback(
@@ -1114,17 +1590,20 @@ export default function WhatsAppChat() {
       if (!silent && !append) setListLoading(true);
       try {
         const custom = isCustomFilter(filter);
-        const r = await get('/whatsapp/chats', {
-          params: custom
-            ? { q: q.trim() || undefined, filter, page, page_size: PAGE }
-            : {
-                q: q.trim() || undefined,
-                kind: filter === 'groups' ? 'group' : 'all',
-                archived: filter === 'archived' ? 1 : 0,
-                page,
-                page_size: PAGE
-              }
+        // filtros avançados + chip ativo (o chip vence em caso de conflito, ex.: "Meus atendimentos")
+        const params = { ...advToParams(adv), q: q.trim() || undefined, page, page_size: PAGE };
+        const chip = custom
+          ? { filter }
+          : {
+              kind: filter === 'groups' ? 'group' : filter === 'dms' ? 'dm' : 'all',
+              archived: filter === 'archived' ? 1 : 0,
+              unread: filter === 'unread' ? 1 : undefined,
+              assigned: filter === 'mine' ? 'me' : undefined
+            };
+        Object.entries(chip).forEach(([k, v]) => {
+          if (v !== undefined) params[k] = v;
         });
+        const r = await get('/whatsapp/chats', { params });
         if (seq !== listSeq.current) return;
         setList((prev) => {
           if (!append) return { items: r.items || [], total: r.total || 0, page: r.page || 1, pages: r.pages || 1 };
@@ -1142,7 +1621,7 @@ export default function WhatsAppChat() {
         if (seq === listSeq.current) setListLoading(false);
       }
     },
-    [q, filter]
+    [q, filter, adv]
   );
   listReloadRef.current = loadList;
 
@@ -1152,23 +1631,35 @@ export default function WhatsAppChat() {
     return () => window.clearTimeout(t);
   }, [loadList]);
 
-  // polling da lista
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (document.visibilityState === 'hidden') return;
-      loadList({ silent: true });
-    }, LIST_POLL_MS);
-    return () => window.clearInterval(id);
-  }, [loadList]);
+  // tempo real: ao reconectar, busca o que pode ter passado enquanto a conexão estava caída
+  const { connected: rtConnected } = useRealtimeStatus(() => {
+    listReloadRef.current?.({ silent: true });
+    msgTickRef.current?.();
+    loadCounts();
+  });
 
+  // polling da lista (reserva)
+  useEffect(() => {
+    const id = window.setInterval(
+      () => {
+        if (document.visibilityState === 'hidden') return;
+        loadList({ silent: true });
+      },
+      rtConnected ? LIST_POLL_RT_MS : LIST_POLL_MS
+    );
+    return () => window.clearInterval(id);
+  }, [loadList, rtConnected]);
+
+  const activeId = active?.chat_id || null;
   const visibleChats = useMemo(() => {
     let items = list.items;
-    if (filter === 'unread') items = items.filter((c) => (Number(c.unread_count) || 0) > 0);
+    // a conversa aberta fica na lista mesmo depois de lida (igual ao WhatsApp Web)
+    if (filter === 'unread') items = items.filter((c) => (Number(c.unread_count) || 0) > 0 || c.chat_id === activeId);
     return [...items].sort((a, b) => {
       if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
       return new Date(b.last_message_at || 0).getTime() - new Date(a.last_message_at || 0).getTime();
     });
-  }, [list.items, filter]);
+  }, [list.items, filter, activeId]);
 
   const patchChat = useCallback((chatId, patch) => {
     setList((prev) => ({ ...prev, items: prev.items.map((c) => (c.chat_id === chatId ? { ...c, ...patch } : c)) }));
@@ -1187,22 +1678,118 @@ export default function WhatsAppChat() {
   );
 
   // ============================================================ scroll
+  // Regra: abrir a conversa cai na última mensagem e fica "grudado" no fim enquanto
+  // fotos/vídeos/áudios carregam (ResizeObserver). Rolou para cima → solta; mensagens
+  // novas viram a pílula "N novas mensagens". Envio próprio sempre desce.
+  const stickToEnd = useCallback((el) => {
+    if (!el || !pinnedRef.current) return;
+    const smooth = smoothNextRef.current;
+    smoothNextRef.current = false;
+    if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    else el.scrollTop = el.scrollHeight;
+    lastTopRef.current = el.scrollTop;
+  }, []);
+
   const scrollToEnd = useCallback((smooth = true) => {
-    const el = threadRef.current;
-    if (!el) return;
+    pinnedRef.current = true;
+    setUnseen(0);
     requestAnimationFrame(() => {
+      const el = threadRef.current;
+      if (!el) return;
       el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
     });
   }, []);
+
+  // conteúdo e a própria área mudando de tamanho → re-gruda no fim (se grudado)
+  const threadRO = useRef(null);
+  const contentRO = useRef(null);
+  const setThreadEl = useCallback(
+    (node) => {
+      threadRef.current = node;
+      threadRO.current?.disconnect();
+      threadRO.current = null;
+      if (!node || typeof ResizeObserver === 'undefined') return;
+      const ro = new ResizeObserver(() => stickToEnd(node));
+      ro.observe(node);
+      threadRO.current = ro;
+    },
+    [stickToEnd]
+  );
+  const setContentEl = useCallback(
+    (node) => {
+      contentRO.current?.disconnect();
+      contentRO.current = null;
+      if (!node || typeof ResizeObserver === 'undefined') return;
+      const ro = new ResizeObserver(() => stickToEnd(threadRef.current));
+      ro.observe(node);
+      contentRO.current = ro;
+    },
+    [stickToEnd]
+  );
+  useEffect(
+    () => () => {
+      threadRO.current?.disconnect();
+      contentRO.current?.disconnect();
+      if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    },
+    []
+  );
 
   const onThreadScroll = () => {
     const el = threadRef.current;
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    atBottomRef.current = dist < 80;
+    const up = el.scrollTop < lastTopRef.current - 1;
+    lastTopRef.current = el.scrollTop;
+    if (dist < 80) {
+      pinnedRef.current = true;
+      setUnseen(0);
+    } else if (up) pinnedRef.current = false; // rolagem para cima = o usuário quer ler; solta do fim
     setShowJump(dist > 320);
     if (el.scrollTop < 60 && hasOlder && !loadingOlder && !msgLoading) loadOlder();
   };
+
+  // depois de inserir as antigas no topo: devolve a mensagem-âncora ao mesmo lugar
+  useLayoutEffect(() => {
+    const a = anchorRef.current;
+    const el = threadRef.current;
+    if (!a || !el) return;
+    anchorRef.current = null;
+    if (!a.el.isConnected) return;
+    const delta = a.el.getBoundingClientRect().top - a.top;
+    if (Math.abs(delta) > 1) el.scrollTop += delta;
+    lastTopRef.current = el.scrollTop;
+  }, [messages]);
+
+  // mensagem nova chegou: grudado → desce suave; lendo acima → soma na pílula
+  const noteIncoming = useCallback(
+    (n = 1) => {
+      if (pinnedRef.current) {
+        smoothNextRef.current = true;
+        scrollToEnd(true);
+      } else setUnseen((u) => u + n);
+    },
+    [scrollToEnd]
+  );
+
+  // citação clicável → rola até a mensagem respondida e pisca
+  const jumpToQuoted = useCallback((waId) => {
+    if (!waId) return;
+    const target = messagesRef.current.find((m) => m.wa_message_id === waId);
+    const thread = threadRef.current;
+    const el = target && thread ? thread.querySelector(`[data-msgid="${String(target.id).replace(/["\\]/g, '')}"]`) : null;
+    if (!el) {
+      toast('Mensagem antiga — role para cima para carregar.', { icon: '⬆️' });
+      return;
+    }
+    pinnedRef.current = false;
+    const top = el.getBoundingClientRect().top - thread.getBoundingClientRect().top + thread.scrollTop;
+    thread.scrollTo({ top: Math.max(0, top - thread.clientHeight / 2 + el.offsetHeight / 2), behavior: 'smooth' });
+    setFlashId(null);
+    requestAnimationFrame(() => setFlashId(target.id));
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashId(null), 1900);
+  }, []);
 
   // ============================================================ abrir conversa
   const stopTyping = useCallback((send = true) => {
@@ -1227,13 +1814,18 @@ export default function WhatsAppChat() {
       setHasOlder(false);
       setEditing(null);
       setAttachment(null);
+      setQrMedia(null);
+      setQr(null);
       setShowJump(false);
-      atBottomRef.current = true;
+      setUnseen(0);
+      setFlashId(null);
+      pinnedRef.current = true;
+      lastTopRef.current = 0;
       sinceRef.current = null;
       const d = draftsRef.current.get(chat.chat_id);
       setText(d?.text || '');
       setReply(d?.reply || null);
-      setSearchParams(
+      setSearchParamsRef.current(
         (prev) => {
           const n = new URLSearchParams(prev);
           n.set('chat', chat.chat_id);
@@ -1251,14 +1843,14 @@ export default function WhatsAppChat() {
         setHasOlder(items.length >= PAGE);
         sinceRef.current = r.server_time || new Date().toISOString();
         scrollToEnd(false);
-        if (Number(chat.unread_count) > 0) markRead(chat.chat_id);
+        if (Number(chat.unread_count) > 0 && autoRead()) markRead(chat.chat_id);
       } catch (e) {
         if (seq === msgSeq.current) toast.error(errMsg(e, 'Falha ao abrir a conversa.'));
       } finally {
         if (seq === msgSeq.current) setMsgLoading(false);
       }
     },
-    [markRead, scrollToEnd, setSearchParams, stopTyping]
+    [markRead, scrollToEnd, stopTyping]
   );
 
   // ?chat=<chat_id> (vindo de Contatos ou refresh)
@@ -1285,18 +1877,18 @@ export default function WhatsAppChat() {
     const el = threadRef.current;
     if (!cur || !messages.length || loadingOlder) return;
     setLoadingOlder(true);
+    pinnedRef.current = false; // quem pede as antigas quer lê-las, não voltar ao fim
     const before = messages[0].timestamp;
-    const prevH = el?.scrollHeight || 0;
     try {
       const r = await get(`/whatsapp/chats/${enc(cur.chat_id)}/messages`, { params: { before, limit: PAGE } });
       if (activeRef.current?.chat_id !== cur.chat_id) return;
       const items = r.items || [];
       setHasOlder(items.length >= PAGE);
       if (items.length) {
+        // mantém na tela a mesma mensagem que estava no topo (independe do scroll anchoring do navegador)
+        const anchor = el?.querySelector('[data-msgid]');
+        anchorRef.current = anchor ? { el: anchor, top: anchor.getBoundingClientRect().top } : null;
         setMessages((prev) => upsertMsgs(prev, items));
-        requestAnimationFrame(() => {
-          if (el) el.scrollTop += el.scrollHeight - prevH;
-        });
       }
     } catch (e) {
       toast.error(errMsg(e, 'Falha ao carregar mensagens antigas.'));
@@ -1318,6 +1910,7 @@ export default function WhatsAppChat() {
         if (r.server_time) sinceRef.current = r.server_time;
         const items = r.items || [];
         if (!items.length) return;
+        const known = new Set(messagesRef.current.map((m) => m.id));
         setMessages((prev) => upsertMsgs(prev, items));
         const fresh = items.filter((m) => m.direction === 'IN' && new Date(m.timestamp).getTime() > new Date(since).getTime());
         if (fresh.length) {
@@ -1325,24 +1918,106 @@ export default function WhatsAppChat() {
           patchChat(cur.chat_id, {
             last_message_at: lastIn.timestamp,
             last_message_preview: previewOf(lastIn),
-            last_message_direction: 'IN'
+            last_message_direction: 'IN',
+            last_inbound_at: lastIn.timestamp,
+            waiting_reply: cur.kind === 'individual'
           });
-          if (document.hasFocus()) markRead(cur.chat_id);
-          if (atBottomRef.current) scrollToEnd(true);
+          if (document.hasFocus() && autoRead()) markRead(cur.chat_id);
+          const unknown = fresh.filter((m) => !known.has(m.id)).length;
+          if (unknown) noteIncoming(unknown);
         }
       } catch {
         /* silencioso */
       }
     };
-    const id = window.setInterval(tick, MSG_POLL_MS);
+    msgTickRef.current = tick;
+    const id = window.setInterval(tick, rtConnected ? MSG_POLL_RT_MS : MSG_POLL_MS);
     return () => window.clearInterval(id);
-  }, [active?.chat_id, markRead, patchChat, scrollToEnd]);
+  }, [active?.chat_id, markRead, patchChat, noteIncoming, rtConnected]);
+
+  // ============================================================ eventos em tempo real
+  // conversa passa (ou não) no filtro atual da lista?
+  const chatMatchesFilter = useCallback(
+    (c) => {
+      const f = filterRef.current || 'all';
+      const me = myIdRef.current;
+      if (!advMatches(c, advRef.current, me)) return false;
+      if (isCustomFilter(f)) {
+        const cf = customFilters.find((x) => x.id === f);
+        return Boolean(cf && (cf.chat_ids || []).includes(c.chat_id));
+      }
+      if (f === 'archived') return Boolean(c.archived);
+      if (c.archived) return false;
+      if (f === 'groups') return c.kind === 'group';
+      if (f === 'dms') return c.kind === 'individual';
+      if (f === 'unread') return (Number(c.unread_count) || 0) > 0;
+      if (f === 'mine') return Boolean(me) && c.service?.assigned_user?.id === me;
+      return true;
+    },
+    [customFilters]
+  );
+
+  useRealtimeEvent('wa:chat', ({ chat } = {}) => {
+    if (!chat?.chat_id) return;
+    const searching = Boolean(q.trim());
+    const isOpen = activeRef.current?.chat_id === chat.chat_id;
+    scheduleCounts();
+    setList((prev) => {
+      const idx = prev.items.findIndex((c) => c.chat_id === chat.chat_id);
+      const ok = chatMatchesFilter(chat);
+      if (idx >= 0) {
+        // saiu do filtro: some da lista — menos a conversa aberta, que fica até trocar
+        if (!ok && !searching && !isOpen)
+          return { ...prev, items: prev.items.filter((c) => c.chat_id !== chat.chat_id), total: Math.max(0, (prev.total || 1) - 1) };
+        const items = [...prev.items];
+        items[idx] = { ...items[idx], ...chat };
+        return { ...prev, items };
+      }
+      if (!ok || searching) return prev;
+      return { ...prev, items: [chat, ...prev.items], total: (prev.total || 0) + 1 };
+    });
+    const cur = activeRef.current;
+    if (cur && cur.chat_id === chat.chat_id) {
+      setActive((prev) => (prev ? { ...prev, ...chat } : prev));
+      // chegou mensagem na conversa aberta e a janela está em foco → marca lida
+      if ((Number(chat.unread_count) || 0) > 0 && document.hasFocus() && document.visibilityState === 'visible' && autoRead())
+        markRead(chat.chat_id);
+    }
+  });
+
+  useRealtimeEvent('wa:message', ({ chat_id: chatId, message } = {}) => {
+    const cur = activeRef.current;
+    if (!cur || !message?.id || chatId !== cur.chat_id) return;
+    const existed = messagesRef.current.some((m) => m.id === message.id);
+    setMessages((prev) => {
+      let base = prev;
+      // eco do nosso envio chegando antes da resposta HTTP: some a bolha provisória
+      if (!existed && message.direction === 'OUT') {
+        const tmp = prev.find(
+          (m) => m.pending && String(m.id).startsWith('tmp-') && m.type === message.type && (m.body || '') === (message.body || '')
+        );
+        if (tmp) base = prev.filter((m) => m.id !== tmp.id);
+      }
+      return upsertMsgs(base, [message]);
+    });
+    if (!existed) {
+      if (message.direction === 'OUT') scrollToEnd(true);
+      else noteIncoming(1);
+    }
+    // mensagem já existente mudou (mídia chegou, reação…) → o ResizeObserver mantém o fim
+  });
+
+  useRealtimeEvent('wa:message_deleted', ({ chat_id: chatId, id } = {}) => {
+    const cur = activeRef.current;
+    if (!cur || chatId !== cur.chat_id) return;
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+  });
 
   // ao voltar o foco pra janela, marca lidas se há não lidas no chat aberto
   useEffect(() => {
     const onFocus = () => {
       const cur = activeRef.current;
-      if (cur && Number(cur.unread_count) > 0) markRead(cur.chat_id);
+      if (cur && Number(cur.unread_count) > 0 && autoRead()) markRead(cur.chat_id);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -1363,10 +2038,102 @@ export default function WhatsAppChat() {
     []
   );
 
+  // ============================================================ respostas rápidas
+  const qrFetchRef = useRef(null);
+  const qrLoadedAt = useRef(0);
+  const loadQuickReplies = useCallback(() => {
+    if (qrFetchRef.current) return qrFetchRef.current;
+    setQrLoading(true);
+    qrFetchRef.current = get('/whatsapp/quick-replies')
+      .then((r) => {
+        setQrList(Array.isArray(r) ? r : r?.items || []);
+        qrLoadedAt.current = Date.now();
+      })
+      .catch(() => setQrList((prev) => prev || []))
+      .finally(() => {
+        setQrLoading(false);
+        qrFetchRef.current = null;
+      });
+    return qrFetchRef.current;
+  }, []);
+  useEffect(() => {
+    loadQuickReplies();
+  }, [loadQuickReplies]);
+  // cache: recarrega em segundo plano se ficou velho (alguém pode ter cadastrado outra)
+  const refreshQuickReplies = () => {
+    if (Date.now() - qrLoadedAt.current > 120000) loadQuickReplies();
+  };
+  const qrItems = useMemo(() => (qr ? filterQuickReplies(qrList, qr.query) : []), [qr, qrList]);
+
+  const pickQuickReply = (item) => {
+    const cur = activeRef.current;
+    if (!item || !cur) return;
+    const label = chatLabel(cur) || '';
+    const name = /^[+\d(]/.test(label) ? '' : firstName(label);
+    const body = fillQuickReply(item.text || '', { name, phone: fmtPhone(cur.phone) });
+    const mode = qr?.mode;
+    setQr(null);
+    const el = inputRef.current;
+    let caret = body.length;
+    if (mode === 'slash' || !text) setText(body);
+    else {
+      const s0 = el && typeof el.selectionStart === 'number' ? el.selectionStart : text.length;
+      const e0 = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : text.length;
+      setText(text.slice(0, s0) + body + text.slice(e0));
+      caret = s0 + body.length;
+    }
+    // anexo da resposta rápida: fica visível acima do campo e só vai junto no envio (Enter/Enviar)
+    if (item.media?.id) {
+      setAttachment(null);
+      setQrMedia({ media: item.media, shortcut: item.shortcut, title: item.title });
+    }
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(caret, caret);
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+
+  const toggleQuickReplies = () => {
+    if (qr) {
+      setQr(null);
+      return;
+    }
+    refreshQuickReplies();
+    if (!qrList?.length && !qrLoading) loadQuickReplies();
+    const empty = !text;
+    if (empty) setText('/');
+    setQr({ mode: empty ? 'slash' : 'button', query: '', index: 0 });
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      if (empty) {
+        try {
+          el.setSelectionRange(1, 1);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  };
+
   // ============================================================ composer
   const onTextChange = (v) => {
     setText(v);
     const cur = activeRef.current;
+    // "/atalho" no início do campo abre as respostas rápidas (e não avisa "digitando…")
+    const slash = !editing ? /^\/(\S*)$/.exec(v) : null;
+    if (slash) {
+      setQr((p) => ({ mode: 'slash', query: slash[1], index: p?.mode === 'slash' && p.query === slash[1] ? p.index : 0 }));
+      refreshQuickReplies();
+      return;
+    }
+    if (qr?.mode === 'slash') setQr(null);
     if (!cur || editing || !connectedRef.current) return;
     const t = typingRef.current;
     if (!t.on && v.trim()) {
@@ -1378,7 +2145,13 @@ export default function WhatsAppChat() {
   };
 
   const touchListAfterSend = (chatId, m) => {
-    patchChat(chatId, { last_message_at: m.timestamp, last_message_preview: previewOf(m), last_message_direction: 'OUT' });
+    patchChat(chatId, {
+      last_message_at: m.timestamp,
+      last_message_preview: previewOf(m),
+      last_message_direction: 'OUT',
+      last_outbound_at: m.timestamp,
+      waiting_reply: false
+    });
   };
 
   const insertEmoji = (em) => {
@@ -1401,6 +2174,7 @@ export default function WhatsAppChat() {
     const body = text.trim();
     if (!cur) return;
     if (attachment) return sendAttachment(body);
+    if (qrMedia && !editing) return sendQuickMedia(body);
     if (!body) return;
 
     if (editing) {
@@ -1457,6 +2231,56 @@ export default function WhatsAppChat() {
     }
   };
 
+  // resposta rápida com anexo: reenvia a mídia já guardada no servidor (sem upload)
+  const sendQuickMedia = async (caption) => {
+    const cur = activeRef.current;
+    const qm = qrMedia;
+    if (!cur || !qm?.media?.id) return;
+    const tmpId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const replyWas = reply;
+    const optimistic = {
+      id: tmpId,
+      chat_id: cur.chat_id,
+      direction: 'OUT',
+      type: quickMediaKind(qm.media),
+      body: caption,
+      ack: 0,
+      pending: true,
+      uploading: true,
+      reactions: [],
+      media: { ...qm.media },
+      quoted: replyWas ? { wa_message_id: replyWas.wa_message_id, preview: previewOf(replyWas) } : null,
+      timestamp: new Date().toISOString()
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    setQrMedia(null);
+    setText('');
+    setReply(null);
+    stopTyping();
+    scrollToEnd(true);
+    setSending(true);
+    try {
+      const m = await post('/whatsapp/messages/send-media', {
+        chat_id: cur.chat_id,
+        media_id: qm.media.id,
+        caption: caption || undefined,
+        quoted_wa_id: replyWas?.wa_message_id || undefined
+      });
+      setMessages((prev) => replaceTmp(prev, tmpId, m));
+      touchListAfterSend(cur.chat_id, m || optimistic);
+    } catch (e) {
+      setMessages((prev) => prev.filter((x) => x.id !== tmpId));
+      if (activeRef.current?.chat_id === cur.chat_id) {
+        setQrMedia(qm);
+        setText(caption);
+        setReply(replyWas);
+      }
+      toast.error(errMsg(e, 'Não foi possível enviar a resposta rápida.'));
+    } finally {
+      setSending(false);
+    }
+  };
+
   const retrySend = (msg) => {
     if (!msg?.body) return;
     setText(msg.body);
@@ -1477,6 +2301,7 @@ export default function WhatsAppChat() {
           : f.type.startsWith('audio/')
             ? 'audio'
             : 'document';
+    setQrMedia(null);
     setAttachment({ file: f, url: URL.createObjectURL(f), kind, asDocument: Boolean(asDocument) || kind === 'document' });
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -1486,7 +2311,7 @@ export default function WhatsAppChat() {
     if (!cur) return;
     const tmpId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const replyWas = reply;
-    const url = localUrl || (kind === 'image' ? URL.createObjectURL(file) : null);
+    const url = localUrl || (kind === 'image' || asVoice ? URL.createObjectURL(file) : null);
     const optimistic = {
       id: tmpId,
       chat_id: cur.chat_id,
@@ -1761,15 +2586,20 @@ export default function WhatsAppChat() {
       const map = { archive: 'archived', pin: 'pinned', mute: 'muted' };
       const field = map[kind];
       const next = !cur[field];
-      await post(`/whatsapp/chats/${enc(cur.chat_id)}/${kind}`, { [field]: next });
+      const r = await post(`/whatsapp/chats/${enc(cur.chat_id)}/${kind}`, { [field]: next });
       patchChat(cur.chat_id, { [field]: next });
       const label = {
         archive: next ? 'Conversa arquivada.' : 'Conversa desarquivada.',
         pin: next ? 'Conversa fixada.' : 'Conversa desafixada.',
         mute: next ? 'Conversa silenciada.' : 'Som reativado.'
       };
-      toast.success(label[kind]);
-      if (kind === 'archive') loadList({ silent: true });
+      // o WhatsApp pode recusar (ex.: conversa antiga sem mensagens): vale só no painel
+      if (r?.synced === false) toast(`${label[kind]} Só no Pub Mail: o WhatsApp não aceitou a mudança nesta conversa.`, { icon: 'ℹ️' });
+      else toast.success(label[kind]);
+      if (kind === 'archive') {
+        loadList({ silent: true });
+        scheduleCounts();
+      }
     } catch (e) {
       toast.error(errMsg(e, 'Falha na operação.'));
     }
@@ -1787,6 +2617,93 @@ export default function WhatsAppChat() {
     } catch (e) {
       setGroupDrawer(null);
       toast.error(errMsg(e, 'Não foi possível carregar o grupo.'));
+    }
+  };
+
+  // ============================================================ etiquetas da conversa
+  const tagSeq = useRef(0);
+  const saveChatTags = async (chatId, ids, prevTags, extra = []) => {
+    const byId = new Map([...orgTags, ...extra].map((t) => [t.id, t]));
+    patchChat(chatId, {
+      tags: ids
+        .map((id) => byId.get(id))
+        .filter(Boolean)
+        .map((t) => ({ id: t.id, name: t.name, color: t.color }))
+    });
+    const seq = ++tagSeq.current;
+    try {
+      const r = await put(`/whatsapp/chats/${enc(chatId)}/tags`, { tag_ids: ids });
+      if (seq === tagSeq.current && r?.chat_id) patchChat(chatId, r);
+      return true;
+    } catch (e) {
+      if (seq === tagSeq.current) patchChat(chatId, { tags: prevTags });
+      toast.error(errMsg(e, 'Não foi possível salvar as etiquetas.'));
+      return false;
+    }
+  };
+
+  const toggleChatTag = (tagId) => {
+    const cur = activeRef.current;
+    if (!cur) return;
+    const prevTags = Array.isArray(cur.tags) ? cur.tags : [];
+    const has = prevTags.some((t) => t.id === tagId);
+    const ids = has ? prevTags.filter((t) => t.id !== tagId).map((t) => t.id) : [...prevTags.map((t) => t.id), tagId];
+    setOrgTags((list) => list.map((t) => (t.id === tagId ? { ...t, count: Math.max(0, (Number(t.count) || 0) + (has ? -1 : 1)) } : t)));
+    saveChatTags(cur.chat_id, ids, prevTags);
+  };
+
+  const createTag = async (name, color) => {
+    try {
+      const t = await post('/whatsapp/tags', { name, color });
+      if (!t?.id) throw new Error('Resposta inválida do servidor.');
+      setOrgTags((list) => [...list, { ...t, count: 1 }]);
+      const cur = activeRef.current;
+      if (cur) {
+        const prevTags = Array.isArray(cur.tags) ? cur.tags : [];
+        await saveChatTags(cur.chat_id, [...prevTags.map((x) => x.id), t.id], prevTags, [t]);
+      }
+      toast.success(`Etiqueta “${t.name}” criada.`);
+      return true;
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível criar a etiqueta.'));
+      return false;
+    }
+  };
+
+  // ============================================================ atendimento
+  const SERVICE_TOAST = {
+    assume: 'Você assumiu o atendimento.',
+    release: 'Conversa liberada para a fila.',
+    close: 'Atendimento encerrado.',
+    reopen: 'Atendimento reaberto.',
+    bot_start: 'Conversa enviada para o bot.',
+    bot_stop: 'Bot parado nesta conversa.'
+  };
+  const serviceAction = async (action, userId) => {
+    const cur = activeRef.current;
+    if (!cur) return false;
+    const tid = toast.loading('Atualizando o atendimento…');
+    try {
+      const isBot = action === 'bot_start' || action === 'bot_stop';
+      const r = isBot
+        ? await post(`/whatsapp/chats/${enc(cur.chat_id)}/bot`, { action: action === 'bot_start' ? 'start' : 'stop' })
+        : await post(`/whatsapp/chats/${enc(cur.chat_id)}/service`, { action, user_id: userId || undefined });
+      const chat = r?.chat_id ? r : r?.chat?.chat_id ? r.chat : null;
+      if (chat) patchChat(chat.chat_id, chat);
+      const who = action === 'transfer' ? attendants.find((a) => a.id === userId)?.name : null;
+      toast.success(
+        action === 'transfer'
+          ? `Atendimento transferido para ${who || 'o atendente'}.`
+          : SERVICE_TOAST[action] || 'Atendimento atualizado.',
+        {
+          id: tid
+        }
+      );
+      scheduleCounts();
+      return true;
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível atualizar o atendimento.'), { id: tid });
+      return false;
     }
   };
 
@@ -1808,6 +2725,10 @@ export default function WhatsAppChat() {
         prev && senderKey(prev) === senderKey(m) && ts(m) - ts(prev) < GROUP_GAP_MS && startOfDay(prev.timestamp).getTime() === day;
       const sameAsNext =
         next && senderKey(next) === senderKey(m) && ts(next) - ts(m) < GROUP_GAP_MS && startOfDay(next.timestamp).getTime() === day;
+      if (m.type === 'call') {
+        out.push(<CallPill key={m.id} msg={m} />);
+        return;
+      }
       out.push(
         <MessageBubble
           key={m.id}
@@ -1815,15 +2736,17 @@ export default function WhatsAppChat() {
           isGroup={isGroup}
           first={!sameAsPrev}
           last={!sameAsNext}
+          flash={m.id === flashId}
           onMenu={openBubbleMenu}
           onImage={openImage}
           onRetry={retrySend}
           onReact={react}
+          onQuote={jumpToQuoted}
         />
       );
     });
     return out;
-  }, [messages, isGroup, openBubbleMenu, openImage, react]);
+  }, [messages, isGroup, flashId, openBubbleMenu, openImage, react, jumpToQuoted]);
 
   const headerSubtitle = !active
     ? ''
@@ -1837,8 +2760,51 @@ export default function WhatsAppChat() {
           ? 'Lista de transmissão'
           : fmtPhone(active.phone) || active.chat_id;
 
+  const emptyState = (() => {
+    if (q)
+      return {
+        title: 'Nenhuma conversa encontrada',
+        description: advCount ? 'A busca também respeita os filtros avançados ativos.' : undefined
+      };
+    if (advCount)
+      return { title: 'Nenhuma conversa com esses filtros', description: 'Ajuste ou limpe os filtros avançados para ver mais conversas.' };
+    if (filter === 'unread') return { title: 'Nada por ler' };
+    if (filter === 'archived') return { title: 'Nenhuma conversa arquivada' };
+    if (filter === 'mine')
+      return {
+        title: 'Nenhum atendimento com você',
+        description: 'Conversas que você assumir ou receber por transferência aparecem aqui.'
+      };
+    if (filter === 'dms') return { title: 'Nenhuma conversa individual' };
+    if (filter === 'groups') return { title: 'Nenhum grupo' };
+    if (isCustomFilter(filter))
+      return { title: 'Filtro vazio', description: 'Use o menu ⋮ do chip para editar o filtro e adicionar conversas.' };
+    return {
+      title: 'Nenhuma conversa ainda',
+      description: 'As conversas do número conectado aparecem aqui. Para começar uma, abra um contato em Contatos.'
+    };
+  })();
+
+  const isIndividual = active?.kind === 'individual';
+  const canTag = Boolean(active) && (active.kind === 'individual' || active.kind === 'group');
+  const activeSvc = isIndividual ? serviceInfo(active.service, { myId, compact: isNarrow, showClosed: true }) : null;
+  const activeTags = useMemo(() => (Array.isArray(active?.tags) ? active.tags.filter((t) => t && t.name) : []), [active?.tags]);
+  // etapa do funil (chip no cabeçalho) — lista de etapas carregada 1x e atualizada por wa:sync
+  const [stageMap, setStageMap] = useState(new Map());
+  const loadStages = useCallback(() => {
+    get('/whatsapp/pipeline/stages')
+      .then((r) => setStageMap(new Map((Array.isArray(r) ? r : []).map((st) => [st.id, st]))))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    loadStages();
+  }, [loadStages]);
+  useRealtimeEvent('wa:sync', (p) => p?.kind === 'pipeline' && loadStages());
+  const activeStage = active?.stage_id ? stageMap.get(active.stage_id) : null;
+  const activeTagIds = useMemo(() => activeTags.map((t) => t.id), [activeTags]);
+
   const offline = !connected;
-  const canSend = !offline && (Boolean(text.trim()) || Boolean(attachment));
+  const canSend = !offline && (Boolean(text.trim()) || Boolean(attachment) || Boolean(qrMedia));
   const showList = !isNarrow || !active;
   const showChat = !isNarrow || Boolean(active);
 
@@ -1864,6 +2830,33 @@ export default function WhatsAppChat() {
   }, [connected]);
 
   const onKeyDown = (e) => {
+    // lista de respostas rápidas aberta: teclado navega/insere (Enter nunca envia daqui)
+    if (qr) {
+      const n = qrItems.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (n) setQr((p) => (p ? { ...p, index: (p.index + (e.key === 'ArrowDown' ? 1 : -1) + n) % n } : p));
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        if (n) {
+          e.preventDefault();
+          pickQuickReply(qrItems[Math.min(qr.index, n - 1)]);
+          return;
+        }
+        if (e.key === 'Enter' && qr.mode === 'slash') {
+          // nenhum atalho: fecha a lista; um segundo Enter envia o texto como está
+          e.preventDefault();
+          setQr(null);
+          return;
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setQr(null);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!sending && canSend) sendText();
@@ -1871,7 +2864,8 @@ export default function WhatsAppChat() {
       if (editing) {
         setEditing(null);
         setText('');
-      } else if (reply) setReply(null);
+      } else if (qrMedia) setQrMedia(null);
+      else if (reply) setReply(null);
     }
   };
 
@@ -1943,50 +2937,153 @@ export default function WhatsAppChat() {
             }}
           >
             <Box sx={{ p: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
-              <TextField
-                fullWidth
-                size="small"
-                placeholder="Pesquisar ou começar uma nova conversa"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <IconSearch size={16} />
-                    </InputAdornment>
-                  ),
-                  endAdornment: q ? (
-                    <InputAdornment position="end">
-                      <IconButton size="small" onClick={() => setQ('')}>
-                        <IconX size={14} />
-                      </IconButton>
-                    </InputAdornment>
-                  ) : null
-                }}
-                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2.5, bgcolor: 'background.default' } }}
-              />
-              <Stack
-                direction="row"
-                spacing={0.75}
-                sx={{ mt: 1, overflowX: 'auto', pb: 0.25, scrollPaddingRight: 56, scrollbarWidth: 'thin', '&::-webkit-scrollbar': { height: 4 } }}
-              >
-                {FILTERS.map((f) => {
-                  const on = filter === f.id;
-                  return (
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                <TextField
+                  fullWidth
+                  size="small"
+                  placeholder="Pesquisar ou iniciar conversa"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <IconSearch size={16} />
+                      </InputAdornment>
+                    ),
+                    endAdornment: q ? (
+                      <InputAdornment position="end">
+                        <IconButton size="small" onClick={() => setQ('')}>
+                          <IconX size={14} />
+                        </IconButton>
+                      </InputAdornment>
+                    ) : null
+                  }}
+                  sx={{ flex: 1, '& .MuiOutlinedInput-root': { borderRadius: 2.5, bgcolor: 'background.default' } }}
+                />
+                <Tooltip title={advCount ? `Filtros avançados · ${advCount} ativo${advCount === 1 ? '' : 's'}` : 'Filtros avançados'}>
+                  <IconButton
+                    onClick={(e) => {
+                      setAdvAnchor(e.currentTarget);
+                      loadTags();
+                    }}
+                    aria-label="Filtros avançados"
+                    sx={[
+                      {
+                        width: 40,
+                        height: 40,
+                        flexShrink: 0,
+                        borderRadius: 2.5,
+                        border: '1px solid',
+                        borderColor: advCount ? WA_GREEN : 'divider',
+                        color: 'text.secondary',
+                        bgcolor: advCount ? (t) => tint(t, 'success', 0.1) : 'background.default',
+                        '&:hover': advCount
+                          ? { bgcolor: (t) => tint(t, 'success', 0.16) }
+                          : { bgcolor: 'action.hover', color: 'text.primary' }
+                      },
+                      Boolean(advCount) && ACTIVE_FG
+                    ]}
+                  >
+                    <Badge
+                      badgeContent={advCount}
+                      invisible={!advCount}
+                      sx={{
+                        '& .MuiBadge-badge': {
+                          minWidth: 16,
+                          height: 16,
+                          px: 0.4,
+                          fontSize: 10,
+                          fontWeight: 800,
+                          color: '#fff',
+                          bgcolor: WA_GREEN,
+                          border: '1.5px solid',
+                          borderColor: 'background.paper',
+                          top: -3,
+                          right: -4
+                        }
+                      }}
+                    >
+                      <IconAdjustmentsHorizontal size={18} />
+                    </Badge>
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+
+              <ActiveAdvChips value={adv} onChange={setAdv} tags={orgTags} attendants={attendants} myId={myId} sx={{ mt: 1 }} />
+
+              <ScrollChipsRow
+                sx={{ mt: 1 }}
+                trailing={
+                  <Tooltip title="Novo filtro (pasta de conversas)">
                     <Chip
-                      key={f.id}
-                      ref={on ? activeChipRef : undefined}
-                      label={f.label}
                       size="small"
-                      onClick={() => selectFilter(f.id)}
+                      icon={<IconPlus size={14} />}
+                      label={customFilters.length ? '' : 'Filtro'}
+                      onClick={() => setFilterModal({ initial: null })}
                       sx={{
                         fontWeight: 700,
                         borderRadius: 4,
                         flexShrink: 0,
-                        bgcolor: on ? (t) => tint(t, 'success', 0.18) : 'action.hover',
-                        color: on ? WA_DARK : 'text.secondary',
-                        '&:hover': { bgcolor: on ? (t) => tint(t, 'success', 0.24) : 'action.selected' }
+                        border: '1px dashed',
+                        borderColor: 'divider',
+                        bgcolor: 'background.paper',
+                        color: 'text.secondary',
+                        '& .MuiChip-icon': { color: 'inherit', ml: customFilters.length ? 0 : 0.75, mr: customFilters.length ? 0 : -0.25 },
+                        '& .MuiChip-label': { px: customFilters.length ? 0.75 : 1 },
+                        '&:hover': { bgcolor: 'action.hover', color: WA_DARK, borderColor: WA_DARK }
                       }}
+                    />
+                  </Tooltip>
+                }
+              >
+                {FILTERS.map((f) => {
+                  const on = filter === f.id;
+                  const n = Number(counts?.[f.count]) || 0;
+                  return (
+                    <Chip
+                      key={f.id}
+                      ref={on ? activeChipRef : undefined}
+                      size="small"
+                      onClick={() => selectFilter(f.id)}
+                      label={
+                        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.6 }}>
+                          {f.label}
+                          {n ? (
+                            <Box
+                              component="span"
+                              sx={{
+                                minWidth: 17,
+                                height: 17,
+                                px: 0.55,
+                                borderRadius: 9,
+                                display: 'inline-grid',
+                                placeItems: 'center',
+                                fontSize: 10,
+                                fontWeight: 800,
+                                lineHeight: 1,
+                                fontVariantNumeric: 'tabular-nums',
+                                ...(f.strong
+                                  ? { bgcolor: WA_GREEN, color: '#fff' }
+                                  : { bgcolor: on ? 'rgba(18,140,126,.18)' : 'action.selected', color: 'inherit' })
+                              }}
+                            >
+                              {fmtCount(n)}
+                            </Box>
+                          ) : null}
+                        </Box>
+                      }
+                      sx={[
+                        {
+                          fontWeight: 700,
+                          borderRadius: 4,
+                          flexShrink: 0,
+                          bgcolor: on ? (t) => tint(t, 'success', 0.18) : 'action.hover',
+                          color: 'text.secondary',
+                          '& .MuiChip-label': { px: 1.1 },
+                          '&:hover': { bgcolor: on ? (t) => tint(t, 'success', 0.24) : 'action.selected' }
+                        },
+                        on && ACTIVE_FG
+                      ]}
                     />
                   );
                 })}
@@ -2011,59 +3108,36 @@ export default function WhatsAppChat() {
                       onTouchEnd={onFilterPressEnd}
                       onTouchMove={onFilterPressEnd}
                       onTouchCancel={onFilterPressEnd}
-                      sx={{
-                        fontWeight: 700,
-                        borderRadius: 4,
-                        flexShrink: 0,
-                        maxWidth: 180,
-                        bgcolor: on ? (t) => tint(t, 'success', 0.18) : 'action.hover',
-                        color: on ? WA_DARK : 'text.secondary',
-                        '& .MuiChip-icon': { color: 'inherit', ml: 0.75 },
-                        '& .MuiChip-deleteIcon': {
-                          color: 'inherit',
-                          opacity: on ? 0.8 : 0,
-                          width: on ? 18 : 0,
-                          mr: on ? 0.5 : 0,
-                          ml: on ? -0.25 : -0.75,
-                          transition: 'opacity .15s ease, width .15s ease, margin .15s ease',
-                          '&:hover': { color: 'inherit', opacity: 1 }
+                      sx={[
+                        {
+                          fontWeight: 700,
+                          borderRadius: 4,
+                          flexShrink: 0,
+                          maxWidth: 180,
+                          bgcolor: on ? (t) => tint(t, 'success', 0.18) : 'action.hover',
+                          color: 'text.secondary',
+                          '& .MuiChip-icon': { color: 'inherit', ml: 0.75 },
+                          '& .MuiChip-deleteIcon': {
+                            color: 'inherit',
+                            opacity: on ? 0.8 : 0,
+                            width: on ? 18 : 0,
+                            mr: on ? 0.5 : 0,
+                            ml: on ? -0.25 : -0.75,
+                            transition: 'opacity .15s ease, width .15s ease, margin .15s ease',
+                            '&:hover': { color: 'inherit', opacity: 1 }
+                          },
+                          '&:hover .MuiChip-deleteIcon': { opacity: 1, width: 18, mr: 0.5, ml: -0.25 },
+                          '&:hover': { bgcolor: on ? (t) => tint(t, 'success', 0.24) : 'action.selected' }
                         },
-                        '&:hover .MuiChip-deleteIcon': { opacity: 1, width: 18, mr: 0.5, ml: -0.25 },
-                        '&:hover': { bgcolor: on ? (t) => tint(t, 'success', 0.24) : 'action.selected' }
-                      }}
+                        on && ACTIVE_FG
+                      ]}
                     />
                   );
                 })}
-                <Tooltip title="Novo filtro (pasta de conversas)">
-                  <Chip
-                    size="small"
-                    icon={<IconPlus size={14} />}
-                    label={customFilters.length ? '' : 'Filtro'}
-                    onClick={() => setFilterModal({ initial: null })}
-                    sx={{
-                      fontWeight: 700,
-                      borderRadius: 4,
-                      flexShrink: 0,
-                      // fica sempre visível no fim da linha, mesmo com muitos filtros (a linha rola por baixo dele)
-                      position: 'sticky',
-                      right: 0,
-                      zIndex: 1,
-                      ml: 'auto !important',
-                      border: '1px dashed',
-                      borderColor: 'divider',
-                      bgcolor: 'background.paper',
-                      boxShadow: (t) => `-10px 0 8px -4px ${t.vars.palette.background.paper}`,
-                      color: 'text.secondary',
-                      '& .MuiChip-icon': { color: 'inherit', ml: customFilters.length ? 0 : 0.75, mr: customFilters.length ? 0 : -0.25 },
-                      '& .MuiChip-label': { px: customFilters.length ? 0.75 : 1 },
-                      '&:hover': { bgcolor: 'action.hover', color: WA_DARK, borderColor: WA_DARK }
-                    }}
-                  />
-                </Tooltip>
-              </Stack>
+              </ScrollChipsRow>
             </Box>
 
-            <Box sx={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', p: 0.75 }}>
+            <Box sx={[THIN_SCROLL, { flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', p: 0.75 }]}>
               {listLoading && list.items.length === 0 ? (
                 <Box sx={{ p: 1 }}>
                   <TgListSkeleton rows={7} />
@@ -2072,32 +3146,31 @@ export default function WhatsAppChat() {
                 <TgEmptyState
                   dense
                   icon={IconMessages}
-                  title={
-                    filter === 'unread'
-                      ? 'Nada por ler'
-                      : filter === 'archived'
-                        ? 'Nenhuma conversa arquivada'
-                        : isCustomFilter(filter)
-                          ? q
-                            ? 'Nenhuma conversa encontrada'
-                            : 'Filtro vazio'
-                          : q
-                            ? 'Nenhuma conversa encontrada'
-                            : 'Nenhuma conversa ainda'
-                  }
-                  description={
-                    filter === 'all' && !q
-                      ? 'As conversas do número conectado aparecem aqui. Para começar uma, abra um contato em Contatos.'
-                      : isCustomFilter(filter) && !q
-                        ? 'Use o menu ⋮ do chip para editar o filtro e adicionar conversas.'
-                        : undefined
+                  title={emptyState.title}
+                  description={emptyState.description}
+                  action={
+                    advCount ? (
+                      <Button
+                        size="small"
+                        onClick={() => setAdv({ ...ADV_DEFAULT, tags: [] })}
+                        sx={{ fontWeight: 700, textTransform: 'none', color: WA_DARK }}
+                      >
+                        Limpar filtros avançados
+                      </Button>
+                    ) : undefined
                   }
                   sx={{ m: 1, border: 'none', bgcolor: 'transparent' }}
                 />
               ) : (
                 <Stack spacing={0.25}>
                   {visibleChats.map((c) => (
-                    <ChatListItem key={c.chat_id} chat={c} active={active?.chat_id === c.chat_id} onClick={() => openChat(c)} />
+                    <ChatListItem
+                      key={c.chat_id}
+                      chat={c}
+                      active={activeId === c.chat_id}
+                      onOpen={openChat}
+                      now={c.waiting_reply ? nowTick : 0}
+                    />
                   ))}
                   {list.page < list.pages ? (
                     <Box sx={{ textAlign: 'center', py: 1 }}>
@@ -2196,94 +3269,255 @@ export default function WhatsAppChat() {
                       icon={isGroup ? IconUsersGroup : undefined}
                     />
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Stack direction="row" spacing={0.75} alignItems="center">
-                        <Typography sx={{ fontWeight: 700 }} noWrap>
+                      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                           {chatLabel(active)}
                         </Typography>
-                        {active.muted ? <IconVolumeOff size={14} style={{ opacity: 0.5 }} /> : null}
-                        {active.pinned ? <IconPinned size={14} style={{ opacity: 0.5 }} /> : null}
+                        {activeSvc && !isNarrow ? <ServiceTag info={activeSvc} sx={{ maxWidth: 240 }} /> : null}
+                        {active.muted ? <IconVolumeOff size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
+                        {active.pinned ? <IconPinned size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
                       </Stack>
-                      <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                        {headerSubtitle}
-                      </Typography>
+                      {activeSvc && isNarrow ? (
+                        // no celular a etiqueta de atendimento desce para a 2ª linha (o nome fica inteiro)
+                        <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0, mt: 0.25 }}>
+                          <ServiceTag info={activeSvc} sx={{ maxWidth: 150 }} />
+                          <Typography variant="caption" sx={{ color: 'text.secondary', minWidth: 0 }} noWrap>
+                            {headerSubtitle}
+                          </Typography>
+                        </Stack>
+                      ) : (
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+                          {headerSubtitle}
+                        </Typography>
+                      )}
                     </Box>
                   </Stack>
-                  {active.contact?.tags?.length ? (
-                    <Stack direction="row" spacing={0.5} sx={{ display: { xs: 'none', md: 'flex' } }}>
+                  {activeStage || active.contact?.opted_out ? (
+                    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ display: { xs: 'none', md: 'flex' } }}>
+                      {activeStage ? (
+                        <Tooltip title={`Etapa do funil: ${activeStage.name}`}>
+                          <Chip
+                            size="small"
+                            onClick={() => setCustomerOpen(true)}
+                            label={activeStage.name}
+                            icon={
+                              <Box
+                                component="span"
+                                sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: activeStage.color, ml: '6px !important' }}
+                              />
+                            }
+                            sx={{
+                              height: 22,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              borderRadius: 1.5,
+                              borderLeft: '3px solid',
+                              borderColor: activeStage.color
+                            }}
+                          />
+                        </Tooltip>
+                      ) : null}
+                      {active.contact?.opted_out ? (
+                        <Tooltip title="Pediu para não receber mensagens (LGPD): fora dos broadcasts e agendamentos">
+                          <Chip
+                            size="small"
+                            label="Descadastrado"
+                            color="warning"
+                            variant="outlined"
+                            sx={{ height: 22, fontSize: 11, fontWeight: 700, borderRadius: 1.5 }}
+                          />
+                        </Tooltip>
+                      ) : null}
+                    </Stack>
+                  ) : null}
+                  {activeTags.length ? (
+                    <Stack
+                      direction="row"
+                      spacing={0.5}
+                      alignItems="center"
+                      onClick={(e) => setTagsAnchor(e.currentTarget)}
+                      sx={{ display: { xs: 'none', md: 'flex' }, cursor: 'pointer', maxWidth: 260, overflow: 'hidden' }}
+                    >
+                      {activeTags.slice(0, 2).map((t) => (
+                        <TagChip key={t.id} tag={t} size="md" />
+                      ))}
+                      <MoreChip
+                        n={Math.max(0, activeTags.length - 2)}
+                        title={activeTags
+                          .slice(2)
+                          .map((t) => t.name)
+                          .join(', ')}
+                      />
+                    </Stack>
+                  ) : active.contact?.tags?.length ? (
+                    <Stack direction="row" spacing={0.5} sx={{ display: { xs: 'none', lg: 'flex' } }}>
                       {active.contact.tags.slice(0, 3).map((t) => (
                         <Chip
                           key={t}
                           label={t}
                           size="small"
                           variant="outlined"
+                          title="Etiqueta do contato"
                           sx={{ height: 20, fontSize: 10.5, borderRadius: 1, borderColor: WA_DARK, color: WA_DARK }}
                         />
                       ))}
                     </Stack>
+                  ) : null}
+                  {canTag ? (
+                    <Tooltip title="Etiquetas da conversa">
+                      <IconButton size="small" onClick={(e) => setTagsAnchor(e.currentTarget)} aria-label="Etiquetas da conversa">
+                        <Badge
+                          badgeContent={activeTags.length}
+                          invisible={!activeTags.length}
+                          sx={{
+                            '& .MuiBadge-badge': {
+                              minWidth: 15,
+                              height: 15,
+                              px: 0.35,
+                              fontSize: 9.5,
+                              fontWeight: 800,
+                              color: '#fff',
+                              bgcolor: WA_DARK,
+                              top: 1,
+                              right: 1
+                            }
+                          }}
+                        >
+                          <IconTag size={20} />
+                        </Badge>
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  {isIndividual ? (
+                    <Tooltip title="Cliente (cadastro, assinaturas, vencimentos)">
+                      <IconButton size="small" onClick={() => setCustomerOpen(true)} aria-label="Cliente">
+                        <IconUserDollar size={20} />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  {isIndividual ? (
+                    <Tooltip title="Cobrar (PIX / boleto na conversa)">
+                      <span>
+                        <IconButton size="small" onClick={openCharge} aria-label="Cobrar" disabled={chargeBusy}>
+                          <IconReceipt2 size={20} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  ) : null}
+                  {isIndividual ? (
+                    <Tooltip title="Atendimento">
+                      <IconButton
+                        size="small"
+                        onClick={(e) => setSvcAnchor(e.currentTarget)}
+                        aria-label="Atendimento"
+                        sx={activeSvc && activeSvc.key !== 'closed' ? ACTIVE_FG : undefined}
+                      >
+                        <IconHeadset size={20} />
+                      </IconButton>
+                    </Tooltip>
                   ) : null}
                   <IconButton size="small" onClick={(e) => setHdrAnchor(e.currentTarget)}>
                     <IconDotsVertical size={20} />
                   </IconButton>
                 </Stack>
 
-                {/* thread */}
-                <Box
-                  ref={threadRef}
-                  onScroll={onThreadScroll}
-                  sx={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', position: 'relative', zIndex: 1 }}
-                >
-                  {msgLoading ? (
-                    <MessagesSkeleton />
-                  ) : messages.length === 0 ? (
-                    <Box sx={{ height: '100%', display: 'grid', placeItems: 'center', p: 3 }}>
-                      <Box
-                        sx={[
-                          dual({ bgcolor: '#fff8c5', color: '#54656f' }, { bgcolor: '#182229', color: '#8696a0' }),
-                          { px: 2, py: 1, borderRadius: 2, fontSize: 12.5, textAlign: 'center', maxWidth: 360 }
-                        ]}
-                      >
-                        Sem mensagens ainda. Escreva abaixo para começar a conversa.
-                      </Box>
-                    </Box>
-                  ) : (
-                    <Box sx={{ py: 1 }}>
-                      {loadingOlder ? (
-                        <Stack alignItems="center" sx={{ py: 1 }}>
-                          <CircularProgress size={18} sx={{ color: WA_GREEN }} />
-                        </Stack>
-                      ) : hasOlder ? (
-                        <Stack alignItems="center" sx={{ py: 0.5 }}>
-                          <Typography
-                            variant="caption"
-                            onClick={loadOlder}
-                            sx={{ color: 'text.secondary', cursor: 'pointer', fontWeight: 600 }}
-                          >
-                            Carregar mensagens anteriores
-                          </Typography>
-                        </Stack>
-                      ) : null}
-                      {messageRows}
-                      <Box sx={{ height: 8 }} />
-                    </Box>
-                  )}
-                </Box>
-                {showJump ? (
-                  <Fab
-                    size="small"
-                    onClick={() => scrollToEnd(true)}
-                    sx={{
-                      position: 'absolute',
-                      right: 20,
-                      bottom: 96,
-                      zIndex: 3,
-                      bgcolor: 'background.paper',
-                      color: 'text.secondary',
-                      '&:hover': { bgcolor: 'background.paper' }
-                    }}
+                {/* thread (+ pílula de novas mensagens por cima, logo acima do composer) */}
+                <Box sx={{ flex: 1, minHeight: 0, position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <Box
+                    ref={setThreadEl}
+                    onScroll={onThreadScroll}
+                    sx={[
+                      THIN_SCROLL,
+                      { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', position: 'relative' }
+                    ]}
                   >
-                    <IconArrowDown size={18} />
-                  </Fab>
-                ) : null}
+                    {msgLoading ? (
+                      <MessagesSkeleton />
+                    ) : messages.length === 0 ? (
+                      <Box sx={{ height: '100%', display: 'grid', placeItems: 'center', p: 3 }}>
+                        <Box
+                          sx={[
+                            dual({ bgcolor: '#fff8c5', color: '#54656f' }, { bgcolor: '#182229', color: '#8696a0' }),
+                            { px: 2, py: 1, borderRadius: 2, fontSize: 12.5, textAlign: 'center', maxWidth: 360 }
+                          ]}
+                        >
+                          Sem mensagens ainda. Escreva abaixo para começar a conversa.
+                        </Box>
+                      </Box>
+                    ) : (
+                      <Box ref={setContentEl} sx={{ py: 1 }}>
+                        {loadingOlder ? (
+                          <Stack alignItems="center" sx={{ py: 1 }}>
+                            <CircularProgress size={18} sx={{ color: WA_GREEN }} />
+                          </Stack>
+                        ) : hasOlder ? (
+                          <Stack alignItems="center" sx={{ py: 0.5 }}>
+                            <Typography
+                              variant="caption"
+                              onClick={loadOlder}
+                              sx={{ color: 'text.secondary', cursor: 'pointer', fontWeight: 600 }}
+                            >
+                              Carregar mensagens anteriores
+                            </Typography>
+                          </Stack>
+                        ) : null}
+                        {messageRows}
+                        <Box sx={{ height: 8 }} />
+                      </Box>
+                    )}
+                  </Box>
+                  {unseen > 0 ? (
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => scrollToEnd(true)}
+                      sx={{
+                        position: 'absolute',
+                        left: '50%',
+                        bottom: 14,
+                        transform: 'translateX(-50%)',
+                        zIndex: 3,
+                        border: 0,
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 0.6,
+                        pl: 1.5,
+                        pr: 1.1,
+                        height: 32,
+                        borderRadius: 16,
+                        fontSize: 12.5,
+                        fontWeight: 800,
+                        fontFamily: 'inherit',
+                        color: '#fff',
+                        bgcolor: WA_DARK,
+                        boxShadow: '0 6px 18px rgba(0,0,0,.22)',
+                        animation: `${popIn} .18s ease-out`,
+                        '&:hover': { bgcolor: '#0f7a6e' }
+                      }}
+                    >
+                      {unseen > 99 ? '99+' : unseen} {unseen === 1 ? 'nova mensagem' : 'novas mensagens'}
+                      <IconArrowDown size={15} stroke={2.4} />
+                    </Box>
+                  ) : showJump ? (
+                    <Fab
+                      size="small"
+                      onClick={() => scrollToEnd(true)}
+                      aria-label="Ir para a última mensagem"
+                      sx={{
+                        position: 'absolute',
+                        right: 20,
+                        bottom: 16,
+                        zIndex: 3,
+                        bgcolor: 'background.paper',
+                        color: 'text.secondary',
+                        '&:hover': { bgcolor: 'background.paper' }
+                      }}
+                    >
+                      <IconArrowDown size={18} />
+                    </Fab>
+                  ) : null}
+                </Box>
 
                 {/* barra de resposta / edição */}
                 {reply || editing ? (
@@ -2384,6 +3618,68 @@ export default function WhatsAppChat() {
                   </Stack>
                 ) : null}
 
+                {/* anexo da resposta rápida (só vai no envio: Enter / Enviar) */}
+                {qrMedia ? (
+                  <Stack
+                    direction="row"
+                    spacing={1.25}
+                    alignItems="center"
+                    sx={{
+                      px: 1.5,
+                      py: 1,
+                      position: 'relative',
+                      zIndex: 2,
+                      borderTop: '1px solid',
+                      borderColor: 'divider',
+                      bgcolor: 'background.paper'
+                    }}
+                  >
+                    {quickMediaKind(qrMedia.media) === 'image' && qrMedia.media.url ? (
+                      <img src={qrMedia.media.url} alt="anexo" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover' }} />
+                    ) : (
+                      <Box
+                        sx={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 2,
+                          display: 'grid',
+                          placeItems: 'center',
+                          bgcolor: (t) => tint(t, 'success', 0.12),
+                          color: WA_DARK,
+                          flexShrink: 0
+                        }}
+                      >
+                        {(() => {
+                          const MI = quickMediaMeta(qrMedia.media).icon;
+                          return <MI size={22} />;
+                        })()}
+                      </Box>
+                    )}
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Stack direction="row" spacing={0.5} alignItems="center">
+                        <Box sx={[ACTIVE_FG, { display: 'grid' }]}>
+                          <IconBolt size={13} />
+                        </Box>
+                        <Typography variant="caption" sx={[ACTIVE_FG, { fontWeight: 800 }]}>
+                          Anexo da resposta rápida · /{qrMedia.shortcut}
+                        </Typography>
+                      </Stack>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                        {qrMedia.media.filename || qrMedia.title || quickMediaMeta(qrMedia.media).label}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+                        {qrMedia.media.size ? `${fmtBytes(qrMedia.media.size)} · ` : ''}vai junto com o texto ao enviar (o texto vira a
+                        legenda)
+                      </Typography>
+                    </Box>
+                    <Tooltip title="Remover anexo">
+                      <IconButton size="small" onClick={() => setQrMedia(null)}>
+                        <IconX size={16} />
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
+                ) : null}
+
                 {/* composer */}
                 <Stack
                   direction="row"
@@ -2395,7 +3691,7 @@ export default function WhatsAppChat() {
                       p: 1,
                       position: 'relative',
                       zIndex: 2,
-                      borderTop: reply || editing || attachment ? 'none' : '1px solid',
+                      borderTop: reply || editing || attachment || qrMedia ? 'none' : '1px solid',
                       borderColor: 'divider'
                     }
                   ]}
@@ -2433,6 +3729,7 @@ export default function WhatsAppChat() {
                   ) : (
                     <>
                       <Box
+                        ref={composerBoxRef}
                         sx={{
                           flex: 1,
                           minWidth: 0,
@@ -2444,7 +3741,8 @@ export default function WhatsAppChat() {
                           borderRadius: 3,
                           bgcolor: 'background.paper',
                           border: '1px solid',
-                          borderColor: 'divider'
+                          borderColor: qr ? WA_GREEN : 'divider',
+                          transition: 'border-color .12s ease'
                         }}
                       >
                         <Tooltip title="Emoji">
@@ -2469,6 +3767,19 @@ export default function WhatsAppChat() {
                             </IconButton>
                           </span>
                         </Tooltip>
+                        <Tooltip title="Respostas rápidas (digite / no início)">
+                          <span>
+                            <IconButton
+                              size="small"
+                              onClick={toggleQuickReplies}
+                              disabled={Boolean(editing) || offline}
+                              aria-label="Respostas rápidas"
+                              sx={qr ? ACTIVE_FG : undefined}
+                            >
+                              <IconBolt size={21} />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                         <input ref={fileMediaRef} type="file" accept="image/*,video/*" hidden onChange={(e) => pickFile(e, false)} />
                         <input ref={fileDocRef} type="file" hidden onChange={(e) => pickFile(e, true)} />
                         <TextField
@@ -2481,9 +3792,11 @@ export default function WhatsAppChat() {
                               ? 'Conecte o WhatsApp para enviar'
                               : editing
                                 ? 'Edite a mensagem…'
-                                : attachment
+                                : attachment || qrMedia
                                   ? 'Legenda (opcional)'
-                                  : 'Digite uma mensagem'
+                                  : isNarrow
+                                    ? 'Digite uma mensagem'
+                                    : 'Digite uma mensagem ou / para respostas rápidas'
                           }
                           disabled={offline}
                           value={text}
@@ -2548,6 +3861,70 @@ export default function WhatsAppChat() {
           </Box>
         ) : null}
       </Box>
+
+      {/* ---------------- respostas rápidas ---------------- */}
+      <QuickRepliesPopper
+        open={Boolean(qr) && Boolean(active)}
+        anchorEl={composerBoxRef.current}
+        items={qrItems}
+        total={qrList?.length || 0}
+        loading={qrLoading}
+        index={qr ? Math.min(qr.index, Math.max(0, qrItems.length - 1)) : 0}
+        query={qr?.query || ''}
+        onHover={(i) => setQr((p) => (p ? { ...p, index: i } : p))}
+        onPick={pickQuickReply}
+        onClose={() => setQr(null)}
+        onManage={() => {
+          setQr(null);
+          navigate('/whatsapp/settings');
+        }}
+      />
+
+      {/* ---------------- filtros avançados ---------------- */}
+      <AdvancedFiltersPopover
+        anchorEl={advAnchor}
+        onClose={() => setAdvAnchor(null)}
+        value={adv}
+        onChange={setAdv}
+        tags={orgTags}
+        attendants={attendants}
+        myId={myId}
+      />
+
+      {/* ---------------- etiquetas / atendimento da conversa ---------------- */}
+      <TagsPopover
+        anchorEl={tagsAnchor}
+        onClose={() => setTagsAnchor(null)}
+        selectedIds={activeTagIds}
+        tags={orgTags}
+        onToggle={toggleChatTag}
+        onCreate={createTag}
+      />
+      <AttendanceMenu
+        anchorEl={svcAnchor}
+        onClose={() => setSvcAnchor(null)}
+        chat={active}
+        myId={myId}
+        onAction={(a) => serviceAction(a)}
+        onTransfer={() => setTransferOpen(true)}
+        onHistory={() => setHistoryOpen(true)}
+      />
+      <TransferDialog
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        attendants={attendants}
+        currentId={active?.service?.assigned_user?.id || null}
+        myId={myId}
+        onConfirm={(userId) => serviceAction('transfer', userId)}
+      />
+      <ServiceHistoryDialog
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        chatId={active?.chat_id}
+        chatName={active ? chatLabel(active) : ''}
+        attendants={attendants}
+        tags={orgTags}
+      />
 
       {/* ---------------- emoji (composer / reação) ---------------- */}
       <EmojiPicker
@@ -3164,6 +4541,15 @@ export default function WhatsAppChat() {
           </Stack>
         ) : null}
       </TgModal>
+
+      {/* ---------------- cliente (CRM) ---------------- */}
+      <CustomerPanel open={customerOpen && Boolean(active)} onClose={() => setCustomerOpen(false)} chat={active} canDelete={canTag} />
+      <ChargeDialog
+        open={Boolean(charge)}
+        onClose={() => setCharge(null)}
+        customer={charge?.customer || null}
+        products={charge?.products || []}
+      />
 
       {/* ---------------- participantes do grupo ---------------- */}
       <Drawer

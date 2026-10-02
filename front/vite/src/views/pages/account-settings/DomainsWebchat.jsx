@@ -175,6 +175,39 @@ function StatusChip({ status }) {
   );
 }
 
+// Certificado HTTPS do domínio (emitido pelo certbot depois da verificação do DNS).
+// Sem ele o domínio "verificado" não abre em https — por isso precisa aparecer na tela.
+function SslChip({ domain }) {
+  const ssl = String(domain?.ssl_status || '').toUpperCase();
+  const base = { borderRadius: 2, fontWeight: 900 };
+  if (ssl === 'ISSUED' || ssl === 'SKIPPED') {
+    return <Chip size="small" color="success" variant="outlined" label="HTTPS ativo" sx={base} />;
+  }
+  if (ssl === 'PROVISIONING') {
+    return (
+      <Chip
+        size="small"
+        color="info"
+        variant="outlined"
+        icon={<CircularProgress size={12} color="inherit" />}
+        label="Emitindo HTTPS…"
+        sx={base}
+      />
+    );
+  }
+  if (ssl === 'FAILED') {
+    return (
+      <Tooltip
+        arrow
+        title="Não foi possível emitir o certificado HTTPS. O sistema tenta de novo sozinho a cada hora; você também pode clicar em Verificar agora."
+      >
+        <Chip size="small" color="warning" variant="filled" label="HTTPS pendente" sx={base} />
+      </Tooltip>
+    );
+  }
+  return null;
+}
+
 function DnsRow({ type, name, value, onCopy }) {
   return (
     <Box
@@ -439,6 +472,7 @@ function DomainCard({ domain, loading, onDelete, onVerify, onCopyValue, onEditAd
     >
       <Stack direction="row" spacing={1.25} alignItems="center" sx={{ mb: 1 }}>
         <StatusChip status={status} />
+        {isVerified ? <SslChip domain={domain} /> : null}
 
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: 950, lineHeight: 1.1 }} noWrap title={domain?.domain}>
@@ -555,6 +589,14 @@ export default function DomainsWebchat() {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [adsTxtDomain, setAdsTxtDomain] = useState(null);
   const [snack, setSnack] = useState({ open: false, msg: '', severity: 'success' });
+
+  // enquanto algum certificado está sendo emitido, atualiza a lista sozinha
+  const provisioning = list.some((d) => String(d?.ssl_status || '').toUpperCase() === 'PROVISIONING');
+  useEffect(() => {
+    if (!provisioning) return undefined;
+    const t = setInterval(() => refresh(), 5000);
+    return () => clearInterval(t);
+  }, [provisioning, refresh]);
 
   useEffect(() => {
     const normalized = normalizeDomain(domainInput);

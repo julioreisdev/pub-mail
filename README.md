@@ -17,6 +17,8 @@ Plataforma **multi-tenant** de marketing e automação: **webchats com agentes d
   - [Email Marketing](#email-marketing)
   - [Leads e Automações](#leads-e-automações)
   - [Telegram](#telegram)
+  - [WhatsApp](#whatsapp)
+  - [WordPress — Tradutor Invisível](#wordpress--tradutor-invisível)
   - [Administração, Integrações e Conta](#administração-integrações-e-conta)
 - [Arquitetura](#arquitetura)
 - [Stack](#stack)
@@ -87,14 +89,25 @@ O fluxo típico: captar leads (webchat, quiz, formulário no site, Telegram) →
 - **Pagamentos / VIP**: `/vip` → planos → **PIX** (Mercado Pago ou PushinPay, QR + copia-e-cola com botão de copiar) → validação real no gateway → **link de convite de uso único** para o grupo/canal VIP. **Assinaturas por tempo** com lembrete, expiração (remove do VIP) e renovação. Mensagens do checkout totalmente configuráveis. Botão de plano também em broadcasts, automações e fluxo.
 
 ### WhatsApp
-Módulo por organização (1 número), sobre o gateway open source **OpenWA** (Docker, loopback):
-- **Configurações**: conectar por QR ou código, perfil (foto/nome/recado), teste, importar do celular, aquecimento com toggle de responsabilidade.
-- **Chat**: conversas e grupos com fotos, mídia, citação, encaminhar, reagir, editar, apagar, enquetes, áudio gravado; filtros personalizados (abas com os contatos/grupos que você escolher).
+Módulo por organização (1 número), sobre o gateway open source **OpenWA** (Docker, loopback), com atualização **em tempo real** (WebSocket):
+- **Configurações**: conectar por QR ou código, perfil (foto/nome/recado), teste, **motor de conexão** (direto/Baileys, recomendado, ou WhatsApp Web; migração com um clique), **sincronização com o celular** com progresso ao vivo, aquecimento, atendimento (encerrar parado após X h, assinatura do atendente), **etiquetas**, **respostas rápidas** e diagnóstico da conexão.
+- **Chat**: conversas e grupos com fotos e todas as mídias (download), citação, encaminhar, reagir, editar, apagar, enquetes, áudio gravado; lidas/não lidas sincronizadas com o celular; filtros (Não lidos, DMs, Grupos, Meus atendimentos, filtros personalizados e avançados por etiqueta, atendimento, atendente e "sem resposta há X h"); **atendimento** (assumir, transferir, fila, encerrar, enviar para o bot, histórico) com etiquetas automáticas (Bot, atendente, Na fila); `/atalho` para respostas rápidas.
+- **Fluxo do Bot**: construtor visual (mensagens com mídia, opções numeradas, perguntas com validação e variáveis, condições, etiquetas, espera, **cobrança PIX**, transferir para atendente, encerrar) + simulador; público em modo teste, por etiqueta ou todos; horário de atendimento; o bot para quando um humano responde e volta sozinho depois de X h.
 - **Contatos**: agenda do celular + contatos salvos na organização (sobrevivem à troca de número), tags, importar/exportar CSV.
-- **Status**: texto/imagem/vídeo/áudio, agora ou agendado.
+- **Status**: ver e responder os status dos contatos; publicar texto/imagem/vídeo/áudio, agora ou agendado.
 - **Agendamentos**: mensagem pontual para contatos/grupos em dia e hora; some da lista depois de enviada.
 - **Broadcasts**: audiência por contatos/tags/grupos, copies com rotação, horários diários, aquecimento por organização, histórico por envio.
-Ban é um risco real de qualquer cliente não-oficial: número dedicado + aquecimento. Plano e decisões: `docs/plano-modulo-whatsapp.md`; tutorial do cliente: `WhatsApp - Como conectar.pdf`.
+- **CRM de atendimento** (02/10/2026): **Produtos** (preço, cobrança única/mensal/trimestral/anual) e **Clientes** (contato promovido, CPF/CNPJ, e-mail, endereço, campos personalizados, assinaturas com vencimento, importar/exportar CSV) com painel lateral na conversa e variáveis `{{cliente.*}}` em qualquer mensagem; **Cobranças** PIX e/ou boleto (Mercado Pago) enviadas na conversa, recorrência automática antes do vencimento, régua de lembretes, confirmação automática, recibo e etiqueta "Inadimplente"; **Funil** Kanban (etapas com ações: mensagem, etiquetas, tarefa; entrada automática e "pago → etapa"), **Tarefas** com aviso no prazo e **Notas internas**; **Métricas** (1ª resposta, resolução, por atendente/etiqueta, satisfação, cobranças), **pesquisa de satisfação** ao encerrar, **distribuição automática** da fila (rodízio / menos ocupado entre quem está online) e **LGPD** (palavra de descadastro tira o contato dos envios em massa). Plano: `docs/plano-whatsapp-crm.md`; tutorial do cliente: `WhatsApp - CRM e Cobranças.pdf`.
+Ban é um risco real de qualquer cliente não-oficial: número dedicado + aquecimento. Plano e decisões: `docs/plano-modulo-whatsapp.md` e `docs/plano-whatsapp-v2.md`; tutorial do cliente: `WhatsApp - Como conectar.pdf`.
+
+### WordPress — Tradutor Invisível
+
+Plugin WordPress que mostra cada post e página no idioma do navegador de cada visitante, sem botões nem avisos (pensado para tráfego pago em vários países com um único conteúdo). Código em `wordpress/tradutor-invisivel/`, kit de build e testes em `wordpress/tradutor-invisivel-dev/`, plano e resultados em `docs/plano-tradutor-invisivel.md`.
+
+- **WordPress → Tradução Invisível** (módulo `wordpress`): botão **Baixar plugin** (o `.zip` já vem com a chave da conta), 3 passos de instalação, lista dos sites que usam o plugin e **Gerar nova chave**. Sites ilimitados.
+- **Licença pela conta:** o plugin confere a licença no Pub Mail de hora em hora (a cada 5 min quando parado) e só aceita resposta **assinada** (Ed25519). Acesso vencido, bloqueado ou sem o módulo = o plugin para na hora (sem tolerância) e volta sozinho ao renovar. **Atualização automática** pelo próprio WordPress, com o pacote servido pelo Pub Mail.
+- **Página 100% traduzida e endereço no idioma do visitante:** traduz também o que está em volta do post (menus, outros posts, comentários, textos do tema — estes a partir do original em inglês) e troca o endereço na barra (`/grow-tomatoes/` → `/cultivando-tomates-em-casa/`), que abre a mesma página ao ser compartilhado. Testado em Twenty Twenty-Five, Kadence e Twenty Twenty-One.
+- **Edição avulsa:** `/tradutor-invisivel.zip` (raiz) funciona sem licença, para venda separada.
 
 ### Administração, Integrações e Conta
 
@@ -227,7 +240,8 @@ No **Construtor de Funil**, uma sequência pode terminar em **💳 Cobrança PIX
 
 Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda, e-mail do certbot) ficam no banco (`system_settings`) e são editadas em **Integrações**.
 
-- `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_WEBHOOK_BASE` — gateway WhatsApp (OpenWA em Docker, loopback); `WHATSAPP_MEDIA_QUOTA_MB` (cota de mídia por org, padrão 2048)
+- `WP_PLUGIN_SIGNING_KEY` (assina a licença do plugin WordPress; nunca trocar depois de ter clientes), `APP_PUBLIC_URL` e `WP_PLUGIN_SOURCE_DIR` (opcionais)
+- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (gateway WhatsApp com motor Baileys, recomendado) e `OPENWA_URL` / `OPENWA_API_KEY` (gateway whatsapp-web.js, opcional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (cota de mídia por org, padrão 2048)
 
 ### AI micro
 
@@ -326,7 +340,7 @@ Três units — `pubmail-back` (`node dist/src/main.js`, porta 8000, **roda como
 
 - Vhost do **front** (domínio da plataforma): `root /opt/pub-mail/front/vite/dist` + `try_files $uri /index.html`.
 - Vhost da **API** (`api.<domínio>`): `location ^~ /uploads/ { alias /opt/pub-mail/back/uploads/; expires 365d; add_header Cache-Control "public, immutable"; }` **antes** do `location / { proxy_pass http://127.0.0.1:8000; }`; `client_max_body_size 520m` + `client_body_timeout 600s` (upload de vídeos de produto do webchat). A pasta `back/protected/` (produtos pagos) **não** pode ser servida pelo nginx.
-- `000-default-deny` (`default_server` retornando 444) para hosts não cadastrados.
+- `000-default-deny` (`default_server` retornando 444) e `000-default-deny-ssl` (`default_server` na 443 com `ssl_reject_handshake on`) para hosts não cadastrados.
 - `certbot --nginx --redirect -d <front> -d www.<front> -d api.<front>` (o `--redirect` força HTTPS). Um `server` extra em 443 para `www.<front>` com `return 301 https://<front>$request_uri`. Domínios de cliente são provisionados pelo próprio sistema (vhost + certbot automáticos ao clicar "Verificar DNS").
 - Firewall (`ufw`): só **22/80/443**. Os micros escutam em `*:4000`/`*:9999` mas ficam inacessíveis de fora pelo firewall. SSH só por chave (`PasswordAuthentication no` num drop-in `/etc/ssh/sshd_config.d/00-*.conf` — o nome precisa vir **antes** dos drop-ins do provedor, porque no `sshd` vale o primeiro valor lido).
 

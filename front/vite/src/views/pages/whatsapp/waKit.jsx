@@ -10,6 +10,7 @@ import { IconBrandWhatsapp, IconPlugConnectedX, IconSettings } from '@tabler/ico
 
 import { get } from 'api/api';
 import { TgCard } from 'views/pages/telegram/ui';
+import { useRealtimeEvent } from 'realtime/useRealtime';
 
 export const WA_GREEN = '#25D366';
 export const WA_DARK = '#128C7E';
@@ -227,6 +228,8 @@ export function useWaSession(pollMs = 20000) {
     }, pollMs);
     return () => clearInterval(id);
   }, [reload, pollMs]);
+  // conexão mudou (conectou, caiu, QR novo) → atualiza na hora
+  useRealtimeEvent('wa:session', () => reload());
   const connected = Boolean(session?.connected ?? session?.status === 'ready');
   return { session, loading, connected, reload };
 }

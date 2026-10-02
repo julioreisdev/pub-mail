@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { get, post, storeTokens, clearStoredSession } from '../api/api';
+import { disconnectSocket } from '../realtime/socket';
 
 const AuthContext = createContext(null);
 
@@ -81,6 +82,7 @@ export function AuthProvider({ children }) {
     const logout = () => {
         // revoga o refresh no back (best-effort) e limpa local
         post('/auth/logout').catch(() => {});
+        disconnectSocket();
         clearSession();
     };
 

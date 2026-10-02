@@ -29,6 +29,7 @@ import {
   IconAddressBook,
   IconBuildingStore,
   IconBan,
+  IconHandStop,
   IconBrandWhatsapp,
   IconCheck,
   IconDeviceMobile,
@@ -204,6 +205,7 @@ export default function WhatsAppContacts() {
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [saved, setSaved] = useState('all');
+  const [optout, setOptout] = useState('all'); // LGPD: all | 1 (descadastrados)
   const [tag, setTag] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -229,7 +231,7 @@ export default function WhatsAppContacts() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, saved, tag, pageSize]);
+  }, [debouncedQ, saved, tag, optout, pageSize]);
 
   const load = useCallback(
     async ({ silent = false } = {}) => {
@@ -237,7 +239,14 @@ export default function WhatsAppContacts() {
       if (!silent) setLoading(true);
       try {
         const r = await get('/whatsapp/contacts', {
-          params: { q: debouncedQ || undefined, saved, tag: tag || undefined, page, page_size: pageSize }
+          params: {
+            q: debouncedQ || undefined,
+            saved,
+            tag: tag || undefined,
+            optout: optout === '1' ? 1 : undefined,
+            page,
+            page_size: pageSize
+          }
         });
         if (seq !== seqRef.current) return; // resposta fora de ordem
         setData({
@@ -254,7 +263,7 @@ export default function WhatsAppContacts() {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [debouncedQ, saved, tag, page, pageSize]
+    [debouncedQ, saved, tag, optout, page, pageSize]
   );
 
   useEffect(() => {
@@ -275,6 +284,19 @@ export default function WhatsAppContacts() {
   const setRowLoading = (id, v) => setRowBusy((m) => ({ ...m, [id]: v }));
 
   // ---------------- ações por linha ----------------
+  const setOptedOut = async (contact, next) => {
+    setRowLoading(contact.id, true);
+    try {
+      const r = await patch(`/whatsapp/contacts/${contact.id}`, { opted_out: next });
+      if (r && typeof r === 'object') patchRow(contact.id, r);
+      toast.success(next ? 'Contato descadastrado.' : 'Contato reativado.');
+      load({ silent: true });
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível atualizar.'));
+    } finally {
+      setRowLoading(contact.id, false);
+    }
+  };
   const toggleSaved = async (contact, next) => {
     patchRow(contact.id, { saved: next });
     setRowLoading(contact.id, true);
@@ -584,6 +606,10 @@ export default function WhatsAppContacts() {
             </MenuItem>
           ))}
         </TextField>
+        <TextField select size="small" label="LGPD" value={optout} onChange={(e) => setOptout(e.target.value)} sx={{ minWidth: 170 }}>
+          <MenuItem value="all">Todos</MenuItem>
+          <MenuItem value="1">Só descadastrados</MenuItem>
+        </TextField>
         <TextField select size="small" label="Tag" value={tag} onChange={(e) => setTag(e.target.value)} sx={{ minWidth: 170 }}>
           <MenuItem value="">Todas</MenuItem>
           {data.tags.map((t) => (
@@ -784,6 +810,20 @@ export default function WhatsAppContacts() {
                                 />
                               </Tooltip>
                             ) : null}
+                            {c.opted_out ? (
+                              <Tooltip
+                                title={`Pediu para não receber mensagens (LGPD) em ${fmtDateTime(c.opted_out_at)}. Não entra em disparos em massa.`}
+                              >
+                                <Chip
+                                  size="small"
+                                  icon={<IconHandStop size={12} />}
+                                  label="Descadastrado"
+                                  color="warning"
+                                  variant="outlined"
+                                  sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
+                                />
+                              </Tooltip>
+                            ) : null}
                             {c.is_blocked ? (
                               <Chip
                                 size="small"
@@ -908,6 +948,15 @@ export default function WhatsAppContacts() {
                             </IconButton>
                           </span>
                         </Tooltip>
+                        {c.opted_out ? (
+                          <Tooltip title="Reativar: volta a receber disparos (use só com consentimento do contato)">
+                            <span>
+                              <IconButton size="small" color="warning" onClick={() => setOptedOut(c, false)} disabled={rb}>
+                                <IconHandStop size={18} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        ) : null}
                         <Tooltip title="Verificar se tem WhatsApp">
                           <span>
                             <IconButton size="small" onClick={() => checkWhatsApp(c)} disabled={rb || !connected}>

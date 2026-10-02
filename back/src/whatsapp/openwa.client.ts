@@ -1,11 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
 
 // Cliente HTTP tipado do OpenWA 0.23.7 (gateway WhatsApp em Docker, só loopback).
-// Contrato verificado no código do OpenWA (scratchpad/openwa_contract.md):
+// Contrato verificado no código do OpenWA:
 //  - rotas sob /api, auth por X-API-Key, respostas NÃO embrulhadas;
 //  - erros no formato Nest {statusCode, message, error} (+ code/retryAfterSeconds no 429 de pacing);
 //  - message.timestamp em SEGUNDOS; ids de sessão são UUID.
-// Env: OPENWA_URL (default http://127.0.0.1:2785/api), OPENWA_API_KEY.
+//
+// DOIS gateways (um motor por container — o OpenWA não mistura):
+//  - 'wwjs'    → OPENWA_URL / OPENWA_API_KEY                 (whatsapp-web.js, :2785)
+//  - 'baileys' → OPENWA_BAILEYS_URL / OPENWA_BAILEYS_API_KEY (Baileys, :2786)
+// Toda chamada `/sessions/<id>/…` vai para o gateway do motor daquela sessão
+// (whatsapp_sessions.engine, com cache). Sessão nova usa WHATSAPP_DEFAULT_ENGINE.
+
+export type WaEngine = 'wwjs' | 'baileys';
+export const WA_ENGINES: WaEngine[] = ['wwjs', 'baileys'];
 
 export class OpenWaError extends Error {
   constructor(public readonly status: number, public readonly code: string, message: string, public readonly retryAfterSeconds?: number) {
@@ -23,22 +32,58 @@ export type OpenWaMediaBody = { base64?: string; url?: string; mimetype?: string
 const DEFAULT_TIMEOUT = 30_000;
 const enc = encodeURIComponent;
 
+type Gateway = { url: string; key: string };
+
 @Injectable()
 export class OpenWaClient {
   private readonly logger = new Logger(OpenWaClient.name);
-  readonly baseUrl = String(process.env.OPENWA_URL || 'http://127.0.0.1:2785/api').replace(/\/+$/, '');
-  private readonly key = String(process.env.OPENWA_API_KEY || '');
+  private readonly gateways: Record<WaEngine, Gateway> = {
+    wwjs: { url: String(process.env.OPENWA_URL || 'http://127.0.0.1:2785/api').replace(/\/+$/, ''), key: String(process.env.OPENWA_API_KEY || '') },
+    baileys: { url: String(process.env.OPENWA_BAILEYS_URL || 'http://127.0.0.1:2786/api').replace(/\/+$/, ''), key: String(process.env.OPENWA_BAILEYS_API_KEY || '') },
+  };
+  // id da sessão no gateway → motor (evita 1 consulta por chamada)
+  private readonly engineBySession = new Map<string, WaEngine>();
 
-  get configured() { return Boolean(this.key); }
+  constructor(private readonly prisma: PrismaService) {}
 
-  async request<T = any>(method: string, path: string, body?: any, opts: { timeoutMs?: number; binary?: boolean } = {}): Promise<T> {
-    if (!this.key) throw new OpenWaError(503, 'OPENWA_NOT_CONFIGURED', 'Gateway WhatsApp não configurado (OPENWA_API_KEY).');
+  /** Motor para sessões NOVAS: WHATSAPP_DEFAULT_ENGINE, se o gateway dele estiver configurado. */
+  get defaultEngine(): WaEngine {
+    const want = String(process.env.WHATSAPP_DEFAULT_ENGINE || 'wwjs').toLowerCase() as WaEngine;
+    if (WA_ENGINES.includes(want) && this.gateways[want].key) return want;
+    return this.gateways.wwjs.key ? 'wwjs' : 'baileys';
+  }
+
+  isEngineAvailable(engine: WaEngine) { return Boolean(this.gateways[engine]?.key); }
+  get configured() { return WA_ENGINES.some((e) => Boolean(this.gateways[e].key)); }
+
+  /** Registra o motor de uma sessão (chamado ao criar/carregar a sessão). */
+  remember(sessionId: string | null | undefined, engine: string | null | undefined) {
+    if (sessionId && engine && WA_ENGINES.includes(engine as WaEngine)) this.engineBySession.set(sessionId, engine as WaEngine);
+  }
+
+  private async engineFor(path: string, explicit?: WaEngine): Promise<WaEngine> {
+    if (explicit) return explicit;
+    const m = /^\/sessions\/([^/?]+)/.exec(path);
+    if (!m) return this.defaultEngine;
+    const sid = decodeURIComponent(m[1]);
+    const cached = this.engineBySession.get(sid);
+    if (cached) return cached;
+    const row = await this.prisma.whatsapp_sessions.findFirst({ where: { openwa_session_id: sid }, select: { engine: true } }).catch(() => null);
+    const eng = (row?.engine && WA_ENGINES.includes(row.engine as WaEngine) ? row.engine : 'wwjs') as WaEngine;
+    this.engineBySession.set(sid, eng);
+    return eng;
+  }
+
+  async request<T = any>(method: string, path: string, body?: any, opts: { timeoutMs?: number; binary?: boolean; engine?: WaEngine } = {}): Promise<T> {
+    const engine = await this.engineFor(path, opts.engine);
+    const gw = this.gateways[engine];
+    if (!gw.key) throw new OpenWaError(503, 'OPENWA_NOT_CONFIGURED', `Gateway WhatsApp (${engine}) não configurado.`);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), opts.timeoutMs || DEFAULT_TIMEOUT);
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, {
+      const res = await fetch(`${gw.url}${path}`, {
         method,
-        headers: { 'X-API-Key': this.key, 'Content-Type': 'application/json', Accept: opts.binary ? '*/*' : 'application/json' },
+        headers: { 'X-API-Key': gw.key, 'Content-Type': 'application/json', Accept: opts.binary ? '*/*' : 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: ctrl.signal,
       });
@@ -55,7 +100,7 @@ export class OpenWaClient {
         const msg = String(Array.isArray(rawMsg) ? rawMsg.join('; ') : rawMsg).slice(0, 300);
         const code = String(json?.code || `HTTP_${res.status}`);
         const retry = Number(json?.retryAfterSeconds || res.headers.get('retry-after') || 0) || undefined;
-        if (res.status >= 500) this.logger.warn(`OpenWA ${method} ${path} → ${res.status} ${msg}`);
+        if (res.status >= 500) this.logger.warn(`OpenWA[${engine}] ${method} ${path} → ${res.status} ${msg}`);
         throw new OpenWaError(res.status, code, msg, retry);
       }
       return json as T;
@@ -71,8 +116,12 @@ export class OpenWaClient {
   private s(id: string) { return `/sessions/${enc(id)}`; }
 
   // ---- sessões
-  listSessions() { return this.request<OpenWaSession[]>('GET', '/sessions'); }
-  createSession(name: string, config?: Record<string, unknown>) { return this.request<OpenWaSession>('POST', '/sessions', { name, ...(config ? { config } : {}) }); }
+  listSessions(engine: WaEngine) { return this.request<OpenWaSession[]>('GET', '/sessions', undefined, { engine }); }
+  async createSession(name: string, engine: WaEngine, config?: Record<string, unknown>) {
+    const sess = await this.request<OpenWaSession>('POST', '/sessions', { name, ...(config ? { config } : {}) }, { engine });
+    this.remember(String(sess?.id || ''), engine);
+    return sess;
+  }
   getSession(id: string) { return this.request<OpenWaSession>('GET', this.s(id)); }
   startSession(id: string) { return this.request<any>('POST', `${this.s(id)}/start`, {}, { timeoutMs: 60_000 }); }
   stopSession(id: string) { return this.request<any>('POST', `${this.s(id)}/stop`, {}, { timeoutMs: 60_000 }); }
@@ -100,7 +149,10 @@ export class OpenWaClient {
   muteChat(sid: string, chatId: string, muteUntil: number | null) { return this.request('POST', `${this.s(sid)}/chats/mute`, { chatId, muteUntil }); }
 
   // ---- mensagens
+  /** Histórico ao vivo do WhatsApp — só whatsapp-web.js (o Baileys responde 501). */
   history(sid: string, chatId: string, limit = 50, includeMedia = false) { return this.request<any[]>('GET', `${this.s(sid)}/messages/${enc(chatId)}/history?limit=${limit}&includeMedia=${includeMedia}`, undefined, { timeoutMs: 60_000 }); }
+  /** Mensagens guardadas no gateway (os dois motores; no Baileys inclui a sincronização inicial, sem mídia). */
+  storedMessages(sid: string, chatId: string, limit = 50, offset = 0) { return this.request<{ messages?: any[]; total?: number } | any[]>('GET', `${this.s(sid)}/messages?chatId=${enc(chatId)}&limit=${limit}&offset=${offset}&inlineMedia=false`, undefined, { timeoutMs: 60_000 }); }
   downloadMedia(sid: string, chatId: string, messageId: string) { return this.request<{ buffer: Buffer; mime: string }>('GET', `${this.s(sid)}/messages/${enc(chatId)}/${enc(messageId)}/media`, undefined, { timeoutMs: 120_000, binary: true }); }
   reactions(sid: string, chatId: string, messageId: string) { return this.request<any[]>('GET', `${this.s(sid)}/messages/${enc(chatId)}/${enc(messageId)}/reactions`); }
   sendText(sid: string, chatId: string, text: string, extra: { mentions?: string[]; quotedMessageId?: string } = {}) { return this.request<OpenWaSendResult>('POST', `${this.s(sid)}/messages/send-text`, { chatId, text, ...extra }, { timeoutMs: 45_000 }); }
@@ -138,6 +190,9 @@ export class OpenWaClient {
     return this.request<{ statusId: string; timestamp: string; expiresAt: string }>('POST', `${this.s(sid)}/status/send-${kind}`, body, { timeoutMs: 120_000 });
   }
   deleteStatus(sid: string, statusId: string) { return this.request('DELETE', `${this.s(sid)}/status/${enc(statusId)}`); }
+  /** Status (stories) dos contatos guardados pelo gateway nas últimas 24 h. */
+  contactStatuses(sid: string) { return this.request<{ statuses: any[] }>('GET', `${this.s(sid)}/status`, undefined, { timeoutMs: 60_000 }); }
+  statusMediaFile(sid: string, statusId: string) { return this.request<{ buffer: Buffer; mime: string }>('GET', `${this.s(sid)}/status/${enc(statusId)}/media`, undefined, { timeoutMs: 120_000, binary: true }); }
 
-  health() { return this.request<any>('GET', '/health'); }
+  health(engine: WaEngine) { return this.request<any>('GET', '/health', undefined, { engine }); }
 }

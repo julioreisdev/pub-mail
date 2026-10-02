@@ -1,7 +1,10 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { promises as fsp } from 'fs';
+import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
-import { OpenWaClient, OpenWaError } from './openwa.client';
+import { OpenWaClient, OpenWaError, WA_ENGINES, WaEngine } from './openwa.client';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
 
 // Sessão WhatsApp da organização (1 por org) por cima do OpenWA.
 // - `whatsapp_sessions` guarda o espelho (status/telefone/webhook) — a verdade ao vivo é o OpenWA;
@@ -23,7 +26,7 @@ export class WhatsAppSessionsService {
   // cache curto do GET /sessions/:id (o front faz polling de 3 s)
   private readonly liveCache = new Map<string, { at: number; value: any }>();
 
-  constructor(private readonly prisma: PrismaService, private readonly openwa: OpenWaClient) {}
+  constructor(private readonly prisma: PrismaService, private readonly openwa: OpenWaClient, private readonly presenter: WhatsAppPresenter) {}
 
   private webhookBase() {
     return String(process.env.OPENWA_WEBHOOK_BASE || 'http://host.docker.internal:8000').replace(/\/+$/, '');
@@ -41,7 +44,9 @@ export class WhatsAppSessionsService {
 
   // ---------------------------------------------------------------- leitura
   async row(orgId: string) {
-    return this.prisma.whatsapp_sessions.findUnique({ where: { organization_id: orgId } });
+    const r = await this.prisma.whatsapp_sessions.findUnique({ where: { organization_id: orgId } });
+    if (r?.openwa_session_id) this.openwa.remember(r.openwa_session_id, r.engine);
+    return r;
   }
 
   private async live(openwaId: string, maxAgeMs = 2500) {
@@ -53,10 +58,17 @@ export class WhatsAppSessionsService {
   }
 
   private shape(row: any, liveSess: any | null, extra: any = {}) {
-    const status = liveSess?.status || row?.status || 'none';
+    // sem sessão no gateway = não conectado (o espelho pode ter ficado com um status velho)
+    const status = liveSess?.status || (row?.openwa_session_id ? row?.status : null) || 'none';
+    const engine = (row?.openwa_session_id ? row?.engine : null) || null;
+    const def = this.openwa.defaultEngine;
     return {
       configured: this.openwa.configured,
       exists: Boolean(row?.openwa_session_id),
+      // motor do gateway: 'wwjs' (antigo, sem download de mídia recebida) | 'baileys' (recomendado)
+      engine,
+      default_engine: def,
+      engine_upgrade: Boolean(engine && engine !== def && this.openwa.isEngineAvailable(def)),
       status,
       connected: status === 'ready',
       phone: liveSess?.phone || row?.phone || null,
@@ -72,8 +84,30 @@ export class WhatsAppSessionsService {
       // aquecimento: dia N desde o pareamento (o cronograma do OpenWA é por idade da sessão)
       warmup_day: row?.paired_at ? Math.min(30, Math.floor((Date.now() - new Date(row.paired_at).getTime()) / 86_400_000) + 1) : null,
       created_at: row?.created_at || null,
+      sync: (row?.settings as any)?.sync || null, // progresso da última sincronização (fase, contagens)
       ...extra,
     };
+  }
+
+  // Nome de exibição no motor Baileys: o gateway só lê `sock.user.name` na hora de conectar e,
+  // no 1º pareamento, o WhatsApp ainda não mandou o nome (chega logo depois pela sincronização
+  // e fica em creds.json). Lê de lá, no volume do gateway, e guarda no espelho.
+  private readonly nameTried = new Map<string, number>();
+  private async fillBaileysName(row: any) {
+    if (row?.push_name || row?.engine !== 'baileys' || !row?.openwa_session_id) return;
+    const sid = String(row.openwa_session_id);
+    if (!/^[0-9a-f-]{36}$/i.test(sid) || Date.now() - (this.nameTried.get(sid) || 0) < 60_000) return;
+    this.nameTried.set(sid, Date.now());
+    try {
+      const dir = String(process.env.OPENWA_BAILEYS_DATA_DIR || '/opt/openwa-baileys/data');
+      const creds = JSON.parse(await fsp.readFile(join(dir, 'baileys', sid, 'creds.json'), 'utf8'));
+      const name = String(creds?.me?.name || '').trim().slice(0, 255);
+      if (!name) return;
+      await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { push_name: name } });
+      row.push_name = name;
+    } catch {
+      /* sem acesso ao volume do gateway: fica sem nome */
+    }
   }
 
   // Estado atual (espelho + ao vivo). Nunca lança por falha do gateway: devolve `gateway_error`.
@@ -83,6 +117,7 @@ export class WhatsAppSessionsService {
     try {
       const liveSess = await this.live(row.openwa_session_id);
       await this.syncFromLive(row, liveSess);
+      if (liveSess?.status === 'ready' && !liveSess?.pushName) await this.fillBaileysName(row);
       return this.shape(row, liveSess);
     } catch (e: any) {
       if (e instanceof OpenWaError && e.status === 404) {
@@ -110,23 +145,27 @@ export class WhatsAppSessionsService {
 
   // ---------------------------------------------------------------- ciclo de vida
   // Garante linha + sessão no OpenWA + webhook assinado.
-  async ensure(orgId: string) {
+  async ensure(orgId: string, engine?: WaEngine) {
     let row = await this.row(orgId);
     if (!row) {
-      row = await this.prisma.whatsapp_sessions.create({ data: { organization_id: orgId, status: 'none', webhook_secret: randomBytes(32).toString('hex') } });
+      row = await this.prisma.whatsapp_sessions.create({ data: { organization_id: orgId, status: 'none', engine: engine || this.openwa.defaultEngine, webhook_secret: randomBytes(32).toString('hex') } });
     }
     if (!row.webhook_secret) {
       row = await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { webhook_secret: randomBytes(32).toString('hex') } });
     }
     if (!row.openwa_session_id) {
+      // pareamento novo → motor pedido ou o padrão (reconectar já migra para o motor recomendado)
+      const eng: WaEngine = engine || this.openwa.defaultEngine;
+      if (!this.openwa.isEngineAvailable(eng)) throw new ServiceUnavailableException('Gateway WhatsApp indisponível para esse motor.');
       const name = `org-${orgId.replace(/-/g, '').slice(0, 12)}-${Date.now().toString(36)}`;
       let sess: any;
-      try { sess = await this.openwa.createSession(name); } catch (e) { this.translate(e); }
+      try { sess = await this.openwa.createSession(name, eng); } catch (e) { this.translate(e); }
       row = await this.prisma.whatsapp_sessions.update({
         where: { id: row.id },
-        data: { openwa_session_id: String(sess.id), openwa_name: name, status: String(sess.status || 'created'), webhook_id: null, phone: null, push_name: null, paired_at: null, restricted_at: null, disconnected_at: null, last_error: null },
+        data: { openwa_session_id: String(sess.id), openwa_name: name, engine: eng, status: String(sess.status || 'created'), webhook_id: null, phone: null, push_name: null, paired_at: null, restricted_at: null, disconnected_at: null, last_error: null },
       });
-      this.logger.log(`Sessão OpenWA criada org=${orgId} session=${sess.id}`);
+      this.openwa.remember(row.openwa_session_id, eng);
+      this.logger.log(`Sessão OpenWA criada org=${orgId} session=${sess.id} engine=${eng}`);
     }
     if (!row.webhook_id) {
       const url = `${this.webhookBase()}/webhooks/whatsapp/${row.id}`;
@@ -142,8 +181,8 @@ export class WhatsAppSessionsService {
   }
 
   // "Conectar": cria se preciso e inicia (vai para qr_ready).
-  async start(orgId: string) {
-    const row = await this.ensure(orgId);
+  async start(orgId: string, engine?: WaEngine) {
+    const row = await this.ensure(orgId, engine);
     try {
       await this.openwa.startSession(row.openwa_session_id!);
     } catch (e: any) {
@@ -153,6 +192,7 @@ export class WhatsAppSessionsService {
     }
     this.liveCache.delete(row.openwa_session_id!);
     await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { last_restart_at: new Date(), status: 'initializing', last_status_at: new Date() } });
+    this.presenter.session(orgId, { event: 'local.start', status: 'initializing' });
     return this.get(orgId);
   }
 
@@ -203,7 +243,56 @@ export class WhatsAppSessionsService {
       data: { openwa_session_id: null, openwa_name: null, webhook_id: null, status: 'none', phone: null, push_name: null, paired_at: null, restricted_at: null, disconnected_at: new Date(), last_error: null },
     });
     await this.logEvent(row, 'local.logout', { by: 'user' });
+    this.presenter.session(orgId, { event: 'local.logout', status: 'none' });
     return this.get(orgId);
+  }
+
+  // Troca o motor do gateway: encerra a sessão atual (sai do WhatsApp nesse aparelho vinculado)
+  // e cria outra no motor pedido, já iniciada (QR novo). Mensagens, contatos, etiquetas e
+  // fluxos são da org e continuam; o histórico novo é sincronizado ao conectar.
+  async switchEngine(orgId: string, engine: string) {
+    const target = String(engine || '').toLowerCase() as WaEngine;
+    if (!WA_ENGINES.includes(target)) throw new BadRequestException('Motor inválido.');
+    if (!this.openwa.isEngineAvailable(target)) throw new ServiceUnavailableException('Esse motor não está disponível no servidor.');
+    const row = await this.row(orgId);
+    if (row?.openwa_session_id && row.engine === target) throw new BadRequestException('A conexão já usa esse motor.');
+    if (row?.openwa_session_id) {
+      const id = row.openwa_session_id;
+      await this.openwa.logoutSession(id).catch(() => undefined);
+      await this.openwa.deleteSession(id).catch(() => undefined);
+      this.liveCache.delete(id);
+      await this.prisma.whatsapp_sessions.update({
+        where: { id: row.id },
+        data: { openwa_session_id: null, openwa_name: null, webhook_id: null, status: 'none', phone: null, push_name: null, paired_at: null, restricted_at: null, disconnected_at: new Date(), last_error: null },
+      });
+      await this.logEvent(row, 'local.switch_engine', { from: row.engine, to: target });
+    }
+    return this.start(orgId, target);
+  }
+
+  // "Limpar todos os dados": sai do WhatsApp (se ainda houver sessão), apaga a sessão no gateway
+  // e zera o espelho. Troca o segredo do webhook para que evento atrasado da sessão antiga
+  // não recrie nada. Mantém só a configuração de atendimento (settings.service), o motor e
+  // o limitador de envio da org.
+  async wipe(orgId: string) {
+    const row = await this.row(orgId);
+    if (!row) return { had_session: false };
+    const id = row.openwa_session_id;
+    if (id) {
+      await this.openwa.logoutSession(id).catch(() => undefined);
+      await this.openwa.deleteSession(id).catch(() => undefined);
+      this.liveCache.delete(id);
+    }
+    const service = ((row.settings as any) || {}).service;
+    await this.prisma.whatsapp_sessions.update({
+      where: { id: row.id },
+      data: {
+        openwa_session_id: null, openwa_name: null, webhook_id: null, webhook_secret: null, status: 'none', phone: null, push_name: null,
+        paired_at: null, last_qr_at: null, restricted_at: null, disconnected_at: id ? new Date() : row.disconnected_at, last_error: null,
+        settings: service ? { service } : {},
+      },
+    });
+    return { had_session: Boolean(id), row_id: row.id };
   }
 
   // Apagar tudo da org (admin.removeOrganization). Best-effort no gateway.
@@ -230,8 +319,10 @@ export class WhatsAppSessionsService {
     if (row.phone) {
       try { picture = (await this.openwa.profilePicture(row.openwa_session_id!, `${row.phone}@c.us`))?.url || null; } catch { picture = null; }
     }
+    await this.fillBaileysName(row);
     const settings: any = row.settings || {};
-    return { name: row.push_name || null, status: settings.about ?? null, picture, phone: row.phone };
+    // O WhatsApp não deixa ler o próprio recado por esta conexão: só sabemos o que foi salvo pelo Pub Mail.
+    return { name: row.push_name || null, status: settings.about ?? null, status_known: settings.about != null, picture, phone: row.phone };
   }
 
   async updateProfile(orgId: string, dto: { name?: string; status?: string }) {
@@ -292,6 +383,39 @@ export class WhatsAppSessionsService {
     });
   }
 
+  // ---------------------------------------------------------------- diagnóstico
+  /** Saúde da conexão para a tela de Configurações (gateway, eventos, mensagens e mídia nas últimas 24 h). */
+  async diagnostics(orgId: string) {
+    const row = await this.row(orgId);
+    const since = new Date(Date.now() - 86_400_000);
+    let gateway: any = { ok: false, ms: null, error: null };
+    const engine = (row?.engine as WaEngine) || this.openwa.defaultEngine;
+    const t0 = Date.now();
+    try {
+      await this.openwa.health(engine);
+      gateway = { ok: true, ms: Date.now() - t0, error: null };
+    } catch (e: any) {
+      gateway = { ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 200) };
+    }
+    const [msgIn, msgOut, mediaOk, mediaMissing] = await Promise.all([
+      this.prisma.whatsapp_messages.count({ where: { organization_id: orgId, direction: 'IN', timestamp: { gte: since } } }),
+      this.prisma.whatsapp_messages.count({ where: { organization_id: orgId, direction: 'OUT', timestamp: { gte: since } } }),
+      this.prisma.whatsapp_messages.count({ where: { organization_id: orgId, direction: 'IN', timestamp: { gte: since }, media_id: { not: null } } }),
+      this.prisma.whatsapp_messages.count({ where: { organization_id: orgId, direction: 'IN', timestamp: { gte: since }, media_omitted: true, media_id: null } }),
+    ]);
+    return {
+      engine: row?.openwa_session_id ? row.engine : null,
+      default_engine: this.openwa.defaultEngine,
+      status: row?.status || 'none',
+      gateway,
+      last_event_at: row?.last_event_at || null,
+      messages_24h: { in: msgIn, out: msgOut },
+      media_24h: { received: mediaOk, missing: mediaMissing },
+      sync: (row?.settings as any)?.sync || null,
+      checked_at: new Date().toISOString(),
+    };
+  }
+
   // ---------------------------------------------------------------- webhook (chamado pelo controller)
   async logEvent(row: any, event: string, payload: any, idempotencyKey?: string | null) {
     try {
@@ -307,7 +431,14 @@ export class WhatsAppSessionsService {
   }
 
   // Aplica um evento de SESSÃO no espelho. Eventos de mensagem entram na Fase 2.
+  // Só vale para a sessão ATUAL: evento atrasado de uma sessão já encerrada (ex.: o
+  // "desconectado" que o gateway manda durante o logout) não pode ressuscitar o status.
   async applyEvent(row: any, event: string, data: any) {
+    const fresh = await this.findByRowId(row.id);
+    const current = fresh?.openwa_session_id || null;
+    const sid = data?.sessionId ? String(data.sessionId) : null;
+    if (!current || (sid && sid !== current && sid !== fresh?.openwa_name)) return;
+    row = fresh;
     const now = new Date();
     const patch: any = { last_event_at: now };
     const st = String(data?.status || '');
@@ -338,8 +469,11 @@ export class WhatsAppSessionsService {
       default:
         break;
     }
-    if (row.openwa_session_id) this.liveCache.delete(row.openwa_session_id);
-    await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: patch });
+    this.liveCache.delete(current);
+    const r = await this.prisma.whatsapp_sessions.updateMany({ where: { id: row.id, openwa_session_id: current }, data: patch });
+    if (!r.count) return; // encerrada enquanto isso
+    // o front recarrega o estado da conexão (QR novo, conectado, caiu…)
+    this.presenter.session(row.organization_id, { event, status: patch.status || row.status });
   }
 
   async touchEvent(id: string) {

@@ -1,0 +1,15 @@
+{
+  "name": "tradutor-invisivel-dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node test_unit.mjs",
+    "e2e": "node e2e.mjs",
+    "zip": "node build.mjs && cd .. && rm -f ../tradutor-invisivel.zip && zip -rqX ../tradutor-invisivel.zip tradutor-invisivel -x '*.DS_Store' && echo 'tradutor-invisivel.zip gerado na raiz do projeto'"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "jsdom": "^29.0.0"
+  }
+}

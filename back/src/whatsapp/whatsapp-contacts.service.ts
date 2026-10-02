@@ -9,14 +9,8 @@ import { WhatsAppMediaService } from './whatsapp-media.service';
 // - `saved=true`: guardado NA ORGANIZAÇÃO — sobrevive à troca de número (D6);
 // - `wa_id` = jid (`<digitos>@c.us` ou `<id>@lid`); `phone` = só dígitos quando conhecido.
 
-export const digitsOf = (v: unknown) => String(v || '').replace(/\D/g, '');
-export const jidFromPhone = (phone: string) => `${digitsOf(phone)}@c.us`;
-export const phoneFromJid = (jid: string) => (/@c\.us$|@s\.whatsapp\.net$/.test(String(jid || '')) ? digitsOf(String(jid).split('@')[0]) : '');
-export const isGroupJid = (jid: string) => /@g\.us$/.test(String(jid || ''));
-export const isLidJid = (jid: string) => /@lid$/.test(String(jid || ''));
-// Remove o sufixo de dispositivo (`5511…:30@c.us` / `123…:30@lid`) — mensagens de sistema do próprio aparelho.
-export const normJid = (jid: string) => String(jid || '').replace(/:\d+@/, '@');
-export const hasDeviceSuffix = (jid: string) => /:\d+@/.test(String(jid || ''));
+export { digitsOf, jidFromPhone, phoneFromJid, isGroupJid, isLidJid, normJid, hasDeviceSuffix } from './wa-jid.util';
+import { digitsOf, jidFromPhone, phoneFromJid, isGroupJid, isLidJid, normJid, hasDeviceSuffix } from './wa-jid.util';
 
 function normTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -45,6 +39,8 @@ export class WhatsAppContactsService {
       is_business: c.is_business,
       is_my_contact: c.is_my_contact,
       is_blocked: c.is_blocked,
+      opted_out_at: c.opted_out_at || null,
+      opted_out: Boolean(c.opted_out_at),
       saved: c.saved,
       tags: Array.isArray(c.tags) ? c.tags : [],
       notes: c.notes,
@@ -128,6 +124,8 @@ export class WhatsAppContactsService {
     if (q.saved === '0' || q.saved === 'false') where.saved = false;
     if (q.tag) where.tags = { array_contains: String(q.tag) };
     if (q.agenda === '1' || q.agenda === 'true') where.is_my_contact = true;
+    if (q.optout === '1' || q.optout === 'true') where.opted_out_at = { not: null };
+    if (q.optout === '0' || q.optout === 'false') where.opted_out_at = null;
     if (q.q) {
       const s = String(q.q).trim();
       const d = digitsOf(s);
@@ -160,9 +158,10 @@ export class WhatsAppContactsService {
     return c;
   }
 
-  async patch(orgId: string, id: string, dto: { saved?: boolean; tags?: unknown; name?: string; notes?: string }) {
-    await this.getOrFail(orgId, id);
+  async patch(orgId: string, id: string, dto: { saved?: boolean; tags?: unknown; name?: string; notes?: string; opted_out?: boolean }) {
+    const cur = await this.getOrFail(orgId, id);
     const data: any = {};
+    if (dto.opted_out !== undefined) data.opted_out_at = dto.opted_out ? (cur as any).opted_out_at || new Date() : null;
     if (dto.saved !== undefined) data.saved = Boolean(dto.saved);
     if (dto.tags !== undefined) data.tags = normTags(dto.tags);
     if (dto.name !== undefined) data.name = String(dto.name || '').trim().slice(0, 255) || null;
@@ -293,6 +292,23 @@ export class WhatsAppContactsService {
     return { imported, updated, total: list.length };
   }
 
+  // Buscas de foto no gateway: no máximo 3 ao mesmo tempo (a lista e os status pedem
+  // dezenas de fotos de uma vez e o OpenWA responde 429). "Sem foto" fica lembrado 6 h
+  // e "limite atingido" 1 min, pra não perguntar de novo a cada renderização.
+  private photoActive = 0;
+  private readonly photoWaiters: (() => void)[] = [];
+  private readonly photoMiss = new Map<string, number>();
+  private async photoSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.photoActive >= 3) await new Promise<void>((r) => this.photoWaiters.push(r));
+    this.photoActive++;
+    try {
+      return await fn();
+    } finally {
+      this.photoActive--;
+      this.photoWaiters.shift()?.();
+    }
+  }
+
   // Foto de perfil (contato ou grupo) com cache de 7 dias na pasta protegida.
   // Devolve o caminho absoluto + mime, ou null (sem foto / gateway fora).
   async photo(orgId: string, target: { contactId?: string; chatId?: string }) {
@@ -309,21 +325,32 @@ export class WhatsAppContactsService {
       if (m && (!m.expires_at || m.expires_at > new Date())) return { path: this.media.absPath(m), mime: m.mime };
     }
     if (!row?.openwa_session_id || row.status !== 'ready') return null;
+    const missKey = `${orgId}|${waId}`;
+    const missUntil = this.photoMiss.get(missKey);
+    if (missUntil && missUntil > Date.now()) return null;
     let buf: Buffer | null = null, mime = 'image/jpeg';
     try {
-      if (group) {
-        const r: any = await this.openwa.groupPicture(row.openwa_session_id, waId);
-        if (r?.buffer?.length && /^image\//.test(r.mime)) { buf = r.buffer; mime = r.mime; }
-        else if (r?.buffer?.length) { const j = JSON.parse(r.buffer.toString('utf8')); if (j?.url) ({ buf, mime } = await this.fetchImage(j.url)); }
-      } else {
-        const r = await this.openwa.profilePicture(row.openwa_session_id, waId);
-        if (r?.url) ({ buf, mime } = await this.fetchImage(r.url));
-      }
+      await this.photoSlot(async () => {
+        if (group) {
+          const r: any = await this.openwa.groupPicture(row.openwa_session_id!, waId);
+          if (r?.buffer?.length && /^image\//.test(r.mime)) { buf = r.buffer; mime = r.mime; }
+          else if (r?.buffer?.length) { const j = JSON.parse(r.buffer.toString('utf8')); if (j?.url) ({ buf, mime } = await this.fetchImage(j.url)); }
+        } else {
+          const r = await this.openwa.profilePicture(row.openwa_session_id!, waId);
+          if (r?.url) ({ buf, mime } = await this.fetchImage(r.url));
+        }
+      });
     } catch (e: any) {
+      const limited = (e as any)?.status === 429 || /too many/i.test(String(e?.message || ''));
+      this.photoMiss.set(missKey, Date.now() + (limited ? 60_000 : 10 * 60_000));
       this.logger.debug(`photo ${waId}: ${e?.message || e}`);
       return null;
     }
-    if (!buf?.length) return null;
+    if (!buf || !(buf as Buffer).length) {
+      this.photoMiss.set(missKey, Date.now() + 6 * 3600_000); // sem foto de perfil
+      if (this.photoMiss.size > 20_000) this.photoMiss.clear();
+      return null;
+    }
     const m = await this.media.store(orgId, buf, mime, null, 'avatar');
     await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { expires_at: new Date(Date.now() + 7 * 86_400_000) } });
     if (group && chat) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { group_meta: { ...((chat.group_meta as any) || {}), photo_media_id: m.id } } });

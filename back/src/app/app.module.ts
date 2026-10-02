@@ -42,6 +42,8 @@ import { TelegramModule } from 'src/telegram/telegram.module';
 import { PaymentsModule } from 'src/payments/payments.module';
 import { PlatformBillingModule } from 'src/platform-billing/platform-billing.module';
 import { WhatsAppModule } from 'src/whatsapp/whatsapp.module';
+import { RealtimeModule } from 'src/realtime/realtime.module';
+import { WordpressModule } from 'src/wordpress/wordpress.module';
 
 @Module({
   imports: [
@@ -88,7 +90,9 @@ import { WhatsAppModule } from 'src/whatsapp/whatsapp.module';
     TelegramModule,
     PaymentsModule,
     PlatformBillingModule, // assinaturas do Pub Mail + módulos por usuário (AccessInterceptor global)
+    RealtimeModule, // WebSocket do painel (Socket.IO em /realtime)
     WhatsAppModule, // WhatsApp via OpenWA (Docker, loopback)
+    WordpressModule, // plugin WordPress Tradutor Invisível (licença pela conta)
   ],
   controllers: [],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

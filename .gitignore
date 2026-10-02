@@ -30,3 +30,15 @@ protected/
 back/private.key
 back/public.key
 *.pem
+
+# Tradutor Invisível: capturas geradas pelos testes e2e
+wordpress/tradutor-invisivel-dev/shots/
+
+# kit do plugin WordPress: estado do teste de licença (tokens/senha temporária) e pacotes baixados
+wordpress/tradutor-invisivel-dev/license/*.json
+wordpress/tradutor-invisivel-dev/license/*.zip
+wordpress/tradutor-invisivel-dev/license/*.png
+# saídas do gerador de PDF
+docs/tools/*.html
+docs/tools/*.pdf
+docs/tools/*.png

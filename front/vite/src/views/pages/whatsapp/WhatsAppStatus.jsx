@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -42,6 +43,11 @@ import toast from 'react-hot-toast';
 import { get, post, patch, remove } from 'api/api';
 import { TgCard, TgStatusPill, TgModal, TgConfirmDialog, TgEmptyState, TgListSkeleton } from 'views/pages/telegram/ui';
 import WhatsAppMediaField from './WhatsAppMediaField';
+import ContactStatusStrip from './status/ContactStatusStrip';
+import StoryViewer from './status/StoryViewer';
+import SectionTitle from './status/SectionTitle';
+import useContactStatuses from './status/useContactStatuses';
+import { FONTS, PALETTE, dropExpired, fontFamily, sortContacts } from './status/statusShared';
 import {
   WaPageHeader,
   WaSessionBanner,
@@ -60,33 +66,13 @@ import {
 } from './waKit';
 
 // ============================================================================
-// WhatsApp → Status: publicar (texto / imagem-vídeo / áudio) agora ou agendado
-// (horário de Brasília), lista de agendados com countdown e histórico.
-// Contrato: GET/POST /whatsapp/statuses, PATCH/DELETE /whatsapp/statuses/:id.
+// WhatsApp → Status
+//  • Status dos contatos: faixa com anel (novo/visto) + visualizador em tela
+//    cheia com responder/reagir (status/*; contrato /whatsapp/contact-statuses).
+//  • Meus status: publicar (texto / imagem-vídeo / áudio) agora ou agendado
+//    (horário de Brasília), agendados com countdown e histórico.
+//    Contrato: GET/POST /whatsapp/statuses, PATCH/DELETE /whatsapp/statuses/:id.
 // ============================================================================
-
-// paleta de fundos no estilo dos status de texto do WhatsApp
-const PALETTE = [
-  '#075E54',
-  '#128C7E',
-  '#1FA855',
-  '#00A884',
-  '#0B8ECF',
-  '#5E35B1',
-  '#8E24AA',
-  '#D81B60',
-  '#E65100',
-  '#F09819',
-  '#546E7A',
-  '#1F2C34'
-];
-// fontes (índice enviado ao gateway) — 3 estilos oferecidos
-const FONTS = [
-  { id: 0, label: 'Sans', family: '"Ubuntu", "Helvetica Neue", Arial, sans-serif' },
-  { id: 1, label: 'Serif', family: 'Georgia, "Times New Roman", serif' },
-  { id: 2, label: 'Mono', family: '"SFMono-Regular", Menlo, Consolas, monospace' }
-];
-const fontFamily = (id) => (FONTS.find((f) => f.id === Number(id)) || FONTS[0]).family;
 
 const TYPE_UI = {
   text: { label: 'Texto', icon: IconTypography },
@@ -698,6 +684,42 @@ export default function WhatsAppStatus() {
   const [deleteFor, setDeleteFor] = useState(null);
   const [busy, setBusy] = useState(false);
 
+  // ---------- status dos contatos ----------
+  const navigate = useNavigate();
+  const cs = useContactStatuses({ connected });
+  const liveContacts = useMemo(() => sortContacts(dropExpired(cs.contacts, now)), [cs.contacts, now]);
+  const [viewer, setViewer] = useState({ open: false, chatId: null, queue: [] });
+  const openViewer = useCallback((chatId, queue) => setViewer({ open: true, chatId, queue: queue?.length ? queue : [chatId] }), []);
+  const closeViewer = useCallback(() => setViewer((v) => ({ ...v, open: false })), []);
+
+  // perfil do próprio número (foto do "Meu status") + quantos publiquei nas últimas 24 h
+  const [me, setMe] = useState(null);
+  useEffect(() => {
+    if (!connected) return undefined;
+    let alive = true;
+    get('/whatsapp/profile')
+      .then((p) => alive && setMe(p || null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [connected]);
+  const [mine24h, setMine24h] = useState([]);
+  const loadMine24h = useCallback(async () => {
+    try {
+      const r = await get('/whatsapp/statuses', { params: { status: 'posted', page: 1, page_size: 30 } });
+      setMine24h((Array.isArray(r) ? r : r?.items || []).filter((x) => x.status === 'posted'));
+    } catch {
+      /* só enfeite da faixa */
+    }
+  }, []);
+  const myPostedCount = useMemo(
+    () =>
+      mine24h.filter((x) => Date.now() - new Date(x.posted_at || x.schedule_at || x.created_at || 0).getTime() < 24 * 3600 * 1000).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mine24h, now]
+  );
+
   const schedSeq = useRef(0);
   const loadScheduled = useCallback(async () => {
     const s = ++schedSeq.current;
@@ -734,6 +756,9 @@ export default function WhatsAppStatus() {
     loadScheduled();
   }, [loadScheduled]);
   useEffect(() => {
+    loadMine24h();
+  }, [loadMine24h]);
+  useEffect(() => {
     loadHistory();
   }, [loadHistory]);
   useEffect(() => {
@@ -753,6 +778,11 @@ export default function WhatsAppStatus() {
   const reloadAll = () => {
     loadScheduled();
     loadHistory();
+    loadMine24h();
+  };
+  const refreshEverything = () => {
+    reloadAll();
+    cs.load();
   };
 
   const doCancel = async () => {
@@ -807,25 +837,63 @@ export default function WhatsAppStatus() {
       <WaPageHeader
         icon={IconCircleDashed}
         title="Status"
-        subtitle="Publique status de texto, imagem, vídeo ou áudio — agora ou no horário que você marcar."
+        subtitle="Veja e responda os status dos seus contatos e publique os seus — agora ou no horário que você marcar."
         action={
           <Stack direction="row" spacing={1} alignItems="center">
-            <Tooltip title="Atualizar">
-              <IconButton onClick={reloadAll}>
+            <Tooltip title="Recarregar a página">
+              <IconButton onClick={refreshEverything} sx={{ display: { xs: 'none', sm: 'inline-flex' } }}>
                 <IconRefresh size={20} />
               </IconButton>
             </Tooltip>
-            {newBtn}
+            <Box sx={{ display: { xs: 'none', sm: 'block' } }}>{newBtn}</Box>
+            {/* celular: só o "+" (o título e a descrição ficam com a largura toda) */}
+            <Tooltip title="Novo status">
+              <IconButton
+                onClick={() => setComposer({ initial: null })}
+                aria-label="Novo status"
+                sx={{ ...waButtonSx, display: { xs: 'inline-flex', sm: 'none' }, width: 42, height: 42, borderRadius: '50%' }}
+              >
+                <IconPlus size={20} />
+              </IconButton>
+            </Tooltip>
           </Stack>
         }
       />
 
-      <WaSessionBanner session={session} loading={sessionLoading} connected={connected} what="publicar status" />
+      <WaSessionBanner session={session} loading={sessionLoading} connected={connected} what="ver, responder e publicar status" />
+
+      {/* ---------- status dos contatos ---------- */}
+      <ContactStatusStrip
+        contacts={liveContacts}
+        loading={cs.loading}
+        syncing={cs.syncing}
+        unavailable={cs.unavailable}
+        error={cs.error}
+        syncedAt={cs.syncedAt}
+        now={now}
+        connected={connected}
+        onOpen={openViewer}
+        onSync={() => cs.sync()}
+        onReload={() => cs.load()}
+        onNew={() => setComposer({ initial: null })}
+        myPicture={me?.picture || null}
+        myName={me?.name || session?.push_name || ''}
+        myPostedCount={myPostedCount}
+        connectedSince={connected ? session?.paired_at : null}
+      />
+
+      {/* ---------- meus status ---------- */}
+      <SectionTitle
+        icon={IconCircleDashed}
+        title="Meus status"
+        caption="O que você publicou, o que está agendado e o histórico."
+        sx={{ mb: 2.5 }}
+      />
 
       {/* ---------- agendados ---------- */}
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
-        <IconCalendarTime size={18} />
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5, color: 'text.primary' }}>
+        <IconCalendarTime size={17} />
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Agendados
         </Typography>
         <Chip size="small" label={scheduled.length} sx={{ fontWeight: 700, height: 22 }} />
@@ -862,8 +930,8 @@ export default function WhatsAppStatus() {
       {/* ---------- histórico ---------- */}
       <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} spacing={1} sx={{ mt: 4, mb: 1.5 }}>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ flex: 1 }}>
-          <IconHistory size={18} />
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <IconHistory size={17} />
+          <Typography variant="h5" sx={{ fontWeight: 700 }}>
             Histórico
           </Typography>
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
@@ -908,6 +976,16 @@ export default function WhatsAppStatus() {
         </Stack>
       )}
 
+      <StoryViewer
+        open={viewer.open}
+        startChatId={viewer.chatId}
+        queue={viewer.queue}
+        byId={cs.byId}
+        onClose={closeViewer}
+        onViewed={cs.markViewed}
+        onOpenChat={(chatId) => navigate(`/whatsapp/chat?chat=${encodeURIComponent(chatId)}`)}
+        blocked={!sessionLoading && !connected}
+      />
       <StatusComposer
         open={!!composer}
         initial={composer?.initial || null}

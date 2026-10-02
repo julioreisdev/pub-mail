@@ -13,6 +13,8 @@ import { WhatsAppStatusService } from './whatsapp-status.service';
 import { WhatsAppBroadcastsService } from './whatsapp-broadcasts.service';
 import { WhatsAppFiltersService } from './whatsapp-filters.service';
 import { WhatsAppSchedulesService } from './whatsapp-schedules.service';
+import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.service';
 import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto } from './dto/whatsapp-crud.dto';
 
 const MB = 1024 * 1024;
@@ -23,9 +25,10 @@ const MB = 1024 * 1024;
 @UseGuards(JwtAuthGuard)
 @Controller('whatsapp')
 export class WhatsAppChatController {
-  constructor(private readonly chat: WhatsAppChatService, private readonly contactsSvc: WhatsAppContactsService) {}
+  constructor(private readonly chat: WhatsAppChatService, private readonly contactsSvc: WhatsAppContactsService, private readonly attendance: WhatsAppAttendanceService) {}
 
-  @Get('chats') list(@Req() req: any, @Query() q: any) { return this.chat.listChats(req.user.organizationId, q); }
+  @Get('chats') list(@Req() req: any, @Query() q: any) { return this.chat.listChats(req.user.organizationId, q, req.user.userId); }
+  @Get('chats/counts') counts(@Req() req: any) { return this.chat.counts(req.user.organizationId, req.user.userId); }
   @Post('chats/open') open(@Req() req: any, @Body() dto: OpenChatDto) { return this.chat.openByPhone(req.user.organizationId, dto.phone); }
   @Post('chats/sync') sync(@Req() req: any) { return this.chat.syncChats(req.user.organizationId); }
   @Get('groups') groups(@Req() req: any) { return this.chat.groups(req.user.organizationId); }
@@ -37,6 +40,10 @@ export class WhatsAppChatController {
     return res.sendFile(p.path);
   }
   @Get('chats/:chatId') get(@Req() req: any, @Param('chatId') chatId: string) { return this.chat.getChat(req.user.organizationId, chatId); }
+  // etiquetas da conversa e atendimento (assumir / transferir / liberar / encerrar / reabrir)
+  @Put('chats/:chatId/tags') setTags(@Req() req: any, @Param('chatId') chatId: string, @Body() dto: any) { return this.attendance.setChatTags(req.user.organizationId, chatId, dto?.tag_ids, req.user.userId); }
+  @Post('chats/:chatId/service') service(@Req() req: any, @Param('chatId') chatId: string, @Body() dto: any) { return this.attendance.action(req.user.organizationId, req.user.userId, chatId, String(dto?.action || ''), dto?.user_id ? String(dto.user_id) : null); }
+  @Get('chats/:chatId/service/events') serviceEvents(@Req() req: any, @Param('chatId') chatId: string) { return this.attendance.events(req.user.organizationId, chatId); }
   @Get('chats/:chatId/messages') messages(@Req() req: any, @Param('chatId') chatId: string, @Query() q: any) { return this.chat.messages(req.user.organizationId, chatId, q); }
   @Post('chats/:chatId/read') read(@Req() req: any, @Param('chatId') chatId: string) { return this.chat.markRead(req.user.organizationId, chatId); }
   @Post('chats/:chatId/typing') typing(@Req() req: any, @Param('chatId') chatId: string, @Body() dto: ChatFlagDto) { return this.chat.typing(req.user.organizationId, chatId, dto.typing !== false); }
@@ -52,11 +59,16 @@ export class WhatsAppChatController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 64 * MB } }))
   sendMedia(@Req() req: any, @UploadedFile() file: any, @Body() body: any) {
-    return this.chat.sendMedia(req.user.organizationId, req.user.userId, { chat_id: String(body?.chat_id || ''), caption: body?.caption, as_voice: body?.as_voice === '1' || body?.as_voice === 'true', as_document: body?.as_document === '1' || body?.as_document === 'true', quoted_wa_id: body?.quoted_wa_id || undefined }, file);
+    const flag = (v: any) => v === true || v === '1' || v === 'true';
+    const dto = { chat_id: String(body?.chat_id || ''), caption: body?.caption, as_voice: flag(body?.as_voice), as_document: flag(body?.as_document), quoted_wa_id: body?.quoted_wa_id || undefined };
+    // sem arquivo + media_id = reenviar uma mídia já guardada (ex.: resposta rápida com anexo)
+    if (!file && body?.media_id) return this.chat.sendStoredMedia(req.user.organizationId, req.user.userId, { ...dto, media_id: String(body.media_id) });
+    return this.chat.sendMedia(req.user.organizationId, req.user.userId, dto, file);
   }
 
   @Post('messages/send-location') sendLocation(@Req() req: any, @Body() dto: SendLocationDto) { return this.chat.sendLocation(req.user.organizationId, req.user.userId, dto); }
   @Post('messages/send-poll') sendPoll(@Req() req: any, @Body() dto: SendPollDto) { return this.chat.sendPoll(req.user.organizationId, req.user.userId, dto); }
+  @Post('messages/:id/media/retry') @Throttle({ default: { limit: 30, ttl: 60_000 } }) retryMedia(@Req() req: any, @Param('id') id: string) { return this.chat.retryMedia(req.user.organizationId, id); }
   @Post('messages/:id/react') react(@Req() req: any, @Param('id') id: string, @Body() dto: ReactDto) { return this.chat.react(req.user.organizationId, id, dto.emoji); }
   @Post('messages/:id/forward') forward(@Req() req: any, @Param('id') id: string, @Body() dto: ForwardDto) { return this.chat.forward(req.user.organizationId, req.user.userId, id, dto.to); }
   @Put('messages/:id') edit(@Req() req: any, @Param('id') id: string, @Body() dto: EditMessageDto) { return this.chat.edit(req.user.organizationId, id, dto.text); }
@@ -174,4 +186,43 @@ export class WhatsAppBroadcastsController {
   @Post(':id/fire') @Throttle({ default: { limit: 5, ttl: 60_000 } }) fire(@Req() req: any, @Param('id') id: string) { return this.bc.fire(req.user.organizationId, id); }
   @Get(':id/runs') runs(@Req() req: any, @Param('id') id: string, @Query() q: RunsQueryDto) { return this.bc.runs(req.user.organizationId, id, q); }
   @Get(':id/runs/:runId/sends') sends(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string, @Query() q: any) { return this.bc.sends(req.user.organizationId, id, runId, q); }
+}
+
+// ---------------------------------------------------------------- atendimento: etiquetas, respostas rápidas, atendentes, configurações
+@ApiTags('WhatsApp')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('whatsapp')
+export class WhatsAppAttendanceController {
+  constructor(private readonly attendance: WhatsAppAttendanceService) {}
+
+  @Get('tags') tags(@Req() req: any) { return this.attendance.listTags(req.user.organizationId); }
+  @Post('tags') createTag(@Req() req: any, @Body() dto: any) { return this.attendance.createTag(req.user.organizationId, dto || {}); }
+  @Put('tags/:id') updateTag(@Req() req: any, @Param('id') id: string, @Body() dto: any) { return this.attendance.updateTag(req.user.organizationId, id, dto || {}); }
+  @Delete('tags/:id') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') removeTag(@Req() req: any, @Param('id') id: string) { return this.attendance.removeTag(req.user.organizationId, id); }
+
+  @Get('attendants') attendants(@Req() req: any) { return this.attendance.attendants(req.user.organizationId); }
+
+  @Get('quick-replies') quickReplies(@Req() req: any) { return this.attendance.listQuickReplies(req.user.organizationId); }
+  @Post('quick-replies') createQuickReply(@Req() req: any, @Body() dto: any) { return this.attendance.createQuickReply(req.user.organizationId, dto || {}); }
+  @Put('quick-replies/:id') updateQuickReply(@Req() req: any, @Param('id') id: string, @Body() dto: any) { return this.attendance.updateQuickReply(req.user.organizationId, id, dto || {}); }
+  @Delete('quick-replies/:id') removeQuickReply(@Req() req: any, @Param('id') id: string) { return this.attendance.removeQuickReply(req.user.organizationId, id); }
+
+  @Get('service-settings') serviceSettings(@Req() req: any) { return this.attendance.settings(req.user.organizationId); }
+  @Put('service-settings') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') updateServiceSettings(@Req() req: any, @Body() dto: any) { return this.attendance.updateSettings(req.user.organizationId, dto || {}); }
+}
+
+// ---------------------------------------------------------------- status (stories) dos contatos
+@ApiTags('WhatsApp')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('whatsapp/contact-statuses')
+export class WhatsAppContactStatusesController {
+  constructor(private readonly svc: WhatsAppContactStatusesService) {}
+
+  @Get() list(@Req() req: any) { return this.svc.list(req.user.organizationId); }
+  @Post('sync') @Throttle({ default: { limit: 6, ttl: 60_000 } }) sync(@Req() req: any) { return this.svc.sync(req.user.organizationId); }
+  @Post(':id/view') view(@Req() req: any, @Param('id') id: string) { return this.svc.view(req.user.organizationId, id); }
+  @Post(':id/reply') @Throttle({ default: { limit: 30, ttl: 60_000 } }) reply(@Req() req: any, @Param('id') id: string, @Body() dto: any) { return this.svc.reply(req.user.organizationId, req.user.userId, id, String(dto?.text || '')); }
+  @Post(':id/react') @Throttle({ default: { limit: 30, ttl: 60_000 } }) react(@Req() req: any, @Param('id') id: string, @Body() dto: any) { return this.svc.react(req.user.organizationId, id, String(dto?.emoji || '')); }
 }

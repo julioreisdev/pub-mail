@@ -6,7 +6,14 @@ import {
   IconCircleDashed,
   IconAddressBook,
   IconSpeakerphone,
-  IconCalendarClock
+  IconCalendarClock,
+  IconRobot,
+  IconUserDollar,
+  IconPackage,
+  IconReceipt2,
+  IconLayoutKanban,
+  IconChecklist,
+  IconChartBar
 } from '@tabler/icons-react';
 
 const icons = {
@@ -16,7 +23,14 @@ const icons = {
   IconCircleDashed,
   IconAddressBook,
   IconSpeakerphone,
-  IconCalendarClock
+  IconCalendarClock,
+  IconRobot,
+  IconUserDollar,
+  IconPackage,
+  IconReceipt2,
+  IconLayoutKanban,
+  IconChecklist,
+  IconChartBar
 };
 
 // ==============================|| WHATSAPP MENU ITEMS ||============================== //
@@ -37,6 +51,7 @@ const whatsapp = {
       target: false
     },
     { id: 'whatsapp-chat', title: 'Chat', type: 'item', url: '/whatsapp/chat', icon: icons.IconMessages, target: false },
+    { id: 'whatsapp-bot', title: 'Fluxo do Bot', type: 'item', url: '/whatsapp/bot', icon: icons.IconRobot, target: false },
     { id: 'whatsapp-status', title: 'Status', type: 'item', url: '/whatsapp/status', icon: icons.IconCircleDashed, target: false },
     {
       id: 'whatsapp-schedules',
@@ -47,6 +62,12 @@ const whatsapp = {
       target: false
     },
     { id: 'whatsapp-contacts', title: 'Contatos', type: 'item', url: '/whatsapp/contacts', icon: icons.IconAddressBook, target: false },
+    { id: 'whatsapp-pipeline', title: 'Funil', type: 'item', url: '/whatsapp/pipeline', icon: icons.IconLayoutKanban, target: false },
+    { id: 'whatsapp-tasks', title: 'Tarefas', type: 'item', url: '/whatsapp/tasks', icon: icons.IconChecklist, target: false },
+    { id: 'whatsapp-customers', title: 'Clientes', type: 'item', url: '/whatsapp/customers', icon: icons.IconUserDollar, target: false },
+    { id: 'whatsapp-products', title: 'Produtos', type: 'item', url: '/whatsapp/products', icon: icons.IconPackage, target: false },
+    { id: 'whatsapp-charges', title: 'Cobranças', type: 'item', url: '/whatsapp/charges', icon: icons.IconReceipt2, target: false },
+    { id: 'whatsapp-metrics', title: 'Métricas', type: 'item', url: '/whatsapp/metrics', icon: icons.IconChartBar, target: false },
     {
       id: 'whatsapp-broadcasts',
       title: 'Broadcasts',

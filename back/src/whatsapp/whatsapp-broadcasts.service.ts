@@ -8,6 +8,9 @@ import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppPacingService } from './whatsapp-pacing.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { isGroupJid, phoneFromJid } from './whatsapp-contacts.service';
+import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppCrmService } from './whatsapp-crm.service';
 
 // Broadcasts (espelho do Telegram): horários diários (minuto-do-dia BRT), copies com rotação,
 // audiência = contatos salvos/tags/selecionados + grupos, fila `whatsapp_broadcast_sends`
@@ -28,8 +31,9 @@ function brtStartOfToday(now = new Date()) {
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// {{nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
 export function fillVars(text: string, vars: Record<string, string>) {
-  return String(text || '').replace(/\{\{\s*(nome|name|telefone|phone)\s*\}\}/gi, (_, k) => vars[String(k).toLowerCase()] ?? '');
+  return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => { const key = String(k).toLowerCase(); return key in vars ? vars[key] ?? '' : m; });
 }
 
 @Injectable()
@@ -47,6 +51,9 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     private readonly pacing: WhatsAppPacingService,
     private readonly inbound: WhatsAppInboundService,
     private readonly access: AccessService,
+    private readonly attendance: WhatsAppAttendanceService,
+    private readonly presenter: WhatsAppPresenter,
+    private readonly crm: WhatsAppCrmService,
   ) {}
 
   // ---------------------------------------------------------------- normalização
@@ -77,7 +84,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   // ---------------------------------------------------------------- audiência
   async audience(orgId: string, rawTargets: any) {
     const t = this.normTargets(rawTargets);
-    const where: any = { organization_id: orgId, is_blocked: false };
+    const where: any = { organization_id: orgId, is_blocked: false, opted_out_at: null }; // LGPD: descadastrados fora da estimativa também
     const ids = new Set<string>();
     if (t.contacts === 'all' || t.contacts === 'saved') {
       const rows = await this.prisma.whatsapp_contacts.findMany({ where: { ...where, ...(t.contacts === 'saved' ? { saved: true } : {}) }, select: { id: true, tags: true } });
@@ -93,7 +100,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   private async resolveAudience(orgId: string, rawTargets: any) {
     const t = this.normTargets(rawTargets);
     const out: Array<{ chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group' }> = [];
-    const base: any = { organization_id: orgId, is_blocked: false };
+    const base: any = { organization_id: orgId, is_blocked: false, opted_out_at: null }; // LGPD: quem pediu PARE não recebe
     const rows: any[] = [];
     if (t.contacts === 'all' || t.contacts === 'saved') {
       const pool = await this.prisma.whatsapp_contacts.findMany({ where: { ...base, ...(t.contacts === 'saved' ? { saved: true } : {}) }, select: { id: true, wa_id: true, tags: true, phone: true } });
@@ -340,7 +347,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   private async sendOne(session: any, send: any, run: any, bc: any) {
     const msgs = this.normMessages(run.messages);
     const contact = send.contact_id ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: send.contact_id } }) : null;
-    const vars = { nome: contact?.name || contact?.push_name || '', name: contact?.name || contact?.push_name || '', telefone: contact?.phone || phoneFromJid(send.chat_id), phone: contact?.phone || phoneFromJid(send.chat_id) };
+    const vars: Record<string, string> = { nome: contact?.name || contact?.push_name || '', name: contact?.name || contact?.push_name || '', telefone: contact?.phone || phoneFromJid(send.chat_id), phone: contact?.phone || phoneFromJid(send.chat_id) };
+    if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(session.organization_id, send.chat_id));
     let idx = send.msg_index || 0;
     try {
       for (; idx < msgs.length; idx++) {
@@ -379,8 +387,13 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   private async recordOut(orgId: string, chatId: string, r: any, type: string, body: string | null, mediaId: string | null) {
     const at = r?.timestamp ? new Date(Number(r.timestamp) * 1000) : new Date();
     const waId = String(r?.messageId || `bc_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-    await this.prisma.whatsapp_messages.create({ data: { organization_id: orgId, chat_id: chatId, wa_message_id: waId, direction: 'OUT', type, body, media_id: mediaId, ack: 1, timestamp: at, extra: { broadcast: true } } }).catch(() => undefined);
+    await this.prisma.whatsapp_messages
+      .create({ data: { organization_id: orgId, chat_id: chatId, wa_message_id: waId, direction: 'OUT', type, body, media_id: mediaId, ack: 1, timestamp: at, extra: { broadcast: true } } })
+      .catch(async (e: any) => {
+        if (e?.code === 'P2002') await this.prisma.whatsapp_messages.update({ where: { organization_id_wa_message_id: { organization_id: orgId, wa_message_id: waId } }, data: { extra: { broadcast: true } } }).catch(() => undefined);
+      });
     await this.inbound.bumpChat(orgId, chatId, { type, body, direction: 'OUT', at });
+    this.presenter.message(orgId, { waId });
   }
 
   private async reconcile(runId: string) {

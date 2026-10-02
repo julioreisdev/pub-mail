@@ -1,10 +1,10 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
-import { IconMessageChatbot, IconMailBolt, IconListLetters, IconBrandTelegram, IconBrandWhatsapp } from '@tabler/icons-react';
+import { IconMessageChatbot, IconMailBolt, IconListLetters, IconBrandTelegram, IconBrandWhatsapp, IconBrandWordpress } from '@tabler/icons-react';
 
 // ==============================|| LOGIN — painel esquerdo (marca + fluxograma animado) ||============================== //
 // Sempre escuro (independe do tema do app). O diagrama é um SVG fixo em viewBox
-// (escala com o container): 5 canais nas pontas de uma estrela → núcleo Pub Mail. Linhas com traço animado
+// (escala com o container): 6 canais nas pontas de um hexágono → núcleo Pub Mail. Linhas com traço animado
 // e "leads" (pontos) viajando até o centro via SMIL animateMotion; nós flutuam
 // com CSS keyframes. Tudo em CSS/SVG — sem lib de animação.
 
@@ -13,12 +13,13 @@ const NODE_W = 208;
 const HEAD_H = 50; // cabeçalho (ícone + título)
 const ITEM_H = 19; // cada tópico
 const PAD_B = 10;
-// Estrela de 5 pontas: núcleo no centro, cada nó na ponta (ângulos -90, -18, 54, 126, 198).
-const VB_W = 680;
-const VB_H = 600;
+// Hexágono: núcleo no centro, um nó em cada ponta (ângulos -90, -30, 30, 90, 150, 210).
+// RADIUS 262: nós vizinhos ficam 227 px afastados na horizontal (cartão de 208 + folga).
+const VB_W = 700;
+const VB_H = 690;
 const CX = VB_W / 2;
-const CY = 335;
-const RADIUS = 220; // distância do centro do nó ao núcleo
+const CY = 345;
+const RADIUS = 262; // distância do centro do nó ao núcleo
 const nodeH = (n) => HEAD_H + n.items.length * ITEM_H + PAD_B;
 const rad = (deg) => (deg * Math.PI) / 180;
 
@@ -37,7 +38,7 @@ const CHANNELS = [
     label: 'E-mail marketing',
     Icon: IconMailBolt,
     color: '#f59e0b',
-    angle: -18, // ombro direito
+    angle: -30, // alto à direita
     delay: 0.9,
     items: ['Resend provider', 'Teste A/B', 'Broadcast', 'Fluxo inicial', 'Reciclagem']
   },
@@ -46,7 +47,7 @@ const CHANNELS = [
     label: 'Telegram',
     Icon: IconBrandTelegram,
     color: '#2AABEE',
-    angle: 54, // base direita
+    angle: 90, // base
     delay: 1.7,
     items: ['Gateway de pagamento', 'Venda de conteúdo VIP']
   },
@@ -55,7 +56,7 @@ const CHANNELS = [
     label: 'Quizzes',
     Icon: IconListLetters,
     color: '#a855f7',
-    angle: 126, // base esquerda
+    angle: 150, // baixo à esquerda
     delay: 2.6,
     items: ['Blocos de anúncios', 'Integração com rewardeds', 'Personalizável']
   },
@@ -64,9 +65,18 @@ const CHANNELS = [
     label: 'WhatsApp',
     Icon: IconBrandWhatsapp,
     color: '#25D366',
-    angle: 198, // ombro esquerdo
+    angle: 210, // alto à esquerda
     delay: 3.5,
     items: ['Chat, status e broadcasts', 'Agendamentos', 'Contatos na organização']
+  },
+  {
+    key: 'wordpress',
+    label: 'WordPress',
+    Icon: IconBrandWordpress,
+    color: '#e2e8f0',
+    angle: 30, // baixo à direita
+    delay: 4.3,
+    items: ['Plugin Tradutor Invisível', 'Sites ilimitados', 'URL traduzida']
   }
 ].map((n) => ({
   ...n,
@@ -155,7 +165,7 @@ export default function LoginShowcase() {
       {/* fluxograma */}
       {/* o diagrama ocupa o espaço que sobrar entre a marca e o texto e ESCALA pra caber (nunca gera scroll) */}
       <Box sx={{ position: 'relative', flex: 1, minHeight: 0, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', my: 1.5 }}>
-        <svg viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', maxWidth: 800 }} role="img" aria-label="Webchat, e-mail, quizzes, WhatsApp e Telegram integrados no Pub Mail">
+        <svg viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', maxWidth: 800 }} role="img" aria-label="Webchat, e-mail, quizzes, WhatsApp, Telegram e WordPress integrados no Pub Mail">
           <defs>
             <filter id="pmShadow" x="-20%" y="-20%" width="140%" height="160%">
               <feDropShadow dx="0" dy="10" stdDeviation="10" floodColor="#000" floodOpacity="0.45" />
@@ -247,7 +257,7 @@ export default function LoginShowcase() {
       {/* uma linha só, sem discurso */}
       <Box sx={{ position: 'relative' }}>
         <Typography sx={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em', lineHeight: 1.3 }}>
-          Webchats com IA, e-mail marketing, quizzes, WhatsApp e Telegram.
+          Webchats com IA, e-mail marketing, quizzes, WhatsApp, Telegram e WordPress.
         </Typography>
         <Typography sx={{ fontSize: 14, color: 'rgba(255,255,255,.62)', mt: 0.5 }}>
           Todos os seus leads em um só lugar.

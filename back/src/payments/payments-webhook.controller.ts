@@ -6,6 +6,8 @@ import { TelegramPaymentsService } from '../telegram/telegram-payments.service';
 import { WebchatPaymentsService } from './webchat-payments.service';
 import { extractWebhookChargeId } from './pix-providers';
 import { PlatformPaymentsService } from '../platform-billing/platform-payments.service';
+import { WhatsAppBotService } from '../whatsapp/bot/whatsapp-bot.service';
+import { WhatsAppChargesService } from '../whatsapp/whatsapp-charges.service';
 
 // Webhook ÚNICO da plataforma (o Mercado Pago só aceita uma URL por aplicação):
 // procura a cobrança no Webchat e no Telegram e reconfere o status na API do
@@ -21,6 +23,8 @@ export class PaymentsWebhookController {
     private readonly webchat: WebchatPaymentsService,
     private readonly telegram: TelegramPaymentsService,
     private readonly platform: PlatformPaymentsService,
+    private readonly whatsappBot: WhatsAppBotService,
+    private readonly whatsappCharges: WhatsAppChargesService,
   ) {}
 
   @Post(':provider')
@@ -29,8 +33,12 @@ export class PaymentsWebhookController {
     try {
       const chargeId = extractWebhookChargeId(provider, query || {}, body || {});
       if (chargeId) {
-        // Ordem: webchat → telegram → assinaturas da plataforma (gateway do superadmin).
-        const found = (await this.webchat.handleWebhookCharge(provider, chargeId)) || (await this.telegram.handleWebhookCharge(provider, chargeId));
+        // Ordem: webchat → telegram → bot do WhatsApp → cobranças do WhatsApp (CRM) → assinaturas da plataforma (gateway do superadmin).
+        const found =
+          (await this.webchat.handleWebhookCharge(provider, chargeId)) ||
+          (await this.telegram.handleWebhookCharge(provider, chargeId)) ||
+          (await this.whatsappBot.handleWebhookCharge(provider, chargeId).catch(() => false)) ||
+          (await this.whatsappCharges.handleWebhookCharge(provider, chargeId).catch(() => false));
         if (!found) await this.platform.handleWebhookCharge(provider, chargeId);
       }
     } catch {

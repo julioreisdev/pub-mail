@@ -7,6 +7,7 @@ export class PatchContactDto {
   @IsOptional() @IsArray() tags?: string[];
   @IsOptional() @IsString() @MaxLength(255) name?: string;
   @IsOptional() @IsString() @MaxLength(500) notes?: string;
+  @IsOptional() @IsBoolean() opted_out?: boolean; // LGPD: true = descadastrar, false = reativar
 }
 export class BulkContactsDto {
   @IsArray() @ArrayMaxSize(2000) ids: string[];

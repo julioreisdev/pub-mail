@@ -6,6 +6,7 @@ import { Public } from '../auth/public.decorator';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppBootstrapService } from './whatsapp-bootstrap.service';
+import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.service';
 
 // Receptor dos eventos do OpenWA (um webhook por sessão: /webhooks/whatsapp/<id da linha>).
 // - assinatura HMAC-SHA256 do OpenWA sobre o corpo bruto (`X-OpenWA-Signature: sha256=<hex>`)
@@ -21,7 +22,12 @@ export class WhatsAppWebhookController {
   // Fila por sessão: eventos do mesmo número são processados em ORDEM (mensagem antes do ack/reação/edição).
   private readonly queues = new Map<string, Promise<void>>();
 
-  constructor(private readonly sessions: WhatsAppSessionsService, private readonly inbound: WhatsAppInboundService, private readonly bootstrap: WhatsAppBootstrapService) {}
+  constructor(
+    private readonly sessions: WhatsAppSessionsService,
+    private readonly inbound: WhatsAppInboundService,
+    private readonly bootstrap: WhatsAppBootstrapService,
+    private readonly contactStatuses: WhatsAppContactStatusesService,
+  ) {}
 
   private verify(secret: string, raw: Buffer | undefined, header: string | undefined) {
     if (!raw || !header) return false;
@@ -88,7 +94,8 @@ export class WhatsAppWebhookController {
       case 'message.reaction': await this.inbound.onReaction(orgId, data, (row.settings as any)?.own_lid || (row.phone ? `${row.phone}@c.us` : null)); break;
       case 'message.edited': await this.inbound.onEdited(orgId, data); break;
       case 'group.join': case 'group.leave': case 'group.update': case 'group.join_request': await this.inbound.onGroupEvent(orgId, event, data); break;
-      default: break; // call.*, status.received, presence: ignorados por ora
+      case 'status.received': await this.contactStatuses.ingest(orgId, row, data); break;
+      default: break; // call.*, presence: ignorados por ora
     }
     await this.sessions.touchEvent(row.id).catch(() => undefined);
   }

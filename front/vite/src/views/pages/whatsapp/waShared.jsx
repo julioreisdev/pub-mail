@@ -11,6 +11,7 @@ import { IconBrandWhatsapp, IconPlugConnected } from '@tabler/icons-react';
 
 import { get } from 'api/api';
 import { TgEmptyState } from 'views/pages/telegram/ui';
+import { useRealtimeEvent } from 'realtime/useRealtime';
 
 // ============================================================================
 // Módulo WhatsApp — helpers compartilhados entre Chat e Contatos.
@@ -250,6 +251,9 @@ export function useWaSession(pollMs = 15000) {
     }, pollMs);
     return () => window.clearInterval(id);
   }, [reload, pollMs]);
+
+  // conexão mudou (conectou, caiu, QR novo) → atualiza na hora em qualquer tela do WhatsApp
+  useRealtimeEvent('wa:session', () => reload());
 
   const connected = Boolean(session?.connected) || session?.status === 'ready';
   return { session, loading, connected, reload };

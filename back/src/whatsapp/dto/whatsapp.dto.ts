@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export class PairingCodeDto {
   // Internacional, só dígitos (ex.: 5511999999999)
@@ -17,4 +17,13 @@ export class TestMessageDto {
 
 export class PacingDto {
   @IsBoolean() enabled: boolean;
+}
+
+export class SwitchEngineDto {
+  @IsIn(['wwjs', 'baileys']) engine!: string;
+}
+
+export class PurgeDataDto {
+  @IsString() @Matches(/^\s*apagar\s*$/i, { message: 'Digite APAGAR para confirmar.' }) confirm!: string;
+  @IsOptional() @IsBoolean() keep_contacts?: boolean;
 }

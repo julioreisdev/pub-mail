@@ -31,6 +31,7 @@ export class WhatsAppWatchdogRunner {
       for (const row of rows) {
         try {
           if (!(await this.access.isOrgActive(row.organization_id))) continue;
+          this.openwa.remember(row.openwa_session_id, row.engine);
           const live = await this.openwa.getSession(row.openwa_session_id!);
           const st = String(live?.status || '');
           const data: any = {};

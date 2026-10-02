@@ -6,6 +6,9 @@ import { WhatsAppMediaService, kindOfMime } from './whatsapp-media.service';
 import { WhatsAppInboundService, previewOf } from './whatsapp-inbound.service';
 import { WhatsAppContactsService, digitsOf, isGroupJid, isLidJid, jidFromPhone, phoneFromJid } from './whatsapp-contacts.service';
 import { WhatsAppFiltersService } from './whatsapp-filters.service';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppCrmService, fillCrmVars } from './whatsapp-crm.service';
 
 // Chat: leitura das nossas tabelas (rápido, paginado, polling por `since`) e escrita
 // no gateway (cada envio cria a linha OUT com ack 0 na hora; o eco `message.sent` e os
@@ -25,6 +28,9 @@ export class WhatsAppChatService {
     private readonly inbound: WhatsAppInboundService,
     private readonly contacts: WhatsAppContactsService,
     private readonly filters: WhatsAppFiltersService,
+    private readonly presenter: WhatsAppPresenter,
+    private readonly attendance: WhatsAppAttendanceService,
+    private readonly crm: WhatsAppCrmService,
   ) {}
 
   private translate(e: any): never {
@@ -49,96 +55,141 @@ export class WhatsAppChatService {
     return chatId;
   }
 
-  // ---------------------------------------------------------------- shapes
-  private async contactMap(orgId: string, chatIds: string[]) {
-    const ids = chatIds.filter((c) => !isGroupJid(c));
-    if (!ids.length) return new Map<string, any>();
-    const rows = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { in: ids } } });
-    return new Map(rows.map((r) => [r.wa_id, r] as [string, any]));
-  }
-
-  private shapeChat(c: any, contact?: any) {
-    const meta: any = c.group_meta || {};
-    return {
-      id: c.id,
-      chat_id: c.chat_id,
-      kind: c.kind,
-      name: c.name || contact?.name || contact?.push_name || meta.subject || (c.kind === 'individual' ? (phoneFromJid(c.chat_id) ? `+${phoneFromJid(c.chat_id)}` : contact?.phone ? `+${contact.phone}` : isLidJid(c.chat_id) ? 'Contato sem nome' : c.chat_id) : c.chat_id),
-      phone: c.kind === 'individual' ? contact?.phone || phoneFromJid(c.chat_id) || null : null,
-      unread_count: c.unread_count,
-      last_message_at: c.last_message_at,
-      last_message_preview: c.last_message_preview,
-      last_message_direction: c.last_message_direction,
-      archived: c.archived,
-      pinned: c.pinned,
-      muted: c.muted,
-      group_meta: c.kind === 'group' ? { participants_count: meta.participants_count ?? (Array.isArray(meta.participants) ? meta.participants.length : undefined), is_admin: meta.is_admin, subject: meta.subject, description: meta.description } : null,
-      contact: contact ? { id: contact.id, saved: contact.saved, tags: Array.isArray(contact.tags) ? contact.tags : [] } : null,
-      updated_at: c.updated_at,
-    };
-  }
+  // ---------------------------------------------------------------- shapes (formato único REST/WebSocket)
+  private contactMap(orgId: string, chatIds: string[]) { return this.presenter.contactMap(orgId, chatIds); }
+  private shapeChat(c: any, contact?: any) { return this.presenter.shapeChat(c, contact); }
+  private shapeMessages(orgId: string, rows: any[]) { return this.presenter.shapeMessages(orgId, rows); }
 
   private readonly mediaFetching = new Set<string>();
+  // mídia que o gateway não entregou: não tenta de novo a cada abertura da conversa
+  private static readonly MEDIA_RETRY_MS = 6 * 3600_000;
 
-  private async shapeMessages(orgId: string, rows: any[]) {
-    const mediaIds = rows.map((r) => r.media_id).filter(Boolean) as string[];
-    const medias = mediaIds.length ? await this.prisma.whatsapp_media.findMany({ where: { id: { in: mediaIds } } }) : [];
-    const mmap = new Map(medias.map((m) => [m.id, m] as [string, any]));
-    return rows.map((m) => {
-      const extra: any = m.extra || {};
-      return {
-        id: m.id,
-        wa_message_id: m.wa_message_id,
-        chat_id: m.chat_id,
-        direction: m.direction,
-        type: m.type,
-        body: m.body,
-        media: m.media_id ? this.media.toPublic(mmap.get(m.media_id)) : null,
-        media_omitted: m.media_omitted || (Boolean(m.media_id) && !mmap.get(m.media_id)),
-        from_jid: m.from_jid,
-        sender_name: m.sender_name,
-        quoted: m.quoted_wa_id ? { wa_message_id: m.quoted_wa_id, preview: m.quoted_preview } : null,
-        forwarded: m.forwarded,
-        ack: m.ack,
-        reactions: Array.isArray(m.reactions) ? m.reactions : [],
-        edited: m.edited,
-        revoked: m.revoked,
-        extra: { location: extra.location, poll: extra.poll, contact: extra.contact, mentions: extra.mentions, button: extra.button, buttons: extra.buttons },
-        error: m.error,
-        sent_by_user_id: m.sent_by_user_id,
-        timestamp: m.timestamp,
-        updated_at: m.updated_at,
-      };
-    });
+  /** Baixa do gateway a mídia de uma mensagem marcada como omitida. Resolve true se guardou. */
+  async fetchMedia(orgId: string, m: any, row?: any): Promise<boolean> {
+    if (this.mediaFetching.has(m.id)) return false;
+    const sess = row || (await this.sessions.row(orgId));
+    if (!sess?.openwa_session_id || sess.status !== 'ready') return false;
+    this.mediaFetching.add(m.id);
+    try {
+      const r = await this.openwa.downloadMedia(sess.openwa_session_id, m.chat_id, m.wa_message_id);
+      if (!r?.buffer?.length) throw new Error('vazio');
+      const info: any = ((m.extra as any) || {}).media_info || {};
+      const stored = await this.media.store(orgId, r.buffer, info.mimetype && /octet-stream/.test(r.mime) ? info.mimetype : r.mime, info.filename || null, m.type === 'voice' ? 'voice' : kindOfMime(r.mime));
+      const extra = { ...((m.extra as any) || {}), media_info: { ...info, reason: undefined, checked_at: new Date().toISOString() } };
+      await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { media_id: stored.id, media_omitted: false, extra } });
+      this.presenter.message(orgId, { id: m.id });
+      return true;
+    } catch (e: any) {
+      const info: any = ((m.extra as any) || {}).media_info || {};
+      const reason = e instanceof OpenWaError && e.status === 404 ? (info.history ? 'history' : 'unavailable') : e?.message === 'vazio' ? 'unavailable' : 'error';
+      const extra = { ...((m.extra as any) || {}), media_info: { ...info, reason, checked_at: new Date().toISOString() } };
+      await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { media_omitted: true, extra } }).catch(() => undefined);
+      this.presenter.message(orgId, { id: m.id });
+      return false;
+    } finally {
+      this.mediaFetching.delete(m.id);
+    }
+  }
+
+  /** "Tentar de novo" numa mídia indisponível (ignora a espera de 6 h). */
+  async retryMedia(orgId: string, id: string) {
+    const m = await this.prisma.whatsapp_messages.findFirst({ where: { id, organization_id: orgId } });
+    if (!m) throw new NotFoundException('Mensagem não encontrada.');
+    if (m.media_id) return (await this.shapeMessages(orgId, [m]))[0];
+    const ok = await this.fetchMedia(orgId, m);
+    const fresh = await this.prisma.whatsapp_messages.findUnique({ where: { id: m.id } });
+    const [shaped] = await this.shapeMessages(orgId, [fresh]);
+    return { ...shaped, retried: true, ok };
   }
 
   // ---------------------------------------------------------------- leitura
-  async listChats(orgId: string, q: any = {}) {
-    const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
-    const size = Math.min(200, Math.max(10, parseInt(String(q.page_size || 50), 10) || 50));
+  // Filtros (todos combináveis):
+  //   kind=all|dm|group · archived=1 · unread=1 · filter=<id do filtro personalizado>
+  //   tags=<id,id> + tags_mode=any|all · service=none|bot|waiting|human|closed|open (bot+fila+humano)
+  //   assigned=me|none|<userId> · no_reply_hours=N (cliente esperando resposta há N h)
+  //   from=<ISO> · to=<ISO> (última mensagem) · q=<busca>
+  private async chatWhere(orgId: string, userId: string | null, q: any = {}) {
     const where: any = { organization_id: orgId, archived: q.archived === '1' || q.archived === 'true' };
-    if (q.kind && q.kind !== 'all') where.kind = String(q.kind);
-    if (q.unread === '1') where.unread_count = { gt: 0 };
+    const and: any[] = [];
+    const kind = String(q.kind || 'all');
+    if (kind === 'dm' || kind === 'individual') where.kind = 'individual';
+    else if (kind === 'group') where.kind = 'group';
+    if (q.unread === '1' || q.unread === 'true') where.unread_count = { gt: 0 };
     if (q.filter) { where.chat_id = { in: await this.filters.idsOf(orgId, String(q.filter)) }; delete where.archived; }
+    if (q.tags) {
+      const ids = String(q.tags).split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20);
+      if (ids.length) {
+        const conds = ids.map((id) => ({ tags: { array_contains: id } }));
+        if (q.tags_mode === 'all') and.push(...conds);
+        else and.push({ OR: conds });
+      }
+    }
+    if (q.service) {
+      const sv = String(q.service);
+      if (sv === 'open') where.service_status = { in: ['bot', 'waiting', 'human'] };
+      else if (['none', 'bot', 'waiting', 'human', 'closed'].includes(sv)) where.service_status = sv;
+    }
+    if (q.assigned) {
+      const a = String(q.assigned);
+      if (a === 'me') where.assigned_user_id = userId || '__none__';
+      else if (a === 'none') where.assigned_user_id = null;
+      else where.assigned_user_id = a;
+    }
+    if (q.stage) { const st = String(q.stage); where.stage_id = st === 'none' ? null : st === 'any' ? { not: null } : st; }
+    const nr = parseFloat(String(q.no_reply_hours || ''));
+    if (Number.isFinite(nr) && nr > 0) {
+      where.kind = 'individual';
+      where.last_message_direction = 'IN';
+      and.push({ last_inbound_at: { lt: new Date(Date.now() - nr * 3600_000) } });
+    }
+    const from = q.from ? new Date(String(q.from)) : null;
+    const to = q.to ? new Date(String(q.to)) : null;
+    if ((from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()))) {
+      where.last_message_at = { ...(from && !Number.isNaN(from.getTime()) ? { gte: from } : {}), ...(to && !Number.isNaN(to.getTime()) ? { lte: to } : {}) };
+    }
     if (q.q) {
       const s = String(q.q).trim();
       const d = digitsOf(s);
       const contactIds = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d ? [{ phone: { contains: d } }] : [])] }, select: { wa_id: true }, take: 200 });
-      where.OR = [{ name: { contains: s } }, { chat_id: { in: contactIds.map((c) => c.wa_id) } }, ...(d ? [{ chat_id: { startsWith: d } }] : [])];
+      and.push({ OR: [{ name: { contains: s } }, { chat_id: { in: contactIds.map((c) => c.wa_id) } }, ...(d ? [{ chat_id: { startsWith: d } }] : [])] });
     }
+    if (and.length) where.AND = and;
+    return where;
+  }
+
+  async listChats(orgId: string, q: any = {}, userId: string | null = null) {
+    const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
+    const size = Math.min(200, Math.max(10, parseInt(String(q.page_size || 50), 10) || 50));
+    const where = await this.chatWhere(orgId, userId, q);
     const [total, rows] = await Promise.all([
       this.prisma.whatsapp_chats.count({ where }),
       this.prisma.whatsapp_chats.findMany({ where, orderBy: [{ pinned: 'desc' }, { last_message_at: 'desc' }], skip: (page - 1) * size, take: size }),
     ]);
-    const cmap = await this.contactMap(orgId, rows.map((r) => r.chat_id));
-    return { items: rows.map((r) => this.shapeChat(r, cmap.get(r.chat_id))), total, page, pages: Math.max(1, Math.ceil(total / size)), server_time: new Date().toISOString() };
+    return { items: await this.presenter.shapeChats(orgId, rows), total, page, pages: Math.max(1, Math.ceil(total / size)), server_time: new Date().toISOString() };
+  }
+
+  /** Contagens para os chips de filtro. */
+  async counts(orgId: string, userId: string | null) {
+    const base = { organization_id: orgId, archived: false };
+    const [all, unread, dms, groups, archived, bot, waiting, human, mine, noReply] = await Promise.all([
+      this.prisma.whatsapp_chats.count({ where: base }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, unread_count: { gt: 0 } } }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, kind: 'individual' } }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, kind: 'group' } }),
+      this.prisma.whatsapp_chats.count({ where: { organization_id: orgId, archived: true } }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, service_status: 'bot' } }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, service_status: 'waiting' } }),
+      this.prisma.whatsapp_chats.count({ where: { ...base, service_status: 'human' } }),
+      userId ? this.prisma.whatsapp_chats.count({ where: { ...base, assigned_user_id: userId, service_status: { in: ['human', 'waiting'] } } }) : Promise.resolve(0),
+      this.prisma.whatsapp_chats.count({ where: { ...base, kind: 'individual', last_message_direction: 'IN', last_inbound_at: { not: null } } }),
+    ]);
+    return { all, unread, dms, groups, archived, bot, waiting, human, mine, waiting_reply: noReply };
   }
 
   async getChat(orgId: string, chatId: string) {
     const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
     if (!c) throw new NotFoundException('Conversa não encontrada.');
-    const cmap = await this.contactMap(orgId, [chatId]);
-    const shaped: any = this.shapeChat(c, cmap.get(chatId));
+    const [shaped] = (await this.presenter.shapeChats(orgId, [c])) as any[];
     if (c.kind === 'group') {
       // metadados ao vivo (participantes) — best-effort, cache de 5 min no group_meta
       const meta: any = c.group_meta || {};
@@ -178,23 +229,18 @@ export class WhatsAppChatService {
       }
       rows = (await this.prisma.whatsapp_messages.findMany({ where, orderBy: { timestamp: 'desc' }, take: limit })).reverse();
     }
-    // mídia do histórico (marcada como omitida) → baixa em background, até 5 por chamada
-    const pending = rows.filter((r) => r.media_omitted && !r.media_id && !this.mediaFetching.has(r.id)).slice(-5);
+    // mídia omitida → baixa em background (até 5 por chamada), sem insistir na que já falhou há pouco
+    const now = Date.now();
+    const pending = rows
+      .filter((r) => r.media_omitted && !r.media_id && !this.mediaFetching.has(r.id))
+      .filter((r) => {
+        const checked = ((r.extra as any) || {}).media_info?.checked_at;
+        return !checked || now - new Date(checked).getTime() > WhatsAppChatService.MEDIA_RETRY_MS;
+      })
+      .slice(-5);
     if (pending.length) {
       const row = await this.sessions.row(orgId);
-      if (row?.openwa_session_id && row.status === 'ready') {
-        for (const m of pending) {
-          this.mediaFetching.add(m.id);
-          this.openwa.downloadMedia(row.openwa_session_id, m.chat_id, m.wa_message_id)
-            .then(async (r) => {
-              if (!r?.buffer?.length) return;
-              const stored = await this.media.store(orgId, r.buffer, r.mime, null, m.type === 'voice' ? 'voice' : kindOfMime(r.mime));
-              await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { media_id: stored.id, media_omitted: false } });
-            })
-            .catch(() => this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { media_omitted: true } }).catch(() => undefined))
-            .finally(() => this.mediaFetching.delete(m.id));
-        }
-      }
+      if (row?.openwa_session_id && row.status === 'ready') for (const m of pending) void this.fetchMedia(orgId, m, row);
     }
     return { items: await this.shapeMessages(orgId, rows), server_time: new Date().toISOString() };
   }
@@ -208,19 +254,23 @@ export class WhatsAppChatService {
     const byPhone = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, phone: d }, orderBy: { saved: 'desc' } });
     if (byPhone?.lid) {
       const lidChat = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: byPhone.lid } } });
-      if (lidChat) return this.shapeChat(lidChat, byPhone);
+      if (lidChat) return (await this.presenter.shapeChats(orgId, [lidChat]))[0];
     }
     if (byPhone?.lid) chatId = byPhone.lid; // canônico
     const existing = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
     const contact = byPhone || (await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: chatId } } }));
-    if (existing) return this.shapeChat(existing, contact);
+    if (existing) return (await this.presenter.shapeChats(orgId, [existing]))[0];
     const c = await this.prisma.whatsapp_chats.create({ data: { organization_id: orgId, chat_id: chatId, kind: 'individual', name: contact?.name || contact?.push_name || null } });
-    return this.shapeChat(c, contact);
+    void contact;
+    return (await this.presenter.shapeChats(orgId, [c]))[0];
   }
 
   // ---------------------------------------------------------------- ações de chat
   async markRead(orgId: string, chatId: string) {
+    // o que chegou até agora conta como lido (ponto de leitura do cálculo de não lidas)
+    await this.prisma.whatsapp_messages.updateMany({ where: { organization_id: orgId, chat_id: chatId, direction: 'IN', ack: { lt: 3 } }, data: { ack: 3 } });
     await this.prisma.whatsapp_chats.updateMany({ where: { organization_id: orgId, chat_id: chatId }, data: { unread_count: 0 } });
+    this.presenter.chat(orgId, chatId);
     const row = await this.sessions.row(orgId);
     if (row?.openwa_session_id && row.status === 'ready') this.openwa.markRead(row.openwa_session_id, chatId).catch(() => undefined);
     return { ok: true };
@@ -232,17 +282,33 @@ export class WhatsAppChatService {
     return { ok: true };
   }
 
+  // Arquivar/fixar/silenciar. O que o usuário decide aqui vale até o celular mudar essa
+  // marcação: guardamos em flag_overrides o valor pedido e o que o gateway tinha (gw), e a
+  // sincronização não desfaz enquanto o gateway continuar no valor antigo. Isso cobre o
+  // gateway que responde `{success:false}` (ex.: conversa antiga pelo telefone, sem mensagens)
+  // e o atraso entre a ação e a lista do gateway refletir.
   async setFlag(orgId: string, chatId: string, flag: 'archived' | 'pinned' | 'muted', value: boolean) {
     const row = await this.sessions.row(orgId);
+    let synced = false;
     if (row?.openwa_session_id && row.status === 'ready') {
+      let r: any;
       try {
-        if (flag === 'archived') await this.openwa.archiveChat(row.openwa_session_id, chatId, value);
-        if (flag === 'pinned') await this.openwa.pinChat(row.openwa_session_id, chatId, value);
-        if (flag === 'muted') await this.openwa.muteChat(row.openwa_session_id, chatId, value ? Date.now() + 8 * 3600_000 : null);
+        if (flag === 'archived') r = await this.openwa.archiveChat(row.openwa_session_id, chatId, value);
+        if (flag === 'pinned') r = await this.openwa.pinChat(row.openwa_session_id, chatId, value);
+        if (flag === 'muted') r = await this.openwa.muteChat(row.openwa_session_id, chatId, value ? Date.now() + 8 * 3600_000 : null);
       } catch (e) { this.translate(e); }
+      synced = r?.success !== false;
     }
-    await this.prisma.whatsapp_chats.updateMany({ where: { organization_id: orgId, chat_id: chatId }, data: { [flag]: value } });
-    return { ok: true };
+    const chat = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+    if (chat) {
+      const ov: Record<string, { value: boolean; gw: boolean }> = { ...((chat.flag_overrides as any) || {}) };
+      const gw = ov[flag] ? Boolean(ov[flag].gw) : Boolean((chat as any)[flag]);
+      if (gw === value) delete ov[flag];
+      else ov[flag] = { value, gw };
+      await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { [flag]: value, flag_overrides: ov } });
+    }
+    this.presenter.chat(orgId, chatId);
+    return { ok: true, synced };
   }
 
   // ---------------------------------------------------------------- envio
@@ -262,7 +328,10 @@ export class WhatsAppChatService {
       row = await this.prisma.whatsapp_messages.update({ where: { organization_id_wa_message_id: { organization_id: orgId, wa_message_id: waId } }, data: { media_id: m.media_id ?? undefined, sent_by_user_id: m.userId ?? undefined, quoted_wa_id: m.quoted ?? undefined, quoted_preview: m.quoted_preview ?? undefined, forwarded: m.forwarded || undefined } });
     }
     await this.inbound.bumpChat(orgId, chatId, { type: m.type, body: m.body, direction: 'OUT', at });
-    return (await this.shapeMessages(orgId, [row]))[0];
+    if (m.userId) await this.attendance.onPanelSend(orgId, chatId, m.userId).catch(() => undefined);
+    const shaped = (await this.shapeMessages(orgId, [row]))[0];
+    this.presenter.messageShaped(orgId, shaped);
+    return shaped;
   }
 
   private async quotedPreview(orgId: string, quotedWaId?: string | null) {
@@ -274,8 +343,10 @@ export class WhatsAppChatService {
   async sendText(orgId: string, userId: string, dto: { chat_id: string; text: string; quoted_wa_id?: string; mentions?: string[] }) {
     const row = await this.ready(orgId);
     const chatId = this.assertChatId(dto.chat_id);
-    const text = String(dto.text || '').trim();
-    if (!text) throw new BadRequestException('Mensagem vazia.');
+    let raw = String(dto.text || '').trim();
+    if (!raw) throw new BadRequestException('Mensagem vazia.');
+    if (raw.includes('{{')) raw = await this.fillVars(orgId, chatId, raw); // resposta rápida com {{nome}}/{{cliente.*}}
+    const text = await this.attendance.sign(orgId, userId, raw);
     let r: any;
     try {
       r = dto.quoted_wa_id
@@ -285,13 +356,23 @@ export class WhatsAppChatService {
     return this.recordOut(orgId, chatId, r, { type: 'text', body: text, quoted: dto.quoted_wa_id || null, quoted_preview: await this.quotedPreview(orgId, dto.quoted_wa_id), extra: dto.mentions?.length ? { mentions: dto.mentions } : undefined, userId });
   }
 
+  /** {{nome}} {{telefone}} {{cliente.*}} na mensagem digitada/resposta rápida. */
+  private async fillVars(orgId: string, chatId: string, text: string) {
+    const contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, wa_id: chatId } }).catch(() => null);
+    const name = contact?.name || contact?.push_name || '';
+    const vars: Record<string, string> = { nome: name, name, primeiro_nome: name.split(/\s+/)[0] || '', telefone: contact?.phone || phoneFromJid(chatId), phone: contact?.phone || phoneFromJid(chatId) };
+    if (/\{\{\s*cliente\./i.test(text)) Object.assign(vars, await this.crm.varsForChat(orgId, chatId));
+    return fillCrmVars(text, vars);
+  }
+
   async sendMedia(orgId: string, userId: string, dto: { chat_id: string; caption?: string; as_voice?: boolean; as_document?: boolean; quoted_wa_id?: string }, file: { buffer: Buffer; mimetype: string; originalname?: string; size: number }) {
     const row = await this.ready(orgId);
     const chatId = this.assertChatId(dto.chat_id);
     if (!file?.buffer?.length) throw new BadRequestException('Arquivo vazio.');
     if (file.size > 64 * 1024 * 1024) throw new BadRequestException('Arquivo até 64 MB.');
-    const mime = String(file.mimetype || 'application/octet-stream');
-    const filename = file.originalname ? Buffer.from(file.originalname, 'latin1').toString('utf8').slice(0, 255) : undefined;
+    let mime = String(file.mimetype || 'application/octet-stream');
+    let filename = file.originalname ? Buffer.from(file.originalname, 'latin1').toString('utf8').slice(0, 255) : undefined;
+    let buffer = file.buffer;
     let kind: 'image' | 'video' | 'audio' | 'document' | 'sticker' = 'document';
     if (!dto.as_document) {
       if (mime.startsWith('image/') && !mime.includes('gif')) kind = 'image';
@@ -299,14 +380,31 @@ export class WhatsAppChatService {
       else if (mime.startsWith('audio/')) kind = 'audio';
     }
     const ptt = kind === 'audio' && Boolean(dto.as_voice);
-    const caption = String(dto.caption || '').trim().slice(0, 1024) || undefined;
-    const stored = await this.media.store(orgId, file.buffer, mime, filename || null, ptt ? 'voice' : kindOfMime(mime));
+    if (kind === 'audio') {
+      // gravação do navegador vem em WebM: o WhatsApp só entrega voz em OGG/Opus
+      const n = await this.media.normalizeAudio(buffer, mime, ptt, filename);
+      buffer = n.buffer;
+      mime = n.mime;
+      filename = n.filename || filename;
+    }
+    const rawCaption = String(dto.caption || '').trim().slice(0, 1000);
+    const caption = (rawCaption ? await this.attendance.sign(orgId, userId, rawCaption) : '') || undefined;
+    const stored = await this.media.store(orgId, buffer, mime, filename || null, ptt ? 'voice' : kindOfMime(mime));
     let r: any;
     try {
-      r = await this.openwa.sendMedia(row.openwa_session_id!, kind, chatId, { base64: file.buffer.toString('base64'), mimetype: mime, filename, caption, ...(ptt ? { ptt: true } : {}), ...(dto.quoted_wa_id ? { quotedMessageId: dto.quoted_wa_id } : {}) });
+      r = await this.openwa.sendMedia(row.openwa_session_id!, kind, chatId, { base64: buffer.toString('base64'), mimetype: mime, filename, caption, ...(ptt ? { ptt: true } : {}), ...(dto.quoted_wa_id ? { quotedMessageId: dto.quoted_wa_id } : {}) });
     } catch (e) { this.translate(e); }
     const type = kind === 'audio' ? (ptt ? 'voice' : 'audio') : kind;
     return this.recordOut(orgId, chatId, r, { type, body: caption || null, media_id: stored.id, quoted: dto.quoted_wa_id || null, quoted_preview: await this.quotedPreview(orgId, dto.quoted_wa_id), userId });
+  }
+
+  /** Envia uma mídia que já está guardada no Pub Mail (resposta rápida, reenvio). */
+  async sendStoredMedia(orgId: string, userId: string, dto: { chat_id: string; media_id: string; caption?: string; as_voice?: boolean; as_document?: boolean; quoted_wa_id?: string }) {
+    const m = await this.prisma.whatsapp_media.findFirst({ where: { id: dto.media_id, organization_id: orgId } });
+    if (!m) throw new NotFoundException('Mídia não encontrada.');
+    const f = await this.media.readBase64(orgId, m.id);
+    const buffer = Buffer.from(f.base64, 'base64');
+    return this.sendMedia(orgId, userId, { ...dto, as_voice: dto.as_voice ?? m.kind === 'voice' }, { buffer, mimetype: f.mime, originalname: f.filename ? Buffer.from(f.filename, 'utf8').toString('latin1') : undefined, size: buffer.length });
   }
 
   async sendLocation(orgId: string, userId: string, dto: { chat_id: string; latitude: number; longitude: number; description?: string }) {
@@ -341,7 +439,9 @@ export class WhatsAppChatService {
     let list: any[] = (Array.isArray(m.reactions) ? m.reactions : []).filter((r: any) => !r.from_me);
     if (emoji) list.push({ from: me, emoji: String(emoji), from_me: true });
     const upd = await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { reactions: list } });
-    return (await this.shapeMessages(orgId, [upd]))[0];
+    const shaped = (await this.shapeMessages(orgId, [upd]))[0];
+    this.presenter.messageShaped(orgId, shaped);
+    return shaped;
   }
 
   async forward(orgId: string, userId: string, id: string, to: string[]) {
@@ -367,7 +467,9 @@ export class WhatsAppChatService {
     if (m.direction !== 'OUT' || m.type !== 'text') throw new BadRequestException('Só mensagens de texto enviadas por você podem ser editadas.');
     try { await this.openwa.edit(row.openwa_session_id!, m.chat_id, m.wa_message_id, String(text).trim()); } catch (e) { this.translate(e); }
     const upd = await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { body: String(text).trim(), edited: true } });
-    return (await this.shapeMessages(orgId, [upd]))[0];
+    const shaped = (await this.shapeMessages(orgId, [upd]))[0];
+    this.presenter.messageShaped(orgId, shaped);
+    return shaped;
   }
 
   async delete(orgId: string, id: string, everyone: boolean) {
@@ -377,29 +479,64 @@ export class WhatsAppChatService {
     try { await this.openwa.deleteMessage(row.openwa_session_id!, m.chat_id, m.wa_message_id, everyone); } catch (e) { this.translate(e); }
     if (everyone) {
       const upd = await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { revoked: true } });
-      return (await this.shapeMessages(orgId, [upd]))[0];
+      const shaped = (await this.shapeMessages(orgId, [upd]))[0];
+      this.presenter.messageShaped(orgId, shaped);
+      return shaped;
     }
     await this.prisma.whatsapp_messages.delete({ where: { id: m.id } });
+    this.presenter.messageDeleted(orgId, m.chat_id, m.id);
     return { id: m.id, deleted: true };
   }
 
-  // Importa as últimas N mensagens das conversas mais recentes (sem mídia inline; a mídia
-  // é marcada como "omitida" e baixada sob demanda). Idempotente por wa_message_id.
+  // Importa as últimas N mensagens das conversas mais recentes. Idempotente por wa_message_id.
+  //  - whatsapp-web.js: histórico ao vivo do WhatsApp (GET …/messages/:chat/history);
+  //  - Baileys: o que o gateway guardou na sincronização inicial (GET …/messages?chatId=).
+  // Mídia de histórico vem sem arquivo nos dois motores → fica marcada como "anterior à conexão".
   async importHistory(orgId: string, chatsLimit = 40, perChat = 30) {
     const row = await this.ready(orgId);
-    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, archived: false }, orderBy: { last_message_at: 'desc' }, take: chatsLimit });
+    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, archived: false, kind: { in: ['individual', 'group'] } }, orderBy: { last_message_at: 'desc' }, take: chatsLimit });
     let imported = 0;
+    const baileys = row.engine === 'baileys';
     for (const c of chats) {
       let hist: any[] = [];
-      try { hist = await this.openwa.history(row.openwa_session_id!, c.chat_id, perChat, false); } catch (e: any) { this.logger.debug(`history ${c.chat_id}: ${e?.message || e}`); continue; }
+      try {
+        if (baileys) {
+          const r: any = await this.openwa.storedMessages(row.openwa_session_id!, c.chat_id, perChat, 0);
+          hist = (Array.isArray(r) ? r : r?.messages || []).map((m: any) => WhatsAppChatService.fromStored(m));
+        } else {
+          hist = await this.openwa.history(row.openwa_session_id!, c.chat_id, perChat, false);
+        }
+      } catch (e: any) { this.logger.debug(`history ${c.chat_id}: ${e?.message || e}`); continue; }
       for (const m of Array.isArray(hist) ? hist : []) {
         try {
-          const created = await this.inbound.onMessage({ ...row, organization_id: orgId }, { ...m, chatId: c.chat_id, media: m?.media ? { ...m.media, data: undefined, omitted: true } : undefined }, Boolean(m?.fromMe), { silent: true });
+          const created = await this.inbound.onMessage({ ...row, organization_id: orgId }, { ...m, chatId: m?.chatId || c.chat_id, media: m?.media ? { ...m.media, data: undefined, omitted: true } : undefined }, Boolean(m?.fromMe), { silent: true, history: true });
           if (created) imported++;
         } catch (e: any) { this.logger.debug(`import msg: ${e?.message || e}`); }
       }
+      if (imported) this.presenter.chat(orgId, c.chat_id);
     }
-    return { chats: chats.length, imported };
+    return { chats: chats.length, imported, engine: row.engine };
+  }
+
+  /** Linha do store do OpenWA (GET /sessions/:id/messages) → formato do evento message.* */
+  static fromStored(m: any) {
+    const md: any = m?.metadata || {};
+    let ts = Number(m?.timestamp || 0);
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    return {
+      ...md,
+      id: m?.waMessageId || m?.id,
+      chatId: m?.chatId,
+      from: m?.from,
+      to: m?.to,
+      fromMe: m?.direction === 'outgoing',
+      body: m?.body ?? md.body ?? null,
+      type: m?.type,
+      timestamp: ts || undefined,
+      author: m?.author ?? md.author,
+      media: md.media ? { ...md.media, data: undefined, omitted: true } : undefined,
+      contact: md.contact || (m?.chatName && !String(m?.chatId || '').endsWith('@g.us') ? { name: m.chatName } : undefined),
+    };
   }
 
   // Grupos conhecidos (pra pickers de broadcast).

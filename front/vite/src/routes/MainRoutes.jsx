@@ -53,6 +53,14 @@ const WhatsAppContacts = Loadable(lazy(() => import('views/pages/whatsapp/WhatsA
 const WhatsAppStatus = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppStatus')));
 const WhatsAppBroadcasts = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppBroadcasts')));
 const WhatsAppSchedules = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppSchedules')));
+const WhatsAppBot = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppBot')));
+const WhatsAppCustomers = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppCustomers')));
+const WhatsAppProducts = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppProducts')));
+const WhatsAppCharges = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppCharges')));
+const WhatsAppPipeline = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppPipeline')));
+const WhatsAppTasks = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppTasks')));
+const WhatsAppMetrics = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppMetrics')));
+const TranslatorPlugin = Loadable(lazy(() => import('views/pages/wordpress/TranslatorPlugin')));
 
 // ==============================|| MAIN ROUTING (PROTECTED) ||============================== //
 
@@ -141,11 +149,23 @@ const MainRoutes = {
           children: [
             { path: 'settings', element: <WhatsAppSettings /> },
             { path: 'chat', element: <WhatsAppChat /> },
+            { path: 'bot', element: <WhatsAppBot /> },
             { path: 'status', element: <WhatsAppStatus /> },
             { path: 'contacts', element: <WhatsAppContacts /> },
             { path: 'broadcasts', element: <WhatsAppBroadcasts /> },
-            { path: 'schedules', element: <WhatsAppSchedules /> }
+            { path: 'schedules', element: <WhatsAppSchedules /> },
+            { path: 'customers', element: <WhatsAppCustomers /> },
+            { path: 'products', element: <WhatsAppProducts /> },
+            { path: 'charges', element: <WhatsAppCharges /> },
+            { path: 'pipeline', element: <WhatsAppPipeline /> },
+            { path: 'tasks', element: <WhatsAppTasks /> },
+            { path: 'metrics', element: <WhatsAppMetrics /> }
           ]
+        },
+        {
+          path: 'wordpress',
+          element: <RequireModule module="wordpress" />, // gate por módulo liberado
+          children: [{ path: 'tradutor', element: <TranslatorPlugin /> }]
         },
         {
           path: 'telegram',

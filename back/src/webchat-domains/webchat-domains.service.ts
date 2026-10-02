@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { execFile as execFileCallback } from 'node:child_process';
 import * as dns from 'node:dns/promises';
 import { mkdir, readdir, readFile, symlink, unlink, writeFile } from 'node:fs/promises';
@@ -52,6 +53,10 @@ type CertificateProvisionResult = {
 @Injectable()
 export class WebchatDomainsService {
   private readonly logger = new Logger(WebchatDomainsService.name);
+  // O certbot só aceita UMA execução por vez na máquina (lock global). Dois domínios
+  // verificados em sequência faziam o 2º falhar com "Another instance of Certbot is
+  // already running" e ficar sem HTTPS pra sempre. Todas as chamadas passam por esta fila.
+  private certbotQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -858,10 +863,7 @@ server {
     const timeoutMs = this.readPositiveInt(process.env.CERTBOT_TIMEOUT_MS, 180000);
 
     try {
-      const result = await execFile(certbotBin, args, {
-        timeout: timeoutMs,
-        maxBuffer: 1024 * 1024,
-      });
+      const result = await this.runCertbotQueued(certbotBin, args, timeoutMs, domain);
 
       return {
         provider: 'CERTBOT',
@@ -877,6 +879,54 @@ server {
       throw new InternalServerErrorException(
         `Falha ao emitir SSL via certbot para ${domain}: ${details}`,
       );
+    }
+  }
+
+  // Enfileira a execução do certbot (1 por vez neste processo) e, se outro certbot da
+  // máquina estiver rodando (ex.: certbot.timer renovando), espera e tenta de novo.
+  private runCertbotQueued(bin: string, args: string[], timeoutMs: number, domain: string) {
+    const run = async () => {
+      const maxTries = 6;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await execFile(bin, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+        } catch (error: any) {
+          const text = `${error?.stderr || ''} ${error?.stdout || ''} ${error?.message || ''}`;
+          if (attempt < maxTries && /another instance of certbot is already running/i.test(text)) {
+            this.logger.warn(`[ssl-provision] ${domain}: certbot ocupado, nova tentativa em 20 s (${attempt}/${maxTries - 1})`);
+            await new Promise((r) => setTimeout(r, 20_000));
+            continue;
+          }
+          throw error;
+        }
+      }
+    };
+    const job = this.certbotQueue.then(run, run);
+    this.certbotQueue = job.catch(() => undefined);
+    return job;
+  }
+
+  // Rede de segurança: domínio VERIFIED sem certificado (falha transitória, processo
+  // reiniciado no meio da emissão) ganha nova tentativa 1×/hora durante 7 dias após a
+  // verificação — bem abaixo do limite do Let's Encrypt (5 falhas/hora por domínio).
+  @Cron(CronExpression.EVERY_HOUR)
+  async retryPendingSsl() {
+    const now = Date.now();
+    const rows = await this.prisma.webchat_domains
+      .findMany({
+        where: {
+          status: 'VERIFIED',
+          ssl_status: { in: ['FAILED', 'PROVISIONING'] },
+          ssl_attempted_at: { lt: new Date(now - 50 * 60_000) },
+          last_checked_at: { gt: new Date(now - 7 * 86_400_000) },
+        },
+        select: { id: true, domain: true },
+        take: 20,
+      })
+      .catch(() => []);
+    for (const r of rows) {
+      this.logger.log(`[ssl-provision] nova tentativa automática: ${r.domain}`);
+      await this.provisionSslAndTrack(r.id, r.domain);
     }
   }
 
