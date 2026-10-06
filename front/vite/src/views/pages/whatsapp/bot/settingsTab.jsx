@@ -1,6 +1,6 @@
 // =============================================================================
 // WhatsApp — Fluxo do Bot: aba Configurações (público, início, conversa,
-// horário de atendimento) + status/ativação e "como funciona".
+// horário de atendimento) + status/ativação, números que usam o fluxo e "como funciona".
 // =============================================================================
 import { useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
@@ -9,6 +9,7 @@ import { Box, Button, CircularProgress, Grid, IconButton, Stack, Switch, TextFie
 import {
   IconAdjustments,
   IconClock,
+  IconDeviceMobile,
   IconFlask,
   IconHeadset,
   IconLock,
@@ -29,7 +30,7 @@ import {
 import { get } from 'api/api';
 import { TgCard, TgModal } from 'views/pages/telegram/ui';
 import WaChatPicker from '../WaChatPicker';
-import { fmtPhone } from '../waShared';
+import { WaNumberChip, fmtPhone } from '../waShared';
 import { BH_PRESETS, DAY_LABEL, DAY_ORDER, cleanKeyword } from './botModel';
 import {
   BOT_STATUS,
@@ -180,11 +181,12 @@ function StatTile({ icon: Icon, value, label, color }) {
 // -----------------------------------------------------------------------------
 // Status + ativação
 // -----------------------------------------------------------------------------
-export function StatusCard({ status, meta, canManage, onToggle, toggling, disabled }) {
+export function StatusCard({ status, meta, canManage, onToggle, toggling, disabled, sessions = [], onManageSessions }) {
   const cfg = BOT_STATUS[status] || BOT_STATUS.paused;
   const active = Boolean(meta?.active);
   const stats = meta?.stats || {};
   const published = fmtDT(meta?.published_at);
+  const noNumbers = !sessions.length;
   return (
     <TgCard hover={false} sx={{ p: { xs: 2, sm: 2.5 }, overflow: 'hidden' }}>
       <Box
@@ -248,6 +250,64 @@ export function StatusCard({ status, meta, canManage, onToggle, toggling, disabl
               <Switch checked={active} disabled={!canManage || disabled} onChange={(e) => onToggle(e.target.checked)} sx={switchSx} />
             )}
           </Stack>
+        </Tooltip>
+      </Stack>
+      {/* números que usam este fluxo */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1}
+        alignItems={{ sm: 'center' }}
+        sx={{
+          mt: 2,
+          p: 1.25,
+          borderRadius: 2.5,
+          border: '1px dashed',
+          borderColor: noNumbers ? '#F59E0B' : hexA(WA_GREEN, 0.5),
+          position: 'relative'
+        }}
+      >
+        <Box sx={{ color: noNumbers ? '#D97706' : WA_ACCENT, display: 'flex', flexShrink: 0 }}>
+          <IconDeviceMobile size={20} />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+            {noNumbers
+              ? 'Nenhum número usa este fluxo'
+              : `${sessions.length === 1 ? 'Número que usa' : `${sessions.length} números que usam`} este fluxo`}
+          </Typography>
+          {noNumbers ? (
+            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+              Mesmo ligado, o bot não responde ninguém até você atribuir um número do WhatsApp.
+            </Typography>
+          ) : (
+            <Stack direction="row" spacing={0.6} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+              {sessions.map((sess) => (
+                <WaNumberChip key={sess.id} session={sess} showPhone />
+              ))}
+            </Stack>
+          )}
+        </Box>
+        <Tooltip title={canManage ? '' : 'Só administradores atribuem números a um fluxo.'}>
+          <span>
+            <Button
+              size="small"
+              variant={noNumbers ? 'contained' : 'outlined'}
+              disableElevation
+              disabled={!canManage}
+              onClick={onManageSessions}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 700,
+                borderRadius: 2,
+                whiteSpace: 'nowrap',
+                ...(noNumbers
+                  ? { bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }
+                  : { color: WA_ACCENT, borderColor: hexA(WA_DARK, 0.4) })
+              }}
+            >
+              {noNumbers ? 'Atribuir número' : 'Gerenciar números'}
+            </Button>
+          </span>
         </Tooltip>
       </Stack>
       <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap sx={{ mt: 2, position: 'relative' }}>
@@ -355,7 +415,19 @@ function DayRow({ day, intervals, onChange }) {
 // -----------------------------------------------------------------------------
 // Aba
 // -----------------------------------------------------------------------------
-export default function BotSettingsTab({ settings, onChange, status, meta, canManage, onToggleActive, toggling, disabled, connected }) {
+export default function BotSettingsTab({
+  settings,
+  onChange,
+  status,
+  meta,
+  canManage,
+  onToggleActive,
+  toggling,
+  disabled,
+  connected,
+  flowSessions = [],
+  onManageSessions
+}) {
   const s = settings;
   const set = (patch) => onChange({ ...s, ...patch });
   const setAud = (patch) => set({ audience: { ...s.audience, ...patch } });
@@ -375,7 +447,9 @@ export default function BotSettingsTab({ settings, onChange, status, meta, canMa
         const list = Array.isArray(r) ? r : r?.items || [];
         const map = {};
         list.forEach((c) => {
-          if (c?.chat_id) map[c.chat_id] = c.name && c.name !== 'Contato sem nome' ? c.name : c.phone ? fmtPhone(c.phone) : null;
+          const label = c.name && c.name !== 'Contato sem nome' ? c.name : c.phone ? fmtPhone(c.phone) : null;
+          if (c?.chat_id) map[c.chat_id] = label;
+          if (c?.jid) map[c.jid] = map[c.jid] || label; // a lista guarda o contato (jid), que vale em qualquer número
         });
         setNames((p) => {
           const next = { ...p };
@@ -403,14 +477,23 @@ export default function BotSettingsTab({ settings, onChange, status, meta, canMa
   const [pickerOpen, setPickerOpen] = useState(false);
   const [draft, setDraft] = useState([]);
   const openPicker = () => {
-    setDraft(testIds.map((id) => ({ chat_id: id, name: names[id] || nameFromId(id), kind: 'individual' })));
+    setDraft(
+      testIds.map((id) => ({
+        chat_id: id,
+        jid: /@/.test(String(id)) ? id : undefined,
+        name: names[id] || nameFromId(id),
+        kind: 'individual'
+      }))
+    );
     setPickerOpen(true);
   };
   const savePicker = () => {
-    const ok = draft.filter((d) => d.kind !== 'group' && d.kind !== 'channel' && d.kind !== 'broadcast' && !isGroupId(d.chat_id));
+    const ok = draft.filter((d) => d.kind !== 'group' && d.kind !== 'channel' && d.kind !== 'broadcast' && !isGroupId(d.jid || d.chat_id));
     if (ok.length < draft.length) toast('Grupos foram ignorados — o bot só atende conversas individuais.', { icon: 'ℹ️' });
-    setNames((p) => ({ ...p, ...Object.fromEntries(ok.map((d) => [d.chat_id, d.name || nameFromId(d.chat_id)])) }));
-    setAud({ test_chat_ids: ok.map((d) => d.chat_id) });
+    // guarda o CONTATO (jid) e não a conversa: o modo teste vale para essa pessoa em qualquer número do fluxo
+    const keyOf = (d) => d.jid || d.chat_id;
+    setNames((p) => ({ ...p, ...Object.fromEntries(ok.map((d) => [keyOf(d), d.name || nameFromId(keyOf(d))])) }));
+    setAud({ test_chat_ids: [...new Set(ok.map(keyOf))] });
     setPickerOpen(false);
   };
 
@@ -420,7 +503,16 @@ export default function BotSettingsTab({ settings, onChange, status, meta, canMa
     <Grid container spacing={2.5}>
       <Grid size={{ xs: 12, lg: 8 }}>
         <Stack spacing={2.5}>
-          <StatusCard status={status} meta={meta} canManage={canManage} onToggle={onToggleActive} toggling={toggling} disabled={disabled} />
+          <StatusCard
+            status={status}
+            meta={meta}
+            canManage={canManage}
+            onToggle={onToggleActive}
+            toggling={toggling}
+            disabled={disabled}
+            sessions={flowSessions}
+            onManageSessions={onManageSessions}
+          />
 
           {/* público */}
           <Card icon={IconUsers} title="Quem o bot atende" subtitle="Só conversas individuais — grupos nunca recebem resposta do bot.">
@@ -742,6 +834,10 @@ export default function BotSettingsTab({ settings, onChange, status, meta, canMa
             </Stack>
             <Stack spacing={1.75}>
               {[
+                {
+                  icon: IconDeviceMobile,
+                  text: 'Cada número do WhatsApp usa um fluxo (ou nenhum). O mesmo fluxo pode atender vários números.'
+                },
                 { icon: IconUsersGroup, text: 'Grupos nunca são respondidos pelo bot — só conversas individuais.' },
                 {
                   icon: IconHeadset,
@@ -806,7 +902,15 @@ export default function BotSettingsTab({ settings, onChange, status, meta, canMa
           </>
         }
       >
-        {pickerOpen ? <WaChatPicker value={draft} onChange={setDraft} connected={connected} listHeight={320} /> : null}
+        {pickerOpen ? (
+          <WaChatPicker
+            value={draft}
+            onChange={setDraft}
+            connected={connected}
+            listHeight={320}
+            initialSessionId={flowSessions.length === 1 ? flowSessions[0].id : undefined}
+          />
+        ) : null}
       </TgModal>
     </Grid>
   );

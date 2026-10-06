@@ -8,6 +8,7 @@ import GuestOnly from './GuestOnly';
 import ErrorBoundary from './ErrorBoundary';
 
 // pages
+const LandingPage = Loadable(lazy(() => import('views/pages/landing/Landing')));
 const LoginPage = Loadable(lazy(() => import('views/pages/authentication/Login')));
 const RegisterPage = Loadable(lazy(() => import('views/pages/authentication/Register')));
 const PublicWebchat = Loadable(lazy(() => import('views/pages/webchat/PublicWebchat')));
@@ -18,54 +19,54 @@ const PrivacyPolicy = Loadable(lazy(() => import('views/pages/legal/PrivacyPolic
 const TermsOfUse = Loadable(lazy(() => import('views/pages/legal/TermsOfUse')));
 
 const PublicRoutes = {
-    path: '/',
-    element: <MinimalLayout />,
-    errorElement: <ErrorBoundary />,
-    children: [
-        // /  -> Login (sem Home)
-        { index: true, element: <Navigate to="/login" replace /> },
+  path: '/',
+  element: <MinimalLayout />,
+  errorElement: <ErrorBoundary />,
+  children: [
+    // /  -> landing (fluxograma grande + planos); o login fica em /login ("Entrar" no cabeçalho)
+    { index: true, element: <LandingPage /> },
 
-        // /home legado -> redireciona para login
-        { path: 'home', element: <Navigate to="/login" replace /> },
+    // /home legado -> landing
+    { path: 'home', element: <Navigate to="/" replace /> },
 
-        // /login -> Login (somente guest)
-        {
-            path: 'login',
-            element: (
-                <GuestOnly>
-                    <LoginPage />
-                </GuestOnly>
-            )
-        },
+    // /login -> Login (somente guest)
+    {
+      path: 'login',
+      element: (
+        <GuestOnly>
+          <LoginPage />
+        </GuestOnly>
+      )
+    },
 
-        // /register -> Register (somente guest)
-        {
-            path: 'register',
-            element: (
-                <GuestOnly>
-                    <RegisterPage />
-                </GuestOnly>
-            )
-        },
+    // /register -> Register (somente guest)
+    {
+      path: 'register',
+      element: (
+        <GuestOnly>
+          <RegisterPage />
+        </GuestOnly>
+      )
+    },
 
-        // /webchat/splits/:slug -> sorteia e redireciona para um webchat do split
-        { path: 'webchat/splits/:slug', element: <SplitRedirect /> },
+    // /webchat/splits/:slug -> sorteia e redireciona para um webchat do split
+    { path: 'webchat/splits/:slug', element: <SplitRedirect /> },
 
-        // /quiz/splits/:slug -> sorteia e redireciona para um quiz do split
-        { path: 'quiz/splits/:slug', element: <QuizSplitRedirect /> },
+    // /quiz/splits/:slug -> sorteia e redireciona para um quiz do split
+    { path: 'quiz/splits/:slug', element: <QuizSplitRedirect /> },
 
-        // /quiz/:slug -> página pública do quiz
-        { path: 'quiz/:slug', element: <PublicQuiz /> },
+    // /quiz/:slug -> página pública do quiz
+    { path: 'quiz/:slug', element: <PublicQuiz /> },
 
-        // /webchat/:slug -> pagina publica do webchat
-        { path: 'webchat/:slug', element: <PublicWebchat /> },
+    // /webchat/:slug -> pagina publica do webchat
+    { path: 'webchat/:slug', element: <PublicWebchat /> },
 
-        // /legal/... -> páginas jurídicas públicas
-        { path: 'legal/politica-de-privacidade', element: <PrivacyPolicy /> },
-        { path: 'legal/politica-de-privacidade/*', element: <PrivacyPolicy /> },
-        { path: 'legal/termos-de-uso', element: <TermsOfUse /> },
-        { path: 'legal/termos-de-uso/*', element: <TermsOfUse /> }
-    ]
+    // /legal/... -> páginas jurídicas públicas
+    { path: 'legal/politica-de-privacidade', element: <PrivacyPolicy /> },
+    { path: 'legal/politica-de-privacidade/*', element: <PrivacyPolicy /> },
+    { path: 'legal/termos-de-uso', element: <TermsOfUse /> },
+    { path: 'legal/termos-de-uso/*', element: <TermsOfUse /> }
+  ]
 };
 
 export default PublicRoutes;

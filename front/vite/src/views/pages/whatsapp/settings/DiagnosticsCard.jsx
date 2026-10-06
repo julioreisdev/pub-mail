@@ -22,7 +22,7 @@ import { SettingsCardHeader, cardSx, errText, plural, warnTextSx } from './setti
 
 // ============================================================================
 // Card "Diagnóstico da conexão" (compacto): gateway, motor, último evento,
-// mensagens e mídia nas últimas 24 h. GET /whatsapp/session/diagnostics.
+// mensagens e mídia nas últimas 24 h. GET /whatsapp/sessions/:id/diagnostics (por número).
 // Recarrega quando o status da sessão muda e no botão "Atualizar".
 // ============================================================================
 
@@ -58,36 +58,39 @@ function Tile({ icon: Icon, label, children, tooltip }) {
   );
 }
 
-export default function DiagnosticsCard({ status, canEdit, upgradeAvailable, onMigrate }) {
+export default function DiagnosticsCard({ sessionId, status, canEdit, upgradeAvailable, onMigrate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const seq = useRef(0);
 
-  const load = useCallback(async (initial = false) => {
-    const s = ++seq.current;
-    if (initial) setLoading(true);
-    else setRefreshing(true);
-    try {
-      const d = await get('/whatsapp/session/diagnostics');
-      if (s !== seq.current) return;
-      setData(d || null);
-      setError('');
-    } catch (e) {
-      if (s !== seq.current) return;
-      setError(
-        e?.response?.status === 404
-          ? 'O diagnóstico ainda não está disponível neste servidor.'
-          : errText(e, 'Não foi possível verificar a conexão agora.')
-      );
-    } finally {
-      if (s === seq.current) {
-        setLoading(false);
-        setRefreshing(false);
+  const load = useCallback(
+    async (initial = false) => {
+      const s = ++seq.current;
+      if (initial) setLoading(true);
+      else setRefreshing(true);
+      try {
+        const d = await get(`/whatsapp/sessions/${sessionId}/diagnostics`);
+        if (s !== seq.current) return;
+        setData(d || null);
+        setError('');
+      } catch (e) {
+        if (s !== seq.current) return;
+        setError(
+          e?.response?.status === 404
+            ? 'O diagnóstico ainda não está disponível neste servidor.'
+            : errText(e, 'Não foi possível verificar a conexão agora.')
+        );
+      } finally {
+        if (s === seq.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
-    }
-  }, []);
+    },
+    [sessionId]
+  );
 
   // 1ª carga + sempre que a sessão muda de status (conectou, caiu, QR…)
   const first = useRef(true);

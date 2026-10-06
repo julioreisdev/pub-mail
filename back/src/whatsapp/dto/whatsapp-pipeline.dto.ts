@@ -13,6 +13,7 @@ export class StageDto {
 export class ReorderStagesDto { @IsArray() ids!: string[]; }
 export class DeleteStageQuery { @IsOptional() @IsString() move_to?: string; }
 
+// `chat_id` nas rotas = uuid da conversa (whatsapp_chats.id), nunca o jid.
 export class MoveChatDto {
   @IsString() chat_id!: string;
   @IsOptional() @IsString() stage_id?: string | null; // null/'' = tira do funil
@@ -28,7 +29,7 @@ export class TaskDto {
   @IsOptional() @IsString() @MaxLength(4000) description?: string | null;
   @IsOptional() @IsString() due_at?: string | null; // ISO
   @IsOptional() @IsString() assigned_user_id?: string | null;
-  @IsOptional() @IsString() chat_id?: string | null;
+  @IsOptional() @IsString() chat_id?: string | null; // uuid da conversa
   @IsOptional() @IsString() customer_id?: string | null;
 }
 

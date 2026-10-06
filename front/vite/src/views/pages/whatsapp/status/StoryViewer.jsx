@@ -21,7 +21,7 @@ import toast from 'react-hot-toast';
 import { post } from 'api/api';
 import { TgAvatar } from 'views/pages/telegram/ui';
 import { errMsg } from '../waShared';
-import { WA_DARK, WA_GREEN, WA_TEAL } from '../waKit';
+import { WA_DARK, WA_GREEN, WA_TEAL, WaNumberChip } from '../waKit';
 import { agoShort, displayName, firstUnviewedIndex, normColor, viewerFont } from './statusShared';
 
 // =============================================================================
@@ -29,6 +29,9 @@ import { agoShort, displayName, firstUnviewedIndex, normColor, viewerFont } from
 // WhatsApp): barras de progresso, avanço automático (5 s texto/imagem; duração
 // do vídeo/áudio), toque esquerda/direita, segurar = pausa, ←/→/Espaço/Esc,
 // responder (vira mensagem no chat citando o status) e reagir.
+// Multi-número: cada contato é identificado por `key` = "<session_id>:<jid>" (o mesmo contato
+// pode aparecer em 2 números); responder/reagir saem PELO número do status (o back resolve
+// pelo id do status). `contact.session` é o número; desconectado → responder/reagir travados.
 // Fundo sempre escuro (não segue o tema do painel — é um "player").
 // =============================================================================
 
@@ -106,8 +109,8 @@ function Waveform({ playing }) {
 }
 
 // =============================================================================
-export default function StoryViewer({ open, startChatId, queue = [], byId, onClose, onViewed, onOpenChat, blocked }) {
-  const [pos, setPos] = useState(null); // { chatId, index }
+export default function StoryViewer({ open, startKey, queue = [], byId, onClose, onViewed, onOpenChat, blocked: blockedProp, showNumber }) {
+  const [pos, setPos] = useState(null); // { key, index }
   const [restartKey, setRestartKey] = useState(0);
   const [userPaused, setUserPaused] = useState(false);
   const [hold, setHold] = useState(false);
@@ -121,7 +124,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
   const [needsTap, setNeedsTap] = useState(false);
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
-  const [sentFor, setSentFor] = useState(null); // chat_id que já recebeu resposta nesta sessão do viewer
+  const [sentFor, setSentFor] = useState(null); // { key, chatId } do contato que já recebeu resposta nesta sessão do viewer
   const [reacted, setReacted] = useState({}); // statusId → emoji
   const [reacting, setReacting] = useState(null);
   const [bursts, setBursts] = useState([]);
@@ -141,8 +144,10 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
   const holdTimer = useRef(null);
   const downAt = useRef(0);
 
-  const contact = pos ? byId.get(pos.chatId) : null;
+  const contact = pos ? byId.get(pos.key) : null;
   const status = contact?.statuses?.[pos?.index] || null;
+  // número do status desconectado → não dá para responder/reagir por ele
+  const blocked = blockedProp || Boolean(contact?.session && !(contact.session.connected || contact.session.status === 'ready'));
   const url = status?.media?.url || '';
   const kind = !status ? null : status.type === 'text' ? 'text' : !url || status.media_omitted || failed ? 'omitted' : status.type;
   // "toque para tocar" só vale para mídia que toca (se falhou, vira o painel de indisponível)
@@ -158,22 +163,22 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
 
   // ---------------------------------------------------------------- abrir
   useEffect(() => {
-    if (!open || !startChatId) return;
-    const c = byIdRef.current.get(startChatId);
-    setPos({ chatId: startChatId, index: firstUnviewedIndex(c) });
+    if (!open || !startKey) return;
+    const c = byIdRef.current.get(startKey);
+    setPos({ key: startKey, index: firstUnviewedIndex(c) });
     setUserPaused(false);
     setHold(false);
     setTyping(false);
     setFooterHover(false);
     setReply('');
     setSentFor(null);
-  }, [open, startChatId]);
+  }, [open, startKey]);
 
   // status sumiu (expirou/removido numa atualização): ajusta o índice; contato sumiu → fecha
   useEffect(() => {
     if (!open || !pos || status) return;
     const n = contact?.statuses?.length || 0;
-    if (n > 0) setPos({ chatId: pos.chatId, index: Math.min(pos.index, n - 1) });
+    if (n > 0) setPos({ key: pos.key, index: Math.min(pos.index, n - 1) });
     else onCloseRef.current?.();
   }, [open, pos, status, contact]);
 
@@ -194,22 +199,22 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
 
   // marca como visto (1× por status)
   useEffect(() => {
-    if (open && status && !status.viewed && pos) onViewed?.(status.id, pos.chatId);
+    if (open && status && !status.viewed && pos) onViewed?.(status.id, pos.key);
   }, [open, status?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------- navegação
   const goNext = useCallback(() => {
     if (!pos) return;
-    const c = byIdRef.current.get(pos.chatId);
+    const c = byIdRef.current.get(pos.key);
     if (c && pos.index < c.statuses.length - 1) {
-      setPos({ chatId: pos.chatId, index: pos.index + 1 });
+      setPos({ key: pos.key, index: pos.index + 1 });
       return;
     }
     const q = queueRef.current;
-    for (let i = q.indexOf(pos.chatId) + 1; i < q.length; i += 1) {
+    for (let i = q.indexOf(pos.key) + 1; i < q.length; i += 1) {
       const n = byIdRef.current.get(q[i]);
       if (n?.statuses?.length) {
-        setPos({ chatId: q[i], index: firstUnviewedIndex(n) });
+        setPos({ key: q[i], index: firstUnviewedIndex(n) });
         setReply('');
         return;
       }
@@ -220,14 +225,14 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
   const goPrev = useCallback(() => {
     if (!pos) return;
     if (pos.index > 0) {
-      setPos({ chatId: pos.chatId, index: pos.index - 1 });
+      setPos({ key: pos.key, index: pos.index - 1 });
       return;
     }
     const q = queueRef.current;
-    for (let i = q.indexOf(pos.chatId) - 1; i >= 0; i -= 1) {
+    for (let i = q.indexOf(pos.key) - 1; i >= 0; i -= 1) {
       const n = byIdRef.current.get(q[i]);
       if (n?.statuses?.length) {
-        setPos({ chatId: q[i], index: n.statuses.length - 1 });
+        setPos({ key: q[i], index: n.statuses.length - 1 });
         setReply('');
         return;
       }
@@ -244,7 +249,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
     if (!pos) return false;
     if (pos.index > 0) return true;
     const q = queue;
-    return q.slice(0, Math.max(0, q.indexOf(pos.chatId))).some((id) => byId.get(id)?.statuses?.length);
+    return q.slice(0, Math.max(0, q.indexOf(pos.key))).some((id) => byId.get(id)?.statuses?.length);
   })();
 
   // ---------------------------------------------------------------- relógio (rAF)
@@ -368,15 +373,16 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
   };
 
   // ---------------------------------------------------------------- responder / reagir
-  const chatId = pos?.chatId;
+  const key = pos?.key;
   const sendReply = async () => {
     const text = reply.trim();
     if (!text || sending || !status || blocked) return;
     setSending(true);
     try {
-      await post(`/whatsapp/contact-statuses/${encodeURIComponent(status.id)}/reply`, { text });
+      // a resposta sai pelo número do status; o back devolve o uuid da conversa (pode ter sido criada agora)
+      const r = await post(`/whatsapp/contact-statuses/${encodeURIComponent(status.id)}/reply`, { text });
       setReply('');
-      setSentFor(chatId);
+      setSentFor({ key, chatId: r?.chat_id || contact?.chat_id || null });
       toast.success('Resposta enviada no chat');
       inputRef.current?.blur();
     } catch (e) {
@@ -403,7 +409,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
   };
 
   const openChat = () => {
-    const id = chatId;
+    const id = sentFor?.chatId || contact?.chat_id || null;
     onClose?.();
     if (id) onOpenChat?.(id);
   };
@@ -764,9 +770,14 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
             <Stack direction="row" alignItems="center" spacing={1.25} sx={{ mt: 1.25 }}>
               <TgAvatar name={name} photoPath={contact?.photo_path} size={38} />
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 14.5, lineHeight: 1.2 }} noWrap>
-                  {name}
-                </Typography>
+                <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+                  <Typography sx={{ color: '#fff', fontWeight: 700, fontSize: 14.5, lineHeight: 1.2 }} noWrap>
+                    {name}
+                  </Typography>
+                  {showNumber && contact?.session ? (
+                    <WaNumberChip session={contact.session} variant="solid" sx={{ flexShrink: 0, borderColor: 'rgba(255,255,255,0.35)' }} />
+                  ) : null}
+                </Stack>
                 <Typography sx={{ color: 'rgba(255,255,255,0.75)', fontSize: 12, lineHeight: 1.2 }} noWrap>
                   {agoShort(status?.posted_at)}
                   {status ? ` · ${TYPE_LABEL[status.type] || 'Status'}` : ''}
@@ -842,7 +853,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
               </Typography>
             ) : null}
 
-            {sentFor && sentFor === chatId ? (
+            {sentFor && sentFor.key === key ? (
               <Stack direction="row" justifyContent="center" sx={{ mb: 1 }}>
                 <Box
                   sx={{
@@ -865,6 +876,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
                   <Button
                     size="small"
                     onClick={openChat}
+                    disabled={!(sentFor?.chatId || contact?.chat_id)}
                     endIcon={<IconArrowRight size={14} />}
                     sx={{ color: WA_GREEN, textTransform: 'none', fontWeight: 800, minWidth: 0, px: 1, py: 0.25, borderRadius: 5 }}
                   >
@@ -878,7 +890,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
               {REACTIONS.map((em) => {
                 const on = myReaction === em;
                 return (
-                  <Tooltip key={em} title={blocked ? 'Conecte o WhatsApp para reagir' : 'Reagir'} disableInteractive>
+                  <Tooltip key={em} title={blocked ? 'Conecte este número para reagir' : 'Reagir'} disableInteractive>
                     <span>
                       <IconButton
                         onClick={() => sendReaction(em)}
@@ -918,7 +930,7 @@ export default function StoryViewer({ open, startChatId, queue = [], byId, onClo
                   }
                 }}
                 disabled={blocked || !status}
-                placeholder={blocked ? 'Conecte o WhatsApp para responder' : `Responder a ${name}…`}
+                placeholder={blocked ? 'Conecte este número para responder' : `Responder a ${name}…`}
                 inputProps={{ 'aria-label': 'Responder ao status', enterKeyHint: 'send' }}
                 sx={{
                   flex: 1,

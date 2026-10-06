@@ -5,9 +5,10 @@ import { AccessService } from '../platform-billing/access.service';
 import { OpenWaClient, OpenWaError } from './openwa.client';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppBootstrapService } from './whatsapp-bootstrap.service';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
 
-// Vigia das sessões (1×/min): sincroniza status/telefone com o OpenWA mesmo sem webhook
-// e reinicia sessão caída (disconnected/failed) no máximo 1× a cada 5 min.
+// Vigia dos números (1×/min): sincroniza status/telefone com o OpenWA mesmo sem webhook
+// e reinicia sessão caída (disconnected/failed) no máximo 1× a cada 5 min — por número.
 // Org sem acesso ativo (assinatura) é pulada — "vencido = tudo para".
 @Injectable()
 export class WhatsAppWatchdogRunner {
@@ -20,6 +21,7 @@ export class WhatsAppWatchdogRunner {
     private readonly sessions: WhatsAppSessionsService,
     private readonly access: AccessService,
     private readonly bootstrap: WhatsAppBootstrapService,
+    private readonly presenter: WhatsAppPresenter,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -39,22 +41,28 @@ export class WhatsAppWatchdogRunner {
           if (live?.phone && live.phone !== row.phone) data.phone = String(live.phone).slice(0, 32);
           if (live?.pushName && live.pushName !== row.push_name) data.push_name = String(live.pushName).slice(0, 255);
           if (st === 'ready' && !row.paired_at) data.paired_at = new Date();
-          if (Object.keys(data).length) await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data });
+          if (Object.keys(data).length) {
+            await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data });
+            this.presenter.invalidateSessions(row.organization_id);
+            if (data.status) this.presenter.session(row.organization_id, row.id, { event: 'watchdog.status', status: data.status });
+          }
           if (st === 'ready') this.bootstrap.maybeRun({ ...row, ...data });
 
           // Reinício automático: só quem já pareou (tem phone) e caiu; respeita 5 min entre tentativas.
           const fell = st === 'disconnected' || st === 'failed';
           const recent = row.last_restart_at && Date.now() - new Date(row.last_restart_at).getTime() < 5 * 60_000;
           if (fell && row.paired_at && !row.restricted_at && !recent) {
-            this.logger.log(`Reiniciando sessão caída org=${row.organization_id} (${st})`);
+            this.logger.log(`Reiniciando sessão caída org=${row.organization_id} número=${row.id} (${st})`);
             await this.openwa.startSession(row.openwa_session_id!).catch((e) => this.logger.warn(`restart falhou: ${e?.message || e}`));
             await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { last_restart_at: new Date() } });
           }
         } catch (e: any) {
           if (e instanceof OpenWaError && e.status === 404) {
             await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { openwa_session_id: null, webhook_id: null, status: 'none', last_error: 'Sessão não existe mais no gateway.' } });
+            this.presenter.invalidateSessions(row.organization_id);
+            this.presenter.session(row.organization_id, row.id, { event: 'watchdog.gone', status: 'none' });
           } else {
-            this.logger.warn(`watchdog org=${row.organization_id}: ${e?.message || e}`);
+            this.logger.warn(`watchdog número=${row.id}: ${e?.message || e}`);
           }
         }
       }

@@ -43,6 +43,7 @@ import { PaymentsModule } from 'src/payments/payments.module';
 import { PlatformBillingModule } from 'src/platform-billing/platform-billing.module';
 import { WhatsAppModule } from 'src/whatsapp/whatsapp.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
+import { TeamModule } from 'src/team/team.module';
 import { WordpressModule } from 'src/wordpress/wordpress.module';
 
 @Module({
@@ -93,6 +94,7 @@ import { WordpressModule } from 'src/wordpress/wordpress.module';
     RealtimeModule, // WebSocket do painel (Socket.IO em /realtime)
     WhatsAppModule, // WhatsApp via OpenWA (Docker, loopback)
     WordpressModule, // plugin WordPress Tradutor Invisível (licença pela conta)
+    TeamModule, // chat interno da equipe (dentro da tela de Chat do WhatsApp)
   ],
   controllers: [],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

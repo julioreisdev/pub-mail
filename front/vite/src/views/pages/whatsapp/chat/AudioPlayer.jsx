@@ -28,6 +28,38 @@ export default function AudioPlayer({ url, voice, out }) {
   const [dur, setDur] = useState(0);
   const [speed, setSpeed] = useState(1);
   const [failed, setFailed] = useState(false);
+  // A URL é assinada e pode mudar a cada atualização da conversa. Trocar o `src` no meio recarrega o
+  // áudio e zera a reprodução — então a fonte só muda quando é OUTRA mídia (caminho diferente).
+  const mediaKey = String(url || '').split('?')[0];
+  const [src, setSrc] = useState(url);
+  const latestUrl = useRef(url);
+  latestUrl.current = url;
+  const retried = useRef(false);
+  useEffect(() => {
+    setSrc(latestUrl.current);
+    setFailed(false);
+    setCur(0);
+    setDur(0);
+    retried.current = false;
+  }, [mediaKey]);
+  const onError = () => {
+    // link vencido: tenta uma vez com o link mais novo, voltando para onde estava
+    const a = aRef.current;
+    if (!retried.current && latestUrl.current && latestUrl.current !== src) {
+      retried.current = true;
+      const at = a?.currentTime || 0;
+      setSrc(latestUrl.current);
+      window.setTimeout(() => {
+        try {
+          if (aRef.current && at > 0) aRef.current.currentTime = at;
+        } catch {
+          /* sem metadados ainda */
+        }
+      }, 400);
+      return;
+    }
+    setFailed(true);
+  };
 
   useEffect(
     () => () => {
@@ -107,7 +139,7 @@ export default function AudioPlayer({ url, voice, out }) {
     <Stack direction="row" spacing={1} alignItems="center" sx={{ width: { xs: 236, sm: 290 }, maxWidth: '100%', py: 0.25 }}>
       <audio
         ref={aRef}
-        src={url}
+        src={src}
         preload="metadata"
         onLoadedMetadata={onMeta}
         onDurationChange={onDuration}
@@ -118,7 +150,7 @@ export default function AudioPlayer({ url, voice, out }) {
           setPlaying(false);
           setCur(0);
         }}
-        onError={() => setFailed(true)}
+        onError={onError}
         style={{ display: 'none' }}
       />
       <Box
@@ -203,8 +235,6 @@ export default function AudioPlayer({ url, voice, out }) {
           size="small"
           component="a"
           href={dlUrl(url)}
-          target="_blank"
-          rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}
           sx={{ color: 'inherit', opacity: 0.65, '&:hover': { opacity: 1 } }}
         >

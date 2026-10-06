@@ -57,7 +57,14 @@ import {
   IconHourglassHigh,
   IconListDetails,
   IconX,
-  IconRefresh
+  IconRefresh,
+  IconBolt,
+  IconGauge,
+  IconShield,
+  IconShieldCheck,
+  IconAdjustments,
+  IconArrowsSplit,
+  IconCircleCheck
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
@@ -86,13 +93,23 @@ import {
   fmtDateBRT,
   waButtonSx,
   WA_GREEN,
-  WA_DARK
+  WA_DARK,
+  WaNumberChip,
+  WaNumberDot,
+  WaNumberMultiSelect,
+  WaNumberSelect,
+  sessionLabel
 } from './waKit';
 
 // ============================================================================
 // WhatsApp → Broadcasts: disparos em massa para contatos e grupos com rotação
-// de copies, horários diários (BRT), fila com ritmo e aquecimento do número.
-// Espelho da página de Broadcasts do Telegram, sem seleção de bot.
+// de copies, horários diários (BRT), fila com ritmo e aquecimento por número.
+//
+// Multi-número: cada campanha escolhe 1..N números (`session_ids`). Contato que
+// já tem conversa num dos números escolhidos sai por ele; os demais são
+// divididos (round-robin) entre os números conectados; grupos saem pelo número
+// da conversa do grupo. O ritmo (`pacing`) vem de presets do back
+// (GET /whatsapp/broadcasts/presets) ou é personalizado.
 // ============================================================================
 
 const minToHHMM = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
@@ -107,6 +124,7 @@ const WARMUP = [20, 40, 80, 160, 320, 640, 1000];
 const COLD = [5, 10, 20, 40, 60, 80, 100];
 const RISK_TEXT =
   'Disparos para contatos que nunca falaram com você podem restringir ou banir o número. O WhatsApp decide isso sozinho e o Pub Mail não tem como reverter — a responsabilidade é sua.';
+const isReady = (s) => Boolean(s && (s.connected || s.status === 'ready'));
 
 // resumo de audiência (linha + confirmação de disparo)
 const audienceOf = (b) => {
@@ -116,9 +134,111 @@ const audienceOf = (b) => {
   const parts = [];
   if (contacts) parts.push(plural(contacts, 'contato', 'contatos'));
   if (groups) parts.push(plural(groups, 'grupo', 'grupos'));
-  return { contacts, groups, total, parts };
+  const by_session = Array.isArray(b?.audience?.by_session) ? b.audience.by_session : [];
+  const warnings = Array.isArray(b?.audience?.warnings) ? b.audience.warnings : [];
+  return { contacts, groups, total, parts, by_session, warnings };
 };
 const CONTACT_MODE_LABEL = { saved: 'contatos salvos', all: 'todos os contatos', none: 'sem contatos' };
+
+// ---- ritmo de envio (presets anti-bloqueio) ----
+const RISK_UI = {
+  high: { token: 'error', label: 'Risco alto' },
+  medium: { token: 'warning', label: 'Risco médio' },
+  low: { token: 'success', label: 'Risco baixo' },
+  minimal: { token: 'success', label: 'Risco mínimo' }
+};
+const PRESET_ICON = { fast: IconBolt, normal: IconGauge, safe: IconShield, very_safe: IconShieldCheck, custom: IconAdjustments };
+// usado só se GET /whatsapp/broadcasts/presets falhar (mesmos valores do back)
+const FALLBACK_PRESETS = {
+  default: 'normal',
+  items: [
+    {
+      key: 'fast',
+      label: 'Rápido',
+      risk: 'high',
+      description: '3 s entre envios (±30 %), sem pausas e sem limite diário.',
+      warning: 'Risco ALTO de restrição ou banimento do número. Use só em números aquecidos e audiências que já conversaram com você.',
+      interval_ms: 3000,
+      jitter_pct: 30,
+      daily_limit: null,
+      pause_every: 0,
+      pause_minutes: 0,
+      window: null
+    },
+    {
+      key: 'normal',
+      label: 'Normal',
+      risk: 'medium',
+      description: '8 s entre envios (±30 %), pausa de 10 min a cada 50 envios.',
+      interval_ms: 8000,
+      jitter_pct: 30,
+      daily_limit: null,
+      pause_every: 50,
+      pause_minutes: 10,
+      window: null
+    },
+    {
+      key: 'safe',
+      label: 'Seguro',
+      risk: 'low',
+      description: '20 s entre envios (±40 %), pausa de 15 min a cada 30, até 300 envios por dia por número.',
+      interval_ms: 20000,
+      jitter_pct: 40,
+      daily_limit: 300,
+      pause_every: 30,
+      pause_minutes: 15,
+      window: null
+    },
+    {
+      key: 'very_safe',
+      label: 'Muito seguro',
+      risk: 'minimal',
+      description: '45 s entre envios (±50 %), pausa de 20 min a cada 20, até 150 por dia por número, só das 08:00 às 20:00.',
+      interval_ms: 45000,
+      jitter_pct: 50,
+      daily_limit: 150,
+      pause_every: 20,
+      pause_minutes: 20,
+      window: { start: '08:00', end: '20:00' }
+    },
+    {
+      key: 'custom',
+      label: 'Personalizado',
+      risk: 'medium',
+      description: 'Você define intervalo, variação, limite diário, pausas e janela de horário.',
+      interval_ms: 8000,
+      jitter_pct: 30,
+      daily_limit: null,
+      pause_every: 0,
+      pause_minutes: 0,
+      window: null
+    }
+  ],
+  limits: {
+    interval_ms: { min: 1000, max: 120000 },
+    jitter_pct: { min: 0, max: 80 },
+    daily_limit: { min: 1, max: 5000 },
+    pause_every: { min: 0, max: 1000 },
+    pause_minutes: { min: 0, max: 240 }
+  }
+};
+const presetOf = (presets, key) => (presets?.items || []).find((p) => p.key === key) || null;
+const pacingLabel = (presets, pacing) =>
+  presetOf(presets, pacing?.preset)?.label || presetOf(FALLBACK_PRESETS, pacing?.preset)?.label || 'Normal';
+const pacingRisk = (presets, pacing) =>
+  presetOf(presets, pacing?.preset)?.risk || presetOf(FALLBACK_PRESETS, pacing?.preset)?.risk || 'medium';
+// frases curtas que descrevem um `pacing` normalizado
+const pacingParts = (p) => {
+  const out = [];
+  if (!p) return out;
+  const sec = Math.round((Number(p.interval_ms) || 0) / 1000);
+  out.push(`${sec} s entre envios${p.jitter_pct ? ` (±${p.jitter_pct} %)` : ''}`);
+  if (p.pause_every && p.pause_minutes) out.push(`pausa de ${p.pause_minutes} min a cada ${p.pause_every} envios`);
+  else out.push('sem pausas');
+  out.push(p.daily_limit ? `até ${Number(p.daily_limit).toLocaleString('pt-BR')} envios/dia por número` : 'sem limite diário próprio');
+  if (p.window?.start && p.window?.end) out.push(`só das ${p.window.start} às ${p.window.end}`);
+  return out;
+};
 
 // ---- pílula de horário com status de HOJE ----
 const TIME_STATUS = {
@@ -194,116 +314,164 @@ function MultiSelect({ label, options, value, onChange, placeholder, limitTags =
   );
 }
 
-// ---------------------------------------------------------------- aquecimento
-function warmupFrom(list, session) {
-  const w = list.find((b) => b?.warmup)?.warmup;
+// ---------------------------------------------------------------- aquecimento (por número)
+// `warmup` de cada campanha = [pacing.summary por número] (sent_today/remaining ao vivo);
+// sem campanha ainda, cai no `warmup_day`/`pacing_enabled` da própria sessão.
+function warmupOfSession(list, s) {
+  const w = list.flatMap((b) => (Array.isArray(b?.warmup) ? b.warmup : [])).find((x) => x?.session_id === s.id);
   if (w) return { ...w, source: 'broadcast' };
-  if (!session) return null;
-  const day = session.warmup_day || null;
-  const idx = day ? Math.min(day, 7) - 1 : null;
+  const day = s.warmup_day || null;
+  const warmed = (day || 0) >= 8;
+  const idx = day && !warmed ? Math.min(day, 7) - 1 : null;
   return {
+    session_id: s.id,
     day,
-    daily_limit: idx != null ? WARMUP[idx] : null,
-    cold_limit: idx != null ? COLD[idx] : null,
+    warmed,
+    daily_limit: warmed ? 1000 : idx != null ? WARMUP[idx] : null,
+    cold_limit: warmed ? 100 : idx != null ? COLD[idx] : null,
     sent_today: null,
-    pacing_enabled: session.pacing_enabled ?? true,
+    remaining: null,
+    pacing_enabled: s.pacing_enabled ?? true,
     source: 'session'
   };
 }
-function WarmupStrip({ warmup }) {
-  if (!warmup || (!warmup.day && warmup.daily_limit == null)) return null;
-  const hot = (warmup.day || 0) >= 8;
-  const limit = warmup.daily_limit;
-  const sent = warmup.sent_today;
+const warmupItemsOf = (list, sessions) => sessions.map((s) => ({ session: s, warmup: warmupOfSession(list, s) }));
+// quantos contatos este número ainda consegue enviar hoje (aquecimento ∧ limite da campanha)
+const dailyCapOf = (warmup, pacing) => {
+  const caps = [];
+  if (warmup && warmup.pacing_enabled !== false && warmup.daily_limit) caps.push(warmup.daily_limit);
+  if (pacing?.daily_limit) caps.push(pacing.daily_limit);
+  return caps.length ? Math.min(...caps) : null;
+};
+const remainingOf = (warmup, pacing) => {
+  const cap = dailyCapOf(warmup, pacing);
+  if (cap == null) return null;
+  return Math.max(0, cap - (warmup?.sent_today || 0));
+};
+
+function WarmupRow({ session, warmup, many }) {
+  const hot = Boolean(warmup?.warmed) || (warmup?.day || 0) >= 8;
+  const limit = warmup?.daily_limit;
+  const sent = warmup?.sent_today;
   const pct = limit && sent != null ? Math.min(100, Math.round((sent / limit) * 100)) : null;
-  const paced = warmup.pacing_enabled !== false;
+  const paced = warmup?.pacing_enabled !== false;
+  const ready = isReady(session);
   return (
-    <TgCard hover={false} sx={{ p: { xs: 1.5, sm: 2 }, mb: 2.5 }}>
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
-        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flexShrink: 0 }}>
-          <Box
-            sx={{
-              width: 42,
-              height: 42,
-              borderRadius: 2.5,
-              display: 'grid',
-              placeItems: 'center',
-              color: hot ? 'success.main' : 'warning.main',
-              bgcolor: (t) => `rgba(${t.vars.palette[hot ? 'success' : 'warning'].mainChannel} / 0.14)`
-            }}
-          >
-            <IconFlame size={22} />
-          </Box>
-          <Box>
-            <Typography sx={{ fontWeight: 800, fontSize: 15, lineHeight: 1.15 }}>
-              {hot ? 'Número aquecido' : `Aquecimento · dia ${warmup.day || 1} de 7`}
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-              {paced
-                ? 'Ritmo automático ligado — o que passar do limite fica aguardando o próximo dia.'
-                : 'Ritmo automático desligado — responsabilidade assumida nas Configurações.'}
-            </Typography>
-          </Box>
-        </Stack>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          {limit ? (
-            <>
-              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                <Typography variant="caption" sx={{ fontWeight: 700 }}>
-                  Enviados hoje: {sent != null ? sent.toLocaleString('pt-BR') : '—'} / {limit.toLocaleString('pt-BR')}
-                </Typography>
-                {pct != null ? (
-                  <Typography
-                    variant="caption"
-                    sx={{ color: pct >= 100 ? 'error.main' : pct >= 80 ? 'warning.main' : 'text.secondary', fontWeight: 700 }}
-                  >
-                    {pct}%
-                  </Typography>
-                ) : null}
-              </Stack>
-              <LinearProgress
-                variant="determinate"
-                value={pct ?? 0}
-                sx={{
-                  height: 8,
-                  borderRadius: 4,
-                  bgcolor: 'action.selected',
-                  '& .MuiLinearProgress-bar': {
-                    borderRadius: 4,
-                    bgcolor: pct >= 100 ? 'error.main' : pct >= 80 ? 'warning.main' : WA_GREEN
-                  }
-                }}
-              />
-            </>
-          ) : null}
+    <Stack
+      direction={{ xs: 'column', md: 'row' }}
+      spacing={{ xs: 1, md: 2 }}
+      alignItems={{ md: 'center' }}
+      sx={{ opacity: ready ? 1 : 0.7 }}
+    >
+      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flexShrink: 0, minWidth: { md: 300 } }}>
+        <Box
+          sx={{
+            width: 38,
+            height: 38,
+            borderRadius: 2.5,
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+            color: hot ? 'success.main' : 'warning.main',
+            bgcolor: (t) => `rgba(${t.vars.palette[hot ? 'success' : 'warning'].mainChannel} / 0.14)`
+          }}
+        >
+          <IconFlame size={20} />
         </Box>
-        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
-          {limit ? (
-            <Chip
-              size="small"
-              label={`Limite de hoje: ${limit.toLocaleString('pt-BR')}`}
-              variant="outlined"
-              sx={{ fontWeight: 700, borderRadius: 1 }}
+        <Box sx={{ minWidth: 0 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+            {many ? <WaNumberChip session={session} /> : null}
+            <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15 }} noWrap>
+              {!ready
+                ? 'Não conectado'
+                : hot
+                  ? 'Número aquecido'
+                  : warmup?.day
+                    ? `Aquecimento · dia ${warmup.day} de 7`
+                    : 'Aquecimento · dia 1 de 7'}
+            </Typography>
+          </Stack>
+          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+            {!ready
+              ? 'Conecte o número nas Configurações para ele disparar.'
+              : paced
+                ? 'Ritmo automático ligado — o que passar do limite fica para o próximo dia.'
+                : 'Ritmo automático desligado — responsabilidade assumida nas Configurações.'}
+          </Typography>
+        </Box>
+      </Stack>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        {limit ? (
+          <>
+            <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.4 }}>
+              <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                Enviados hoje: {sent != null ? sent.toLocaleString('pt-BR') : '—'} / {limit.toLocaleString('pt-BR')}
+              </Typography>
+              {pct != null ? (
+                <Typography
+                  variant="caption"
+                  sx={{ color: pct >= 100 ? 'error.main' : pct >= 80 ? 'warning.main' : 'text.secondary', fontWeight: 700 }}
+                >
+                  {pct}%
+                </Typography>
+              ) : null}
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={pct ?? 0}
+              sx={{
+                height: 7,
+                borderRadius: 4,
+                bgcolor: 'action.selected',
+                '& .MuiLinearProgress-bar': {
+                  borderRadius: 4,
+                  bgcolor: pct >= 100 ? 'error.main' : pct >= 80 ? 'warning.main' : session?.color || WA_GREEN
+                }
+              }}
             />
-          ) : null}
-          {warmup.cold_limit ? (
-            <Tooltip title="Contatos que nunca falaram com o número. Acima disso, o envio para frios fica aguardando o próximo dia.">
-              <Chip
-                size="small"
-                label={`Frios: até ${warmup.cold_limit}/dia`}
-                variant="outlined"
-                sx={{ fontWeight: 700, borderRadius: 1 }}
-              />
-            </Tooltip>
-          ) : null}
+          </>
+        ) : null}
+      </Box>
+      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
+        {limit ? (
           <Chip
             size="small"
-            label={paced ? 'Ritmo automático' : 'Sem limitador'}
-            color={paced ? 'success' : 'warning'}
+            label={`Limite de hoje: ${limit.toLocaleString('pt-BR')}`}
             variant="outlined"
             sx={{ fontWeight: 700, borderRadius: 1 }}
           />
-        </Stack>
+        ) : null}
+        {warmup?.cold_limit ? (
+          <Tooltip title="Contatos que nunca falaram com o número. Acima disso, o envio para frios fica aguardando o próximo dia.">
+            <Chip size="small" label={`Frios: até ${warmup.cold_limit}/dia`} variant="outlined" sx={{ fontWeight: 700, borderRadius: 1 }} />
+          </Tooltip>
+        ) : null}
+        <Chip
+          size="small"
+          label={paced ? 'Ritmo automático' : 'Sem limitador'}
+          color={paced ? 'success' : 'warning'}
+          variant="outlined"
+          sx={{ fontWeight: 700, borderRadius: 1 }}
+        />
+      </Stack>
+    </Stack>
+  );
+}
+
+function WarmupStrip({ items }) {
+  if (!items?.length) return null;
+  const many = items.length > 1;
+  return (
+    <TgCard hover={false} sx={{ p: { xs: 1.5, sm: 2 }, mb: 2.5 }}>
+      {many ? (
+        <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700, display: 'block', mb: 1.25 }}>
+          Aquecimento por número — cada número tem o próprio limite diário; os broadcasts dividem a audiência entre eles.
+        </Typography>
+      ) : null}
+      <Stack spacing={1.5} divider={<Box sx={{ height: '1px', bgcolor: 'divider' }} />}>
+        {items.map((it) => (
+          <WarmupRow key={it.session.id} session={it.session} warmup={it.warmup} many={many} />
+        ))}
       </Stack>
     </TgCard>
   );
@@ -601,46 +769,377 @@ function CopiesModal({ broadcast, open, onClose }) {
 }
 
 // ---------------------------------------------------------------- modal de broadcast
+const DEFAULT_PACING = {
+  preset: 'normal',
+  interval_ms: 8000,
+  jitter_pct: 30,
+  daily_limit: null,
+  pause_every: 50,
+  pause_minutes: 10,
+  window: null
+};
 const EMPTY = {
   name: 'Novo broadcast',
+  session_ids: [],
   targets: { contacts: 'saved', contact_ids: [], tags: [], groups: [] },
   times: [],
   mode: 'sequential',
   delete_used: false,
-  interval_ms: 8000,
+  pacing: DEFAULT_PACING,
   active: true
 };
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
+// card clicável de um preset de ritmo
+function PresetCard({ preset, selected, onSelect }) {
+  const risk = RISK_UI[preset.risk] || RISK_UI.medium;
+  const Icon = PRESET_ICON[preset.key] || IconGauge;
+  const parts = preset.key === 'custom' ? [] : pacingParts(preset);
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? onSelect() : null)}
+      sx={{
+        p: 1.5,
+        borderRadius: 2.5,
+        border: '2px solid',
+        cursor: 'pointer',
+        height: '100%',
+        borderColor: selected ? (t) => t.vars.palette[risk.token].main : 'divider',
+        bgcolor: selected ? (t) => `rgba(${t.vars.palette[risk.token].mainChannel} / 0.08)` : 'background.paper',
+        transition: 'border-color .12s ease, background-color .12s ease',
+        '&:hover': { borderColor: (t) => `rgba(${t.vars.palette[risk.token].mainChannel} / 0.7)` },
+        outline: 'none',
+        '&:focus-visible': { boxShadow: (t) => `0 0 0 3px rgba(${t.vars.palette[risk.token].mainChannel} / 0.3)` }
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+        <Box
+          sx={{
+            width: 30,
+            height: 30,
+            borderRadius: 2,
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+            color: `${risk.token}.main`,
+            bgcolor: (t) => `rgba(${t.vars.palette[risk.token].mainChannel} / 0.14)`
+          }}
+        >
+          <Icon size={17} />
+        </Box>
+        <Typography sx={{ fontWeight: 800, fontSize: 14, flex: 1 }} noWrap>
+          {preset.label}
+        </Typography>
+        <Radio
+          size="small"
+          checked={selected}
+          onChange={onSelect}
+          tabIndex={-1}
+          sx={{ p: 0, color: `${risk.token}.main`, '&.Mui-checked': { color: `${risk.token}.main` } }}
+        />
+      </Stack>
+      <Chip
+        size="small"
+        label={risk.label}
+        sx={{
+          height: 18,
+          fontSize: 10.5,
+          fontWeight: 800,
+          borderRadius: 1,
+          mb: 0.75,
+          color: `${risk.token}.main`,
+          bgcolor: (t) => `rgba(${t.vars.palette[risk.token].mainChannel} / 0.14)`
+        }}
+      />
+      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.35 }}>
+        {preset.description}
+      </Typography>
+      {parts.length ? (
+        <Stack component="ul" spacing={0.1} sx={{ m: 0, mt: 0.75, pl: 2, color: 'text.secondary', fontSize: 11.5 }}>
+          {parts.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </Stack>
+      ) : null}
+    </Box>
+  );
+}
+
+// campos do ritmo personalizado
+function CustomPacingFields({ pacing, limits, onChange }) {
+  const lim = limits || FALLBACK_PRESETS.limits;
+  const num = (v, min, max) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return min;
+    return Math.min(max, Math.max(min, Math.round(n)));
+  };
+  const win = pacing.window || { start: '', end: '' };
+  const setWin = (p) => {
+    const next = { ...win, ...p };
+    onChange({ window: next.start || next.end ? next : null });
+  };
+  return (
+    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px dashed', borderColor: 'divider', bgcolor: 'background.default' }}>
+      <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, minmax(0, 1fr))' } }}>
+        <TextField
+          type="number"
+          size="small"
+          label="Intervalo (s)"
+          value={Math.round((Number(pacing.interval_ms) || 0) / 1000)}
+          onChange={(e) => onChange({ interval_ms: num(e.target.value, 1, Math.round(lim.interval_ms.max / 1000)) * 1000 })}
+          inputProps={{ min: 1, max: Math.round(lim.interval_ms.max / 1000) }}
+          helperText={`${Math.round(lim.interval_ms.min / 1000)}–${Math.round(lim.interval_ms.max / 1000)} s`}
+        />
+        <TextField
+          type="number"
+          size="small"
+          label="Variação (%)"
+          value={pacing.jitter_pct ?? 0}
+          onChange={(e) => onChange({ jitter_pct: num(e.target.value, lim.jitter_pct.min, lim.jitter_pct.max) })}
+          inputProps={{ min: lim.jitter_pct.min, max: lim.jitter_pct.max }}
+          helperText="± sobre o intervalo"
+        />
+        <TextField
+          type="number"
+          size="small"
+          label="Limite por dia (por número)"
+          value={pacing.daily_limit ?? ''}
+          onChange={(e) =>
+            onChange({ daily_limit: e.target.value === '' ? null : num(e.target.value, lim.daily_limit.min, lim.daily_limit.max) })
+          }
+          inputProps={{ min: lim.daily_limit.min, max: lim.daily_limit.max }}
+          helperText="Vazio = só o aquecimento"
+        />
+        <TextField
+          type="number"
+          size="small"
+          label="Pausa a cada N envios"
+          value={pacing.pause_every ?? 0}
+          onChange={(e) => onChange({ pause_every: num(e.target.value, lim.pause_every.min, lim.pause_every.max) })}
+          inputProps={{ min: lim.pause_every.min, max: lim.pause_every.max }}
+          helperText="0 = sem pausa"
+        />
+        <TextField
+          type="number"
+          size="small"
+          label="Pausa por M minutos"
+          value={pacing.pause_minutes ?? 0}
+          onChange={(e) => onChange({ pause_minutes: num(e.target.value, lim.pause_minutes.min, lim.pause_minutes.max) })}
+          inputProps={{ min: lim.pause_minutes.min, max: lim.pause_minutes.max }}
+          helperText={`até ${lim.pause_minutes.max} min`}
+        />
+        <Stack direction="row" spacing={1} alignItems="flex-start">
+          <TextField
+            type="time"
+            size="small"
+            label="Janela: início"
+            value={win.start || ''}
+            onChange={(e) => setWin({ start: e.target.value })}
+            InputLabelProps={{ shrink: true }}
+            sx={{ flex: 1 }}
+          />
+          <TextField
+            type="time"
+            size="small"
+            label="fim"
+            value={win.end || ''}
+            onChange={(e) => setWin({ end: e.target.value })}
+            InputLabelProps={{ shrink: true }}
+            sx={{ flex: 1 }}
+          />
+        </Stack>
+      </Box>
+      <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.75 }}>
+        Janela de horário (Brasília): fora dela os envios esperam o próximo início. Deixe vazia para enviar a qualquer hora.
+      </Typography>
+    </Box>
+  );
+}
+
+// estimativa de audiência ao vivo (total + divisão por número + avisos)
+function EstimateBox({ estimate, loading, many }) {
+  if (!estimate && !loading) return null;
+  const by = Array.isArray(estimate?.by_session) ? estimate.by_session : [];
+  const warnings = Array.isArray(estimate?.warnings) ? estimate.warnings : [];
+  return (
+    <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Box sx={{ color: WA_DARK, display: 'inline-flex' }}>
+          {loading ? <CircularProgress size={16} sx={{ color: WA_DARK }} /> : <IconUsers size={18} />}
+        </Box>
+        <Typography variant="body2" sx={{ fontWeight: 700 }}>
+          Audiência ≈ {(estimate?.total || 0).toLocaleString('pt-BR')}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+          ({estimate?.contacts || 0} contatos · {estimate?.groups || 0} grupos)
+        </Typography>
+      </Stack>
+      {many && by.length ? (
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+          {by.map((s) => (
+            <Tooltip
+              key={s.session_id}
+              title={`${s.contacts || 0} contatos · ${s.groups || 0} grupos${s.connected ? '' : ' · número não conectado'}`}
+            >
+              <Box
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 0.75,
+                  pl: 0.5,
+                  pr: 1,
+                  py: 0.35,
+                  borderRadius: 5,
+                  border: '1px solid',
+                  borderColor: `${s.color || WA_GREEN}66`,
+                  bgcolor: 'background.paper',
+                  opacity: s.connected ? 1 : 0.65
+                }}
+              >
+                <WaNumberChip session={{ id: s.session_id, label: s.label, color: s.color, connected: s.connected }} />
+                <Typography variant="caption" sx={{ fontWeight: 800 }}>
+                  {((s.contacts || 0) + (s.groups || 0)).toLocaleString('pt-BR')}
+                </Typography>
+              </Box>
+            </Tooltip>
+          ))}
+        </Stack>
+      ) : null}
+      {warnings.map((w) => (
+        <Typography key={w} variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
+          ⚠ {w}
+        </Typography>
+      ))}
+    </Box>
+  );
+}
+
+// aquecimento dos números escolhidos × audiência estimada
+function ChosenWarmup({ sessionIds, byId, warmupBySession, estimate, pacing }) {
+  const rows = (sessionIds || []).map((id) => byId.get(id)).filter(Boolean);
+  if (!rows.length) return null;
+  const by = new Map((estimate?.by_session || []).map((s) => [s.session_id, s]));
+  return (
+    <Stack spacing={0.75} sx={{ mt: 1.5 }}>
+      {rows.map((s) => {
+        const w = warmupBySession?.get(s.id) || null;
+        const remaining = remainingOf(w, pacing);
+        const want = by.get(s.id)?.contacts || 0;
+        const over = remaining != null && want > remaining;
+        const ready = isReady(s);
+        return (
+          <Stack key={s.id} direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <WaNumberChip session={s} />
+            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+              {!ready
+                ? 'não conectado — não dispara até reconectar'
+                : w?.warmed || (w?.day || 0) >= 8
+                  ? 'aquecido'
+                  : `aquecimento dia ${w?.day || 1} de 7`}
+              {ready && w?.pacing_enabled === false ? ' · sem limitador' : ''}
+              {ready && remaining != null
+                ? ` · hoje ainda pode enviar ${remaining.toLocaleString('pt-BR')}${w?.sent_today != null ? ` (já enviou ${w.sent_today})` : ''}`
+                : ''}
+            </Typography>
+            {ready && over ? (
+              <Chip
+                size="small"
+                color="warning"
+                variant="outlined"
+                icon={<IconHourglassHigh size={12} />}
+                label={`${want.toLocaleString('pt-BR')} contatos — só ${remaining.toLocaleString('pt-BR')} saem hoje; o resto fica para amanhã`}
+                sx={{ height: 20, fontSize: 10.5, fontWeight: 700, borderRadius: 1 }}
+              />
+            ) : null}
+          </Stack>
+        );
+      })}
+    </Stack>
+  );
+}
+
+function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessions, presets, warmupBySession }) {
   const [form, setForm] = useState(EMPTY);
   const [riskAck, setRiskAck] = useState(false);
   const [saving, setSaving] = useState(false);
   const [timeInput, setTimeInput] = useState('09:00');
   const [estimate, setEstimate] = useState(null);
+  const [estimating, setEstimating] = useState(false);
+  const estSeq = useRef(0);
+
+  const byId = useMemo(() => new Map((sessions || []).map((s) => [s.id, s])), [sessions]);
+  const many = (sessions || []).length > 1;
+  const readyIds = useMemo(() => (sessions || []).filter(isReady).map((s) => s.id), [sessions]);
+  const presetItems = useMemo(() => {
+    const items = presets?.items?.length ? presets.items : FALLBACK_PRESETS.items;
+    const order = ['fast', 'normal', 'safe', 'very_safe', 'custom'];
+    return [...items].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  }, [presets]);
+  const limits = presets?.limits || FALLBACK_PRESETS.limits;
 
   useEffect(() => {
     if (!open) return;
     if (initial) {
-      setForm({ ...EMPTY, ...initial, targets: { ...EMPTY.targets, ...(initial.targets || {}) } });
+      setForm({
+        ...EMPTY,
+        ...initial,
+        session_ids: Array.isArray(initial.session_ids) ? initial.session_ids : [],
+        targets: { ...EMPTY.targets, ...(initial.targets || {}) },
+        pacing: {
+          ...DEFAULT_PACING,
+          ...(initial.pacing || {}),
+          preset: initial.pacing?.preset || (initial.interval_ms ? 'custom' : 'normal')
+        }
+      });
       setRiskAck(Boolean(initial.risk_ack_at));
     } else {
-      setForm(EMPTY);
+      // novo: pré-seleciona todos os números conectados (ou todos, se nenhum estiver)
+      const ids = readyIds.length ? readyIds : (sessions || []).map((s) => s.id);
+      const dflt = presetOf(presets, presets?.default || 'normal') || presetOf(FALLBACK_PRESETS, 'normal');
+      setForm({ ...EMPTY, session_ids: ids, pacing: { ...DEFAULT_PACING, ...(dflt || {}), preset: dflt?.key || 'normal' } });
       setRiskAck(false);
     }
+    setEstimate(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial]);
 
+  // estimativa ao vivo (audiência + divisão por número)
   useEffect(() => {
     if (!open) return undefined;
+    const seq = ++estSeq.current;
+    setEstimating(true);
     const t = setTimeout(() => {
-      post('/whatsapp/broadcasts/audience-estimate', { targets: form.targets })
-        .then(setEstimate)
-        .catch(() => setEstimate(null));
+      post('/whatsapp/broadcasts/audience-estimate', { targets: form.targets, session_ids: form.session_ids })
+        .then((r) => seq === estSeq.current && setEstimate(r))
+        .catch(() => seq === estSeq.current && setEstimate(null))
+        .finally(() => seq === estSeq.current && setEstimating(false));
     }, 400);
     return () => clearTimeout(t);
-  }, [open, form.targets]);
+  }, [open, form.targets, form.session_ids]);
 
   const setF = (p) => setForm((f) => ({ ...f, ...p }));
   const setT = (p) => setForm((f) => ({ ...f, targets: { ...f.targets, ...p } }));
+  const setP = (p) => setForm((f) => ({ ...f, pacing: { ...f.pacing, ...p } }));
+  const choosePreset = (key) => {
+    const p = presetOf(presets, key) || presetOf(FALLBACK_PRESETS, key);
+    if (!p) return;
+    // trocar PARA "Rápido" exige confirmar o risco de novo (o back também exige `risk_ack`)
+    if (key === 'fast' && form.pacing.preset !== 'fast') setRiskAck(false);
+    if (key === 'custom') setP({ preset: 'custom' });
+    else
+      setP({
+        preset: key,
+        interval_ms: p.interval_ms,
+        jitter_pct: p.jitter_pct,
+        daily_limit: p.daily_limit,
+        pause_every: p.pause_every,
+        pause_minutes: p.pause_minutes,
+        window: p.window ? { ...p.window } : null
+      });
+  };
 
   const addTime = () => {
     const min = hhmmToMin(timeInput);
@@ -649,22 +1148,37 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
   };
 
   const hasTargets = form.targets.contacts !== 'none' || form.targets.contact_ids.length > 0 || form.targets.groups.length > 0;
+  const fastPreset = form.pacing.preset === 'fast';
+  const fastWarning = presetOf(presets, 'fast')?.warning || presetOf(FALLBACK_PRESETS, 'fast')?.warning;
+  const chosenReady = form.session_ids.filter((id) => readyIds.includes(id)).length;
 
   const save = async () => {
     if (!form.name.trim()) return toast.error('Dê um nome ao broadcast.');
+    if ((sessions || []).length && !form.session_ids.length) return toast.error('Escolha ao menos um número para disparar.');
     if (!hasTargets) return toast.error('Escolha contatos e/ou grupos como destino.');
-    if (!riskAck) return toast.error('Marque “Entendo e assumo a responsabilidade” para salvar.');
+    if (form.pacing.preset === 'custom') {
+      const w = form.pacing.window;
+      if (w && (w.start || w.end)) {
+        if (!HHMM_RE.test(w.start || '') || !HHMM_RE.test(w.end || ''))
+          return toast.error('Preencha início e fim da janela de horário (ou deixe os dois vazios).');
+        if (w.start === w.end) return toast.error('A janela de horário precisa ter início e fim diferentes.');
+      }
+    }
+    if (fastPreset && !riskAck) return toast.error('Marque “Entendo o risco de bloqueio” para usar o ritmo Rápido.');
     setSaving(true);
     try {
+      const pacing = { ...form.pacing };
+      if (pacing.window && !(pacing.window.start && pacing.window.end)) pacing.window = null;
       const payload = {
         name: form.name.trim(),
+        session_ids: form.session_ids,
         targets: form.targets,
+        pacing,
         times: form.times,
         mode: form.mode,
         delete_used: form.delete_used,
-        interval_ms: Math.max(1000, Number(form.interval_ms) || 8000),
         active: form.active,
-        risk_ack: true
+        risk_ack: Boolean(riskAck)
       };
       if (initial?.id) await put(`/whatsapp/broadcasts/${initial.id}`, payload);
       else await post('/whatsapp/broadcasts', payload);
@@ -685,14 +1199,24 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
       })),
     [contacts]
   );
-  const intervalSec = Math.round((Number(form.interval_ms) || 0) / 1000);
+  const groupOptions = useMemo(
+    () =>
+      groups.map((g) => {
+        const s = (g.session_id && byId.get(g.session_id)) || g.session || null;
+        return {
+          value: g.chat_id,
+          label: `${g.name || g.jid || g.chat_id}${g.participants_count || g.group_meta?.participants_count ? ` (${g.participants_count || g.group_meta?.participants_count})` : ''}${many && s ? ` · ${sessionLabel(s)}` : ''}`
+        };
+      }),
+    [groups, byId, many]
+  );
 
   return (
     <TgModal
       open={open}
       onClose={() => !saving && onClose(false)}
       disableClose={saving}
-      maxWidth="sm"
+      maxWidth="md"
       title={initial?.id ? 'Editar broadcast' : 'Novo broadcast'}
       footer={
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
@@ -708,7 +1232,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
               variant="contained"
               disableElevation
               onClick={save}
-              disabled={saving || !riskAck}
+              disabled={saving || (fastPreset && !riskAck)}
               startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconDeviceFloppy size={18} />}
               sx={waButtonSx}
             >
@@ -721,11 +1245,49 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
       <Stack spacing={2.5}>
         <TextField label="Nome" size="small" fullWidth value={form.name} onChange={(e) => setF({ name: e.target.value })} />
 
+        {/* ---------- números que enviam ---------- */}
+        <Box>
+          <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.75 }}>Números que enviam</Typography>
+          {many ? (
+            <>
+              <WaNumberMultiSelect sessions={sessions} value={form.session_ids} onChange={(ids) => setF({ session_ids: ids })} />
+              <Stack direction="row" spacing={0.75} alignItems="flex-start" sx={{ mt: 1, color: 'text.secondary' }}>
+                <IconArrowsSplit size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+                <Typography variant="caption">
+                  Contato que já tem conversa com um dos números escolhidos recebe por ele; os demais são divididos entre os números
+                  conectados. Grupos saem pelo número que está no grupo.
+                </Typography>
+              </Stack>
+              {form.session_ids.length && !chosenReady ? (
+                <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
+                  Nenhum dos números escolhidos está conectado — a campanha só dispara quando um deles reconectar.
+                </Typography>
+              ) : null}
+            </>
+          ) : (sessions || []).length === 1 ? (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <WaNumberChip session={sessions[0]} showPhone size="medium" />
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                {isReady(sessions[0]) ? 'Único número da organização.' : 'Único número da organização — não conectado no momento.'}
+              </Typography>
+            </Stack>
+          ) : (
+            <Typography variant="caption" sx={{ color: 'warning.main' }}>
+              Nenhum número cadastrado. Conecte um número nas Configurações para disparar.
+            </Typography>
+          )}
+        </Box>
+
+        {/* ---------- contatos ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.5 }}>Contatos</Typography>
           <RadioGroup value={form.targets.contacts} onChange={(e) => setT({ contacts: e.target.value })}>
             <FormControlLabel value="saved" control={<Radio size="small" />} label="Contatos salvos na organização" />
-            <FormControlLabel value="all" control={<Radio size="small" />} label="Todos os contatos do WhatsApp conectado" />
+            <FormControlLabel
+              value="all"
+              control={<Radio size="small" />}
+              label={many ? 'Todos os contatos (agenda de todos os números)' : 'Todos os contatos do WhatsApp conectado'}
+            />
             <FormControlLabel value="none" control={<Radio size="small" />} label="Nenhum (só os escolhidos abaixo / grupos)" />
           </RadioGroup>
           {form.targets.contacts !== 'none' && tags.length ? (
@@ -751,30 +1313,25 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
           </Box>
         </Box>
 
+        {/* ---------- grupos + estimativa ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>Grupos</Typography>
           <MultiSelect
             label="Grupos"
             value={form.targets.groups}
             onChange={(v) => setT({ groups: v })}
-            options={groups.map((g) => ({
-              value: g.chat_id,
-              label: `${g.name || g.chat_id}${g.participants_count ? ` (${g.participants_count})` : ''}`
-            }))}
+            options={groupOptions}
             placeholder="Escolher grupos…"
           />
-          {estimate ? (
-            <Alert
-              severity="info"
-              icon={<IconUsers size={18} />}
-              sx={{ mt: 1.5, borderRadius: 2, py: 0, '& .MuiAlert-message': { fontSize: 12.5 } }}
-            >
-              Audiência ≈ <b>{(estimate.total || 0).toLocaleString('pt-BR')}</b> ({estimate.contacts || 0} contatos · {estimate.groups || 0}{' '}
-              grupos).
-            </Alert>
+          {many ? (
+            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+              Cada grupo sai pelo número que participa dele, mesmo que esse número não esteja marcado acima.
+            </Typography>
           ) : null}
+          <EstimateBox estimate={estimate} loading={estimating} many={many} />
         </Box>
 
+        {/* ---------- horários ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>Horários (todo dia, Brasília)</Typography>
           <Stack direction="row" spacing={1} alignItems="center">
@@ -806,6 +1363,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
           </Stack>
         </Box>
 
+        {/* ---------- modo ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.5 }}>Modo de envio</Typography>
           <RadioGroup value={form.mode} onChange={(e) => setF({ mode: e.target.value })}>
@@ -818,53 +1376,85 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags }) {
           />
         </Box>
 
+        {/* ---------- ritmo (anti-bloqueio) ---------- */}
         <Box>
-          <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>Ritmo</Typography>
-          <TextField
-            type="number"
-            size="small"
-            label="Intervalo entre envios (segundos)"
-            value={intervalSec}
-            onChange={(e) => setF({ interval_ms: Math.min(600, Math.max(1, Number(e.target.value) || 1)) * 1000 })}
-            inputProps={{ min: 1, max: 600 }}
-            sx={{ width: 260 }}
-            helperText="Intervalos maiores parecem mais humanos e reduzem o risco de restrição. Sugestão: 8 s ou mais."
+          <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.25 }}>Ritmo de envio (anti-bloqueio)</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.25 }}>
+            Intervalos maiores, pausas e limites diários parecem mais humanos e reduzem o risco de restrição. O aquecimento de cada número
+            continua valendo por cima do ritmo escolhido.
+          </Typography>
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1.25,
+              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', md: 'repeat(3, minmax(0, 1fr))' }
+            }}
+          >
+            {presetItems.map((p) => (
+              <PresetCard key={p.key} preset={p} selected={form.pacing.preset === p.key} onSelect={() => choosePreset(p.key)} />
+            ))}
+          </Box>
+          {form.pacing.preset === 'custom' ? <CustomPacingFields pacing={form.pacing} limits={limits} onChange={setP} /> : null}
+          {fastPreset && fastWarning ? (
+            <Alert
+              severity="error"
+              icon={<IconBolt size={18} />}
+              sx={{ mt: 1.5, borderRadius: 2, '& .MuiAlert-message': { fontSize: 12.5 } }}
+            >
+              {fastWarning}
+            </Alert>
+          ) : null}
+          <ChosenWarmup
+            sessionIds={form.session_ids}
+            byId={byId}
+            warmupBySession={warmupBySession}
+            estimate={estimate}
+            pacing={form.pacing}
           />
         </Box>
 
-        <Box
-          sx={{
-            p: 1.75,
-            borderRadius: 2.5,
-            border: '1px solid',
-            borderColor: (t) => `rgba(${t.vars.palette.warning.mainChannel} / 0.5)`,
-            bgcolor: (t) => `rgba(${t.vars.palette.warning.mainChannel} / 0.08)`
-          }}
-        >
-          <Stack direction="row" spacing={1.25} alignItems="flex-start">
-            <Box sx={{ color: 'warning.main', mt: 0.25, flexShrink: 0 }}>
-              <IconAlertTriangle size={22} />
-            </Box>
-            <Box sx={{ flex: 1 }}>
-              <Typography sx={{ fontWeight: 800, fontSize: 14 }}>Atenção: risco de restrição do número</Typography>
-              <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.25 }}>
-                {RISK_TEXT}
-              </Typography>
-              <FormControlLabel
-                sx={{ mt: 0.75, ml: -0.75 }}
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={riskAck}
-                    onChange={(e) => setRiskAck(e.target.checked)}
-                    sx={{ '&.Mui-checked': { color: WA_DARK } }}
-                  />
-                }
-                label={<Typography sx={{ fontWeight: 700, fontSize: 13.5 }}>Entendo e assumo a responsabilidade</Typography>}
-              />
-            </Box>
-          </Stack>
-        </Box>
+        {/* ---------- responsabilidade (só o ritmo Rápido exige confirmar; os outros já têm pausas e limites) ---------- */}
+        {fastPreset ? (
+          <Box
+            sx={{
+              p: 1.75,
+              borderRadius: 2.5,
+              border: '1px solid',
+              borderColor: (t) => `rgba(${t.vars.palette[fastPreset ? 'error' : 'warning'].mainChannel} / 0.5)`,
+              bgcolor: (t) => `rgba(${t.vars.palette[fastPreset ? 'error' : 'warning'].mainChannel} / 0.08)`
+            }}
+          >
+            <Stack direction="row" spacing={1.25} alignItems="flex-start">
+              <Box sx={{ color: fastPreset ? 'error.main' : 'warning.main', mt: 0.25, flexShrink: 0 }}>
+                <IconAlertTriangle size={22} />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <Typography sx={{ fontWeight: 800, fontSize: 14 }}>
+                  {fastPreset ? 'Atenção: ritmo Rápido = risco ALTO de bloqueio' : 'Atenção: risco de restrição do número'}
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.secondary', mt: 0.25 }}>
+                  {RISK_TEXT}
+                </Typography>
+                <FormControlLabel
+                  sx={{ mt: 0.75, ml: -0.75 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={riskAck}
+                      onChange={(e) => setRiskAck(e.target.checked)}
+                      sx={{ '&.Mui-checked': { color: fastPreset ? 'error.main' : WA_DARK } }}
+                    />
+                  }
+                  label={
+                    <Typography sx={{ fontWeight: 700, fontSize: 13.5 }}>
+                      {fastPreset ? 'Entendo o risco de bloqueio e assumo a responsabilidade' : 'Entendo e assumo a responsabilidade'}
+                    </Typography>
+                  }
+                />
+              </Box>
+            </Stack>
+          </Box>
+        ) : null}
       </Stack>
     </TgModal>
   );
@@ -880,11 +1470,11 @@ function runOutcome(r) {
   if ((r.paced || 0) > 0) return { key: 'paced', color: 'info.main', label: 'Parte aguardando limite do dia', Icon: IconHourglassHigh };
   return { key: 'clean', color: 'success.main', label: 'Concluído', Icon: IconCircleCheckFilled };
 }
-function RunBar({ r }) {
+function RunBar({ r, height = 6, mt = 1 }) {
   const total = Math.max(1, r.total || 0);
   const seg = (n, token) => (n > 0 ? <Box sx={{ width: `${(n / total) * 100}%`, bgcolor: token }} /> : null);
   return (
-    <Box sx={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', bgcolor: 'action.selected', mt: 1 }}>
+    <Box sx={{ display: 'flex', height, borderRadius: 3, overflow: 'hidden', bgcolor: 'action.selected', mt }}>
       {seg(r.sent || 0, 'success.main')}
       {seg(r.paced || 0, 'info.main')}
       {seg(r.blocked || 0, 'warning.main')}
@@ -905,6 +1495,48 @@ function StatPill({ label, value, color = 'text.secondary' }) {
   );
 }
 
+// linha de um número dentro de um disparo (by_session)
+function SessionRunRow({ bs, session, onSends }) {
+  const s = session || bs.session || { id: bs.session_id, label: 'Número', color: null };
+  const bits = [
+    { n: bs.sent, label: 'enviados', color: 'success.main' },
+    { n: bs.pending, label: 'na fila', color: 'text.secondary' },
+    { n: bs.paced, label: 'aguardando o limite do dia', color: 'info.main' },
+    { n: bs.blocked, label: 'bloqueados', color: 'warning.main' },
+    { n: bs.failed, label: 'falhas', color: 'error.main' }
+  ].filter((b) => (b.n || 0) > 0);
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      alignItems="center"
+      onClick={onSends}
+      sx={{
+        px: 1,
+        py: 0.6,
+        borderRadius: 1.5,
+        cursor: onSends ? 'pointer' : 'default',
+        '&:hover': onSends ? { bgcolor: 'action.hover' } : {}
+      }}
+    >
+      <WaNumberChip session={s} sx={{ flexShrink: 0 }} />
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <RunBar r={bs} height={5} mt={0} />
+      </Box>
+      <Typography variant="caption" sx={{ color: 'text.secondary', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+        {(bs.total || 0).toLocaleString('pt-BR')}
+      </Typography>
+      <Stack direction="row" spacing={0.75} flexShrink={0} sx={{ display: { xs: 'none', sm: 'flex' } }}>
+        {bits.map((b) => (
+          <Typography key={b.label} variant="caption" sx={{ color: b.color, fontWeight: 700, whiteSpace: 'nowrap' }}>
+            {b.n} {b.label}
+          </Typography>
+        ))}
+      </Stack>
+    </Stack>
+  );
+}
+
 const SEND_STATUS = {
   PENDING: { pill: 'pending', label: 'Na fila' },
   DONE: { pill: 'active', label: 'Enviado' },
@@ -913,23 +1545,35 @@ const SEND_STATUS = {
   PACED: { pill: 'flood', label: 'Aguardando limite do dia' }
 };
 
-// gaveta "Ver envios" de uma run
-function SendsDrawer({ broadcast, run, onClose }) {
+// gaveta "Ver envios" de uma run (filtra por status e por número)
+function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
   const [data, setData] = useState({ items: [], total: 0, page: 1, pages: 1 });
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('all');
+  const [sess, setSess] = useState('');
   const [page, setPage] = useState(1);
   const open = Boolean(run);
+  const many = sessions.length > 1;
+  const runSessions = useMemo(() => {
+    const ids = (run?.by_session || []).map((x) => x.session_id);
+    const list = ids.map((id) => byId?.get(id) || (run.by_session || []).find((x) => x.session_id === id)?.session).filter(Boolean);
+    return list.length ? list : sessions;
+  }, [run, sessions, byId]);
 
+  // abriu a gaveta a partir da linha de um número → já filtra por ele
+  useEffect(() => {
+    setSess(run?._session || '');
+    setStatus('all');
+  }, [run]);
   useEffect(() => {
     setPage(1);
-  }, [status, run]);
+  }, [status, sess, run]);
 
   useEffect(() => {
     if (!open || !broadcast || !run) return;
     setLoading(true);
     get(`/whatsapp/broadcasts/${broadcast.id}/runs/${run.id}/sends`, {
-      params: { page, page_size: 25, ...(status !== 'all' ? { status } : {}) }
+      params: { page, page_size: 25, ...(status !== 'all' ? { status } : {}), ...(sess ? { session_id: sess } : {}) }
     })
       .then((d) => setData({ items: asList(d), total: d?.total ?? 0, page: d?.page ?? page, pages: d?.pages ?? 1 }))
       .catch((e) => {
@@ -937,14 +1581,14 @@ function SendsDrawer({ broadcast, run, onClose }) {
         setData({ items: [], total: 0, page: 1, pages: 1 });
       })
       .finally(() => setLoading(false));
-  }, [open, broadcast, run, status, page]);
+  }, [open, broadcast, run, status, sess, page]);
 
   return (
     <Drawer
       anchor="right"
       open={open}
       onClose={onClose}
-      slotProps={{ paper: { sx: { width: { xs: '100%', sm: 440 }, bgcolor: 'background.default' } } }}
+      slotProps={{ paper: { sx: { width: { xs: '100%', sm: 460 }, bgcolor: 'background.default' } } }}
     >
       <Box
         sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'background.paper', position: 'sticky', top: 0, zIndex: 1 }}
@@ -963,17 +1607,20 @@ function SendsDrawer({ broadcast, run, onClose }) {
             <IconX size={18} />
           </IconButton>
         </Stack>
-        <FormControl size="small" fullWidth sx={{ mt: 1.5 }}>
-          <InputLabel id="wa-sends-status-label">Status</InputLabel>
-          <Select labelId="wa-sends-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <MenuItem value="all">Todos</MenuItem>
-            <MenuItem value="DONE">Enviados</MenuItem>
-            <MenuItem value="PACED">Aguardando limite do dia</MenuItem>
-            <MenuItem value="PENDING">Na fila</MenuItem>
-            <MenuItem value="BLOCKED">Bloqueados</MenuItem>
-            <MenuItem value="FAILED">Falhas</MenuItem>
-          </Select>
-        </FormControl>
+        <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+          <FormControl size="small" fullWidth>
+            <InputLabel id="wa-sends-status-label">Status</InputLabel>
+            <Select labelId="wa-sends-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <MenuItem value="all">Todos</MenuItem>
+              <MenuItem value="DONE">Enviados</MenuItem>
+              <MenuItem value="PACED">Aguardando limite do dia</MenuItem>
+              <MenuItem value="PENDING">Na fila</MenuItem>
+              <MenuItem value="BLOCKED">Bloqueados</MenuItem>
+              <MenuItem value="FAILED">Falhas</MenuItem>
+            </Select>
+          </FormControl>
+          {many ? <WaNumberSelect sessions={runSessions} value={sess} onChange={(v) => setSess(v || '')} allowAll label="Número" /> : null}
+        </Stack>
       </Box>
       <Box sx={{ p: 2 }}>
         {loading ? (
@@ -984,24 +1631,33 @@ function SendsDrawer({ broadcast, run, onClose }) {
           <Stack spacing={0.75}>
             {data.items.map((s, i) => {
               const st = SEND_STATUS[s.status] || SEND_STATUS.PENDING;
+              const sessionOfSend = (s.session_id && byId?.get(s.session_id)) || s.session || null;
               return (
                 <Box
-                  key={`${s.chat_id}-${i}`}
+                  key={`${s.id || s.chat_id || s.jid}-${i}`}
                   sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.25, bgcolor: 'background.paper' }}
                 >
                   <Stack direction="row" alignItems="center" spacing={1}>
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
-                        {s.name || s.chat_id}
-                      </Typography>
+                      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                          {s.name || s.jid || s.chat_id}
+                        </Typography>
+                        {many && sessionOfSend ? <WaNumberChip session={sessionOfSend} /> : null}
+                      </Stack>
                       <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                        {s.name ? s.chat_id : ''}
-                        {s.sent_at ? `${s.name ? ' · ' : ''}${fmtDateBRT(s.sent_at)}` : ''}
+                        {s.name && s.jid ? s.jid : ''}
+                        {s.sent_at ? `${s.name && s.jid ? ' · ' : ''}${fmtDateBRT(s.sent_at)}` : ''}
                         {s.attempts > 1 ? ` · ${s.attempts} tentativas` : ''}
                       </Typography>
                     </Box>
                     <TgStatusPill status={st.pill} label={st.label} />
                   </Stack>
+                  {s.status === 'PACED' ? (
+                    <Typography variant="caption" sx={{ color: 'info.main', display: 'block', mt: 0.5 }}>
+                      Bateu o limite do dia deste número — sai amanhã automaticamente.
+                    </Typography>
+                  ) : null}
                   {s.last_error ? (
                     <Typography variant="caption" sx={{ color: 'error.main', display: 'block', mt: 0.5 }} noWrap>
                       {s.last_error}
@@ -1030,13 +1686,14 @@ function SendsDrawer({ broadcast, run, onClose }) {
   );
 }
 
-function RunsModal({ broadcast, open, onClose }) {
+function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
   const [data, setData] = useState({ items: [], total: 0, page: 1, pages: 1 });
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('all');
   const [period, setPeriod] = useState('all');
   const [page, setPage] = useState(1);
   const [sendsFor, setSendsFor] = useState(null);
+  const many = sessions.length > 1;
 
   useEffect(() => {
     setPage(1);
@@ -1121,6 +1778,7 @@ function RunsModal({ broadcast, open, onClose }) {
             const oc = runOutcome(r);
             const OcIcon = oc.Icon;
             const rate = (r.total || 0) > 0 ? Math.round(((r.sent || 0) / r.total) * 100) : 0;
+            const by = Array.isArray(r.by_session) ? r.by_session : [];
             return (
               <Box key={r.id} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.5, bgcolor: 'background.paper' }}>
                 <Stack direction="row" alignItems="center" spacing={1.25}>
@@ -1147,6 +1805,7 @@ function RunsModal({ broadcast, open, onClose }) {
                   <Stack direction="row" spacing={1} flexShrink={0} sx={{ display: { xs: 'none', sm: 'flex' } }}>
                     <StatPill label="Total" value={r.total} />
                     <StatPill label="Enviados" value={r.sent} color="success.main" />
+                    {(r.pending || 0) > 0 ? <StatPill label="Na fila" value={r.pending} /> : null}
                     {(r.paced || 0) > 0 ? <StatPill label="Aguard. limite" value={r.paced} color="info.main" /> : null}
                     {(r.blocked || 0) > 0 ? <StatPill label="Bloqueados" value={r.blocked} color="warning.main" /> : null}
                     {(r.failed || 0) > 0 ? <StatPill label="Falhas" value={r.failed} color="error.main" /> : null}
@@ -1164,7 +1823,7 @@ function RunsModal({ broadcast, open, onClose }) {
                   </Typography>
                   {(r.paced || 0) > 0 ? (
                     <Typography variant="caption" sx={{ color: 'info.main', fontWeight: 600 }}>
-                      · {r.paced} aguardando limite do dia
+                      · {r.paced} aguardando o limite do dia (saem amanhã)
                     </Typography>
                   ) : null}
                   {(r.blocked || 0) > 0 ? (
@@ -1178,6 +1837,23 @@ function RunsModal({ broadcast, open, onClose }) {
                     </Typography>
                   ) : null}
                 </Stack>
+                {(many || by.length > 1) && by.length ? (
+                  <Box sx={{ mt: 1, pt: 0.75, borderTop: '1px dashed', borderColor: 'divider' }}>
+                    <Typography variant="caption" sx={{ color: 'text.disabled', fontWeight: 700, px: 1 }}>
+                      Por número
+                    </Typography>
+                    <Stack spacing={0.25} sx={{ mt: 0.25 }}>
+                      {by.map((bs) => (
+                        <SessionRunRow
+                          key={bs.session_id}
+                          bs={bs}
+                          session={byId?.get(bs.session_id) || bs.session}
+                          onSends={() => setSendsFor({ ...r, _session: bs.session_id })}
+                        />
+                      ))}
+                    </Stack>
+                  </Box>
+                ) : null}
               </Box>
             );
           })}
@@ -1198,7 +1874,71 @@ function RunsModal({ broadcast, open, onClose }) {
         </Stack>
       )}
 
-      <SendsDrawer broadcast={broadcast} run={sendsFor} onClose={() => setSendsFor(null)} />
+      <SendsDrawer broadcast={broadcast} run={sendsFor} onClose={() => setSendsFor(null)} sessions={sessions} byId={byId} />
+    </TgModal>
+  );
+}
+
+// resultado de um "Disparar agora" (por número + avisos do back)
+function FireResultModal({ result, onClose, onRuns, byId }) {
+  const open = Boolean(result);
+  const by = Array.isArray(result?.by_session) ? result.by_session : [];
+  const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+  const firstAt = result?.first_at ? new Date(result.first_at) : null;
+  const delayed = firstAt && firstAt.getTime() - Date.now() > 90_000;
+  return (
+    <TgModal
+      open={open}
+      onClose={onClose}
+      maxWidth="xs"
+      title="Disparo iniciado"
+      subtitle={result?.b?.name || ''}
+      footer={
+        <>
+          <TgGhostButton onClick={onClose} sx={{ textTransform: 'none' }}>
+            Fechar
+          </TgGhostButton>
+          <Button variant="contained" disableElevation startIcon={<IconHistory size={17} />} onClick={onRuns} sx={waButtonSx}>
+            Ver histórico
+          </Button>
+        </>
+      }
+    >
+      <Stack spacing={1.25}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Box sx={{ color: 'success.main', display: 'inline-flex' }}>
+            <IconCircleCheck size={22} />
+          </Box>
+          <Typography sx={{ fontWeight: 700 }}>
+            {(result?.total || 0).toLocaleString('pt-BR')} {result?.total === 1 ? 'destino na fila' : 'destinos na fila'}
+          </Typography>
+        </Stack>
+        {by.length ? (
+          <Stack spacing={0.5}>
+            {by.map((s) => (
+              <Stack key={s.session_id} direction="row" spacing={1} alignItems="center">
+                <WaNumberChip session={byId?.get(s.session_id) || s.session || { id: s.session_id, label: 'Número' }} />
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  {(s.total || 0).toLocaleString('pt-BR')} {s.total === 1 ? 'destino' : 'destinos'}
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+        ) : null}
+        {delayed ? (
+          <Alert severity="info" sx={{ borderRadius: 2, py: 0, '& .MuiAlert-message': { fontSize: 12.5 } }}>
+            Começa às {fmtDateBRT(result.first_at, { dateStyle: undefined, timeStyle: 'short' })} (janela de horário do ritmo).
+          </Alert>
+        ) : null}
+        {warnings.map((w) => (
+          <Alert key={w} severity="warning" sx={{ borderRadius: 2, py: 0, '& .MuiAlert-message': { fontSize: 12.5 } }}>
+            {w}
+          </Alert>
+        ))}
+        <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+          Os envios seguem o ritmo e o aquecimento de cada número; o que passar do limite do dia fica para amanhã.
+        </Typography>
+      </Stack>
     </TgModal>
   );
 }
@@ -1288,8 +2028,11 @@ function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, o
 export default function WhatsAppBroadcasts() {
   const theme = useTheme();
   const compact = useMediaQuery(theme.breakpoints.down('md'));
-  const { session, loading: sessionLoading, connected } = useWaSession();
+  const { session, sessions, loading: sessionLoading, connected } = useWaSession();
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const many = sessions.length > 1;
 
+  const [presets, setPresets] = useState(null);
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [groups, setGroups] = useState([]);
@@ -1300,13 +2043,26 @@ export default function WhatsAppBroadcasts() {
   const [runsFor, setRunsFor] = useState(null);
   const [firingFor, setFiringFor] = useState(null);
   const [firing, setFiring] = useState(false);
+  const [fireResult, setFireResult] = useState(null);
   const [deletingFor, setDeletingFor] = useState(null);
   const [deleting, setDeleting] = useState(false);
   // filtros
   const [fName, setFName] = useState('');
   const [fTime, setFTime] = useState('all');
   const [fActive, setFActive] = useState('all');
+  const [fSession, setFSession] = useState('');
   const [filterAnchor, setFilterAnchor] = useState(null);
+
+  // presets de ritmo (uma vez; fallback local com os mesmos valores)
+  useEffect(() => {
+    let on = true;
+    get('/whatsapp/broadcasts/presets')
+      .then((r) => on && setPresets(r?.items?.length ? r : FALLBACK_PRESETS))
+      .catch(() => on && setPresets(FALLBACK_PRESETS));
+    return () => {
+      on = false;
+    };
+  }, []);
 
   const reqRef = useRef(0);
   const load = useCallback(async () => {
@@ -1374,9 +2130,10 @@ export default function WhatsAppBroadcasts() {
     const b = firingFor;
     setFiring(true);
     try {
-      await post(`/whatsapp/broadcasts/${b.id}/fire`, {});
+      const r = await post(`/whatsapp/broadcasts/${b.id}/fire`, {});
       toast.success('Disparo iniciado! Acompanhe no histórico.');
       setFiringFor(null);
+      setFireResult({ b, ...(r || {}) });
       load();
     } catch (e) {
       toast.error(errMsg(e, 'Falha ao disparar.'));
@@ -1385,7 +2142,16 @@ export default function WhatsAppBroadcasts() {
     }
   };
 
-  const warmup = useMemo(() => warmupFrom(list, session), [list, session]);
+  // números da campanha (brief do back + estado ao vivo da sessão)
+  const sessionsOf = useCallback(
+    (b) => {
+      const briefs = Array.isArray(b?.sessions) && b.sessions.length ? b.sessions : (b?.session_ids || []).map((id) => ({ id }));
+      return briefs.map((s) => byId.get(s.id) || (s.label ? s : null)).filter(Boolean);
+    },
+    [byId]
+  );
+  const warmupItems = useMemo(() => warmupItemsOf(list, sessions), [list, sessions]);
+  const warmupBySession = useMemo(() => new Map(warmupItems.map((it) => [it.session.id, it.warmup])), [warmupItems]);
   const allTimes = useMemo(() => [...new Set(list.flatMap((b) => b.times || []))].sort((a, b) => a - b), [list]);
   const filtered = useMemo(
     () =>
@@ -1393,20 +2159,33 @@ export default function WhatsAppBroadcasts() {
         if (fName && !(b.name || '').toLowerCase().includes(fName.toLowerCase())) return false;
         if (fTime !== 'all' && !(b.times || []).includes(Number(fTime))) return false;
         if (fActive !== 'all' && Boolean(b.active) !== (fActive === 'active')) return false;
+        if (fSession && !(b.session_ids || []).includes(fSession)) return false;
         return true;
       }),
-    [list, fName, fTime, fActive]
+    [list, fName, fTime, fActive, fSession]
   );
-  const activeFilterCount = (fTime !== 'all' ? 1 : 0) + (fActive !== 'all' ? 1 : 0);
+  const activeFilterCount = (fTime !== 'all' ? 1 : 0) + (fActive !== 'all' ? 1 : 0) + (fSession ? 1 : 0);
   const filtersActive = !!fName || activeFilterCount > 0;
   const clearFilters = () => {
     setFName('');
     setFTime('all');
     setFActive('all');
+    setFSession('');
   };
 
   const filterControls = (stacked) => (
     <>
+      {many ? (
+        <WaNumberSelect
+          sessions={sessions}
+          value={fSession}
+          onChange={(v) => setFSession(v || '')}
+          allowAll
+          label="Número"
+          fullWidth={stacked}
+          sx={stacked ? { width: '100%' } : { flex: '1 1 190px', minWidth: 180 }}
+        />
+      ) : null}
       <FormControl size="small" sx={stacked ? { width: '100%' } : { flex: '1 1 150px', minWidth: 140 }}>
         <InputLabel id="wa-bc-time-filter-label">Horário</InputLabel>
         <Select labelId="wa-bc-time-filter-label" label="Horário" value={fTime} onChange={(e) => setFTime(e.target.value)}>
@@ -1436,18 +2215,24 @@ export default function WhatsAppBroadcasts() {
   );
 
   const fireAud = firingFor ? audienceOf(firingFor) : null;
+  const fireSessions = firingFor ? sessionsOf(firingFor) : [];
+  const firePacing = firingFor ? pacingParts(firingFor.pacing) : [];
 
   return (
     <Box>
       <WaPageHeader
         icon={IconSpeakerphone}
         title="Broadcasts"
-        subtitle="Disparos em massa para contatos e grupos — com rotação de copies, agendamento e ritmo seguro."
+        subtitle={
+          many
+            ? 'Disparos em massa por vários números — a audiência é dividida entre eles, com ritmo anti-bloqueio e aquecimento por número.'
+            : 'Disparos em massa para contatos e grupos — com rotação de copies, agendamento e ritmo seguro.'
+        }
         action={newBtn}
       />
 
       <WaSessionBanner session={session} loading={sessionLoading} connected={connected} what="disparar broadcasts" />
-      <WarmupStrip warmup={warmup} />
+      <WarmupStrip items={warmupItems} />
 
       {loading && list.length === 0 ? (
         <TgListSkeleton rows={4} />
@@ -1542,6 +2327,10 @@ export default function WhatsAppBroadcasts() {
                 const noCopies = (b.copies_count || 0) === 0;
                 const noTimes = (b.times || []).length === 0;
                 const mode = b.targets?.contacts || 'saved';
+                const bSessions = sessionsOf(b);
+                const bConnected = bSessions.length ? bSessions.some(isReady) : connected;
+                const risk = RISK_UI[pacingRisk(presets, b.pacing)] || RISK_UI.medium;
+                const warm = (Array.isArray(b.warmup) ? b.warmup : []).map((w) => ({ w, s: byId.get(w.session_id) })).filter((x) => x.s);
                 return (
                   <TgCard
                     key={b.id}
@@ -1550,11 +2339,23 @@ export default function WhatsAppBroadcasts() {
                   >
                     <WaBadge icon={IconSpeakerphone} />
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
+                      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
                         <Typography sx={{ fontWeight: 700, fontSize: 15.5 }} noWrap>
                           {b.name}
                         </Typography>
                         <TgStatusPill status={b.active ? 'active' : 'inactive'} />
+                        {bSessions.map((s) => (
+                          <WaNumberChip key={s.id} session={s} />
+                        ))}
+                        {!bSessions.length && many ? (
+                          <Chip
+                            size="small"
+                            color="warning"
+                            variant="outlined"
+                            label="sem número"
+                            sx={{ height: 20, fontSize: 10.5, fontWeight: 700, borderRadius: 1 }}
+                          />
+                        ) : null}
                       </Stack>
                       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ color: 'text.secondary', mb: 0.75 }}>
                         <IconUsers size={14} />
@@ -1565,6 +2366,17 @@ export default function WhatsAppBroadcasts() {
                           ({[...aud.parts, CONTACT_MODE_LABEL[mode]].filter(Boolean).join(' · ')}
                           {(b.targets?.tags || []).length ? ` · tags: ${b.targets.tags.join(', ')}` : ''})
                         </Typography>
+                        {many && aud.by_session.length > 1 ? (
+                          <Tooltip
+                            title={aud.by_session
+                              .map((s) => `${s.label}: ${(s.contacts || 0) + (s.groups || 0)}${s.connected ? '' : ' (não conectado)'}`)
+                              .join(' · ')}
+                          >
+                            <Box sx={{ display: 'inline-flex', color: 'text.disabled', cursor: 'help' }}>
+                              <IconArrowsSplit size={14} />
+                            </Box>
+                          </Tooltip>
+                        ) : null}
                       </Stack>
                       <Stack direction="row" spacing={1} rowGap={1.25} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 0.75 }}>
                         <Chip
@@ -1580,13 +2392,19 @@ export default function WhatsAppBroadcasts() {
                           variant="outlined"
                           sx={{ borderRadius: 1, height: 22 }}
                         />
-                        <Tooltip title="Intervalo entre envios">
+                        <Tooltip title={`Ritmo ${pacingLabel(presets, b.pacing)} · ${pacingParts(b.pacing).join(' · ')}`}>
                           <Chip
                             size="small"
                             icon={<IconHourglassHigh size={12} />}
-                            label={`${Math.round((b.interval_ms || 0) / 1000)} s`}
+                            label={`${pacingLabel(presets, b.pacing)} · ${Math.round((b.pacing?.interval_ms || b.interval_ms || 0) / 1000)} s`}
                             variant="outlined"
-                            sx={{ borderRadius: 1, height: 22 }}
+                            sx={{
+                              borderRadius: 1,
+                              height: 22,
+                              borderColor: (t) => `rgba(${t.vars.palette[risk.token].mainChannel} / 0.6)`,
+                              color: `${risk.token}.main`,
+                              '& .MuiChip-icon': { color: 'inherit' }
+                            }}
                           />
                         </Tooltip>
                         {noTimes ? (
@@ -1604,6 +2422,28 @@ export default function WhatsAppBroadcasts() {
                           ))
                         )}
                       </Stack>
+                      {warm.length ? (
+                        <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+                          {warm.map(({ w, s }) => {
+                            const hot = w.warmed || (w.day || 0) >= 8;
+                            const remaining = remainingOf(w, b.pacing);
+                            return (
+                              <Stack key={s.id} direction="row" spacing={0.5} alignItems="center">
+                                {many ? <WaNumberDot session={s} size={8} /> : <IconFlame size={12} style={{ opacity: 0.7 }} />}
+                                <Typography variant="caption" sx={{ color: hot ? 'text.secondary' : 'warning.main', fontWeight: 600 }}>
+                                  {many ? `${sessionLabel(s)}: ` : ''}
+                                  {!isReady(s) ? 'não conectado' : hot ? 'aquecido' : `dia ${w.day || 1}/7`}
+                                  {isReady(s) && w.pacing_enabled === false
+                                    ? ' · sem limitador'
+                                    : isReady(s) && remaining != null
+                                      ? ` · restam ${remaining.toLocaleString('pt-BR')} hoje`
+                                      : ''}
+                                </Typography>
+                              </Stack>
+                            );
+                          })}
+                        </Stack>
+                      ) : null}
                       {noCopies ? (
                         <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.75 }}>
                           ⚠ Cadastre ao menos uma copy para disparar.
@@ -1613,7 +2453,7 @@ export default function WhatsAppBroadcasts() {
                     <RowActions
                       b={b}
                       compact={compact}
-                      connected={connected}
+                      connected={bConnected}
                       onFire={setFiringFor}
                       onCopies={setCopiesFor}
                       onEdit={setEditing}
@@ -1639,6 +2479,9 @@ export default function WhatsAppBroadcasts() {
         groups={groups}
         contacts={contacts}
         tags={tags}
+        sessions={sessions}
+        presets={presets}
+        warmupBySession={warmupBySession}
       />
       <CopiesModal
         broadcast={copiesFor}
@@ -1648,7 +2491,17 @@ export default function WhatsAppBroadcasts() {
           if (ok) load();
         }}
       />
-      <RunsModal broadcast={runsFor} open={!!runsFor} onClose={() => setRunsFor(null)} />
+      <RunsModal broadcast={runsFor} open={!!runsFor} onClose={() => setRunsFor(null)} sessions={sessions} byId={byId} />
+      <FireResultModal
+        result={fireResult}
+        onClose={() => setFireResult(null)}
+        onRuns={() => {
+          const b = fireResult?.b;
+          setFireResult(null);
+          if (b) setRunsFor(b);
+        }}
+        byId={byId}
+      />
 
       <TgConfirmDialog
         open={!!firingFor}
@@ -1664,11 +2517,48 @@ export default function WhatsAppBroadcasts() {
               “{firingFor.name}” será disparado agora para ≈ <b>{fireAud.total.toLocaleString('pt-BR')}</b>{' '}
               {fireAud.total === 1 ? 'destino' : 'destinos'}
               {fireAud.parts.length ? ` (${fireAud.parts.join(' · ')})` : ''}. A copy é escolhida em{' '}
-              {firingFor.mode === 'random' ? 'ordem aleatória' : 'sequência'}
-              {warmup?.daily_limit
-                ? `; o que passar do limite de hoje (${warmup.daily_limit.toLocaleString('pt-BR')}) fica aguardando o próximo dia`
-                : ''}
-              .
+              {firingFor.mode === 'random' ? 'ordem aleatória' : 'sequência'}; ritmo <b>{pacingLabel(presets, firingFor.pacing)}</b>
+              {firePacing.length ? ` (${firePacing.join(', ')})` : ''}. O que passar do limite do dia de cada número fica para amanhã.
+              <Box component="span" sx={{ display: 'block', mt: 1.25 }}>
+                <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', display: 'block', mb: 0.5 }}>
+                  {fireSessions.length === 1 ? 'Sai pelo número' : 'Sai pelos números'}
+                </Typography>
+                {/* só <span>: a mensagem do TgConfirmDialog vive dentro de um <p> */}
+                <Box component="span" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, alignItems: 'center' }}>
+                  {(fireAud.by_session.length ? fireAud.by_session : fireSessions.map((s) => ({ session_id: s.id }))).map((bs) => {
+                    const s = byId.get(bs.session_id) ||
+                      fireSessions.find((x) => x.id === bs.session_id) || {
+                        id: bs.session_id,
+                        label: bs.label,
+                        color: bs.color,
+                        connected: bs.connected
+                      };
+                    const n = (bs.contacts || 0) + (bs.groups || 0);
+                    return (
+                      <Box key={bs.session_id} component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
+                        <WaNumberDot session={s} size={9} />
+                        <Typography component="span" variant="caption" sx={{ fontWeight: 800, color: 'text.primary' }}>
+                          {sessionLabel(s)}
+                        </Typography>
+                        <Typography component="span" variant="caption" sx={{ color: isReady(s) ? 'text.secondary' : 'warning.main' }}>
+                          {fireAud.by_session.length ? `≈ ${n.toLocaleString('pt-BR')}` : ''}
+                          {isReady(s) ? '' : `${fireAud.by_session.length ? ' · ' : ''}não conectado — fica na fila até reconectar`}
+                        </Typography>
+                      </Box>
+                    );
+                  })}
+                </Box>
+                {fireSessions.length && !fireSessions.some(isReady) ? (
+                  <Typography variant="caption" sx={{ color: 'error.main', display: 'block', mt: 0.5, fontWeight: 700 }}>
+                    Nenhum dos números desta campanha está conectado — o disparo vai ser recusado.
+                  </Typography>
+                ) : null}
+                {fireAud.warnings.map((w) => (
+                  <Typography key={w} variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
+                    ⚠ {w}
+                  </Typography>
+                ))}
+              </Box>
               <Box component="span" sx={{ display: 'block', mt: 1.25, color: 'warning.main', fontWeight: 600 }}>
                 {RISK_TEXT}
               </Box>

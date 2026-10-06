@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -9,9 +8,8 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { IconBrandWhatsapp, IconPlugConnected } from '@tabler/icons-react';
 
-import { get } from 'api/api';
 import { TgEmptyState } from 'views/pages/telegram/ui';
-import { useRealtimeEvent } from 'realtime/useRealtime';
+import { useWaSession as useWaSessionKit } from './waKit';
 
 // ============================================================================
 // Módulo WhatsApp — helpers compartilhados entre Chat e Contatos.
@@ -224,46 +222,18 @@ export function EmojiPicker({ anchorEl, onClose, onPick, recent = [], placement 
 }
 
 // ----------------------------------------------------------------------------
-// useWaSession — estado da sessão da org (polling leve; pausa em aba oculta)
+// useWaSession — compat: sessão AGREGADA dos números da org (ver waKit.useWaSessions).
 // ----------------------------------------------------------------------------
+export { useWaSessions, WaNumberChip, WaNumberDot, WaNumberSelect, WaNumberMultiSelect, sessionLabel, fmtPhoneBR } from './waKit';
 export function useWaSession(pollMs = 15000) {
-  const [session, setSession] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const seqRef = useRef(0);
-
-  const reload = useCallback(async () => {
-    const seq = ++seqRef.current;
-    try {
-      const s = await get('/whatsapp/session');
-      if (seq === seqRef.current) setSession(s || { status: 'none', connected: false });
-    } catch (e) {
-      if (seq === seqRef.current) setSession((prev) => prev || { status: 'none', connected: false, gateway_error: errMsg(e) });
-    } finally {
-      if (seq === seqRef.current) setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    reload();
-    const id = window.setInterval(() => {
-      if (document.visibilityState === 'hidden') return;
-      reload();
-    }, pollMs);
-    return () => window.clearInterval(id);
-  }, [reload, pollMs]);
-
-  // conexão mudou (conectou, caiu, QR novo) → atualiza na hora em qualquer tela do WhatsApp
-  useRealtimeEvent('wa:session', () => reload());
-
-  const connected = Boolean(session?.connected) || session?.status === 'ready';
-  return { session, loading, connected, reload };
+  return useWaSessionKit(pollMs);
 }
 
 // ----------------------------------------------------------------------------
 // WaNotConnected — estado vazio amigável com CTA para /whatsapp/settings
 // ----------------------------------------------------------------------------
 const STATUS_HINT = {
-  none: 'Nenhum número está conectado a esta organização.',
+  none: 'Nenhum número está conectado nesta organização.',
   created: 'A sessão está sendo preparada. Finalize a conexão em Configurações.',
   initializing: 'A sessão está iniciando. Finalize a conexão em Configurações.',
   qr_ready: 'Há um QR Code aguardando leitura em Configurações.',

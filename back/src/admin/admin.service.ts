@@ -5,14 +5,16 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
-import { users_role, wallets_status } from 'generated/prisma/client';
+import { Prisma, users_role, wallets_status } from 'generated/prisma/client';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { CreateAdminUserDto } from './dto/create-admin-user.dto';
 import { UpdateAdminUserDto } from './dto/update-admin-user.dto';
 import { CreateClientDto } from '../platform-billing/dto/billing.dto';
-import { AccessService } from '../platform-billing/access.service';
+import { AccessService, normalizeWhatsAppSessions } from '../platform-billing/access.service';
 import { WhatsAppSessionsService } from '../whatsapp/whatsapp-sessions.service';
+import { WaAccessService } from '../whatsapp/wa-access.service';
+import { RealtimeService } from '../realtime/realtime.service';
 import { ALL_MODULES, normalizeModules } from '../platform-billing/modules.const';
 
 const userSelect = {
@@ -23,6 +25,7 @@ const userSelect = {
   role: true,
   active: true,
   modules: true,
+  whatsapp_sessions: true, // números do WhatsApp liberados (ids); null = todos
 };
 
 function isUniqueError(e: any) {
@@ -37,7 +40,37 @@ function asRole(value: any, fallback: users_role): users_role {
 
 @Injectable()
 export class AdminService {
-  constructor(private prisma: PrismaService, private readonly access: AccessService, private readonly whatsapp: WhatsAppSessionsService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly access: AccessService,
+    private readonly whatsapp: WhatsAppSessionsService,
+    private readonly waAccess: WaAccessService,
+    private readonly realtime: RealtimeService,
+  ) {}
+
+  // ---- Números do WhatsApp por usuário (`users.whatsapp_sessions`) ----
+  // `null`/undefined = todos; array = só esses ids (filtrados aos números da MESMA org; `[]` = nenhum).
+  // OWNER/ADMIN/SUPER_ADMIN ignoram a coluna (sempre todos) — gravamos mesmo assim, p/ valer se o role baixar.
+  private async normalizeWaSessions(orgId: string, raw: unknown): Promise<string[] | null> {
+    const ids = normalizeWhatsAppSessions(raw);
+    if (ids === null) return null;
+    if (!ids.length) return [];
+    const valid = new Set((await this.whatsapp.rowsOf(orgId)).map((r: any) => String(r.id)));
+    return ids.filter((id) => valid.has(id));
+  }
+  private waSessionsData(ids: string[] | null) {
+    return ids === null ? Prisma.DbNull : ids;
+  }
+  /** Depois de gravar: zera o cache de acesso por número e recoloca os sockets do usuário nas salas certas. */
+  private async afterWaSessionsSaved(userId: string, orgId: string, role: string | null | undefined, ids: string[] | null) {
+    this.waAccess.invalidate(userId);
+    const allIds = (await this.whatsapp.rowsOf(orgId).catch(() => [])).map((r: any) => String(r.id));
+    const allowed = WaAccessService.isAdmin(role) || ids === null ? null : new Set(ids);
+    this.realtime.resubscribeSessions(userId, orgId, 'whatsapp', allIds, allowed);
+  }
+  private shapeUser<T extends { whatsapp_sessions?: unknown }>(u: T) {
+    return { ...u, whatsapp_sessions: normalizeWhatsAppSessions(u?.whatsapp_sessions) };
+  }
 
   // ---- Organização OCULTA (conta do desenvolvedor) ----
   // Org com hidden=true (e seus usuários) é tratada como INEXISTENTE pela API admin para
@@ -79,6 +112,15 @@ export class AdminService {
       users_count: o._count?.users ?? 0,
       access: this.accessSummary(amap.get(o.id)),
     }));
+  }
+
+  // Números do WhatsApp de uma organização (p/ o formulário de usuário escolher quais liberar).
+  async listOrgWhatsAppSessions(orgId: string, viewerOrgId?: string) {
+    await this.assertOrgVisible(orgId, viewerOrgId, 'Organização não encontrada.');
+    const org = await this.prisma.organizations.findUnique({ where: { id: orgId }, select: { id: true } });
+    if (!org) throw new NotFoundException('Organização não encontrada.');
+    const rows = await this.whatsapp.rowsOf(orgId);
+    return rows.map((r: any) => this.whatsapp.brief(r));
   }
 
   // Cria organização + wallet + usuário admin, atomicamente (mesmo fluxo do
@@ -124,7 +166,7 @@ export class AdminService {
           select: userSelect,
         });
         await this.access.upsertPlan(organization.id, { price_cents: 0, period_days: null }, tx);
-        return { organization, user };
+        return { organization, user: this.shapeUser(user) };
       });
     } catch (e) {
       if (isUniqueError(e)) {
@@ -267,6 +309,8 @@ export class AdminService {
           await tx.whatsapp_tags.deleteMany(where);
           await tx.whatsapp_schedules.deleteMany(where);
           await tx.whatsapp_chat_filters.deleteMany(where);
+          await tx.team_messages.deleteMany(where);
+          await tx.team_chats.deleteMany(where); // team_chat_members cai em cascata (FK)
           await tx.whatsapp_broadcast_sends.deleteMany(where);
           await tx.whatsapp_broadcast_runs.deleteMany(where);
           await tx.whatsapp_broadcast_copies.deleteMany(where);
@@ -332,7 +376,7 @@ export class AdminService {
     const orgIds = [...new Set(users.map((u) => u.organization_id))];
     const accessRows = orgIds.length ? await this.prisma.organization_access.findMany({ where: { organization_id: { in: orgIds } } }) : [];
     const amap = new Map(accessRows.map((r) => [r.organization_id, r] as [string, any]));
-    return users.map((u: any) => ({ ...u, modules: normalizeModules(u.modules), access: this.accessSummary(amap.get(u.organization_id)) }));
+    return users.map((u: any) => ({ ...this.shapeUser(u), modules: normalizeModules(u.modules), access: this.accessSummary(amap.get(u.organization_id)) }));
   }
 
   private accessSummary(row: any) {
@@ -360,17 +404,19 @@ export class AdminService {
     if (existing) throw new BadRequestException('Já existe um usuário com esse e-mail.');
     const role = asRole(dto.role, users_role.OWNER);
     const modules = normalizeModules(dto.modules);
+    // Org nova = ainda sem números: null = todos (quando conectar), array = nenhum até o admin liberar.
+    const waSessions = normalizeWhatsAppSessions(dto.whatsapp_sessions) === null ? null : [];
     const password_hash = await bcrypt.hash(String(dto.password), 12);
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         const organization = await tx.organizations.create({ data: { name: orgName } });
         await tx.wallets.create({ data: { organization_id: organization.id, balance: '0.0000', status: wallets_status.ACTIVE } });
         const user = await tx.users.create({
-          data: { organization_id: organization.id, name, email, password_hash, role, active: true, modules },
+          data: { organization_id: organization.id, name, email, password_hash, role, active: true, modules, whatsapp_sessions: this.waSessionsData(waSessions) },
           select: userSelect,
         });
         const access = await this.access.upsertPlan(organization.id, { price_cents: dto.price_cents, period_days: dto.period_days ?? null }, tx);
-        return { organization, user: { ...user, modules }, access };
+        return { organization, user: { ...this.shapeUser(user), modules }, access };
       });
       return result;
     } catch (e) {
@@ -399,8 +445,9 @@ export class AdminService {
     }
     const role = asRole(dto.role, users_role.MEMBER);
     const password_hash = await bcrypt.hash(String(dto.password), 12);
+    const waSessions = await this.normalizeWaSessions(String(dto.organization_id), dto.whatsapp_sessions);
     try {
-      return await this.prisma.users.create({
+      const created = await this.prisma.users.create({
         data: {
           organization_id: String(dto.organization_id),
           name: String(dto.name || '').trim(),
@@ -409,9 +456,11 @@ export class AdminService {
           role,
           active: true,
           modules: normalizeModules(dto.modules),
+          whatsapp_sessions: this.waSessionsData(waSessions),
         },
         select: userSelect,
       });
+      return this.shapeUser(created);
     } catch (e) {
       if (isUniqueError(e)) {
         throw new BadRequestException('E-mail já cadastrado.');
@@ -429,9 +478,18 @@ export class AdminService {
     if (dto.role !== undefined) data.role = asRole(dto.role, user.role);
     if (dto.active !== undefined) data.active = dto.active === true;
     if (dto.modules !== undefined) data.modules = normalizeModules(dto.modules);
+    let waSessions: string[] | null | undefined;
+    if (dto.whatsapp_sessions !== undefined) {
+      waSessions = await this.normalizeWaSessions(user.organization_id, dto.whatsapp_sessions);
+      data.whatsapp_sessions = this.waSessionsData(waSessions);
+    }
     const updated = await this.prisma.users.update({ where: { id }, data, select: userSelect });
     this.access.invalidateUser(id);
-    return updated;
+    // Mudou os números liberados OU o role (dono/admin vê todos): acesso por número + salas do socket.
+    if (waSessions !== undefined || (dto.role !== undefined && updated.role !== user.role)) {
+      await this.afterWaSessionsSaved(id, user.organization_id, updated.role, normalizeWhatsAppSessions(updated.whatsapp_sessions));
+    }
+    return this.shapeUser(updated);
   }
 
   async changePassword(id: string, password: string, viewerOrgId?: string) {

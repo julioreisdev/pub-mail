@@ -1,13 +1,20 @@
 // =============================================================================
-// WhatsApp → Fluxo do Bot
-// Construtor visual (reactflow) + aba Configurações + simulador.
-//   GET  /whatsapp/bot            → { id, name, active, definition, settings, published_at, stats }
-//   PUT  /whatsapp/bot            → { definition, settings }   (autosave 2 s + Salvar)
-//   POST /whatsapp/bot/active     → { active }                  (só OWNER/ADMIN/SUPER_ADMIN)
-//   POST /whatsapp/bot/simulate   → { actions, state, ended }   (simulador, nada é enviado)
+// WhatsApp → Fluxo do Bot (multi-número)
+// N fluxos por organização; cada número do WhatsApp usa 0 ou 1 fluxo (o mesmo fluxo
+// pode atender vários números). Construtor visual (reactflow) + Configurações +
+// simulador + monitor, por fluxo. O fluxo aberto fica na URL (?flow=<id>).
+//   GET    /whatsapp/bot/flows                → lista (nome, ativo, números, stats)
+//   POST   /whatsapp/bot/flows                → { name, definition | clone_of, settings } (nasce desligado)
+//   GET    /whatsapp/bot/flows/:id            → definition + settings
+//   PUT    /whatsapp/bot/flows/:id            → { name? , definition?, settings? } (autosave 2 s + Salvar; nunca liga)
+//   DELETE /whatsapp/bot/flows/:id            → dono/admin
+//   POST   /whatsapp/bot/flows/:id/active     → { active } (dono/admin; ligar valida o fluxo)
+//   PUT    /whatsapp/bot/flows/:id/sessions   → { session_ids } (dono/admin; tira os números dos outros fluxos)
+//   POST   /whatsapp/bot/simulate             → { flow_id | definition, settings, state?, input?, event? }
+//   GET    /whatsapp/bot/sessions?session_id  → monitor (aba Conversas)
 // =============================================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import ReactFlow, {
   Background,
   Controls,
@@ -29,6 +36,8 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
+  Divider,
+  IconButton,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -49,19 +58,26 @@ import {
   IconAlertTriangle,
   IconCheck,
   IconCircleCheck,
+  IconCopy,
   IconDeviceFloppy,
   IconDeviceMobile,
+  IconDotsVertical,
   IconLock,
+  IconMessageChatbot,
+  IconPencil,
   IconPlayerPause,
+  IconPlus,
   IconRobot,
-  IconSitemap
+  IconSitemap,
+  IconTrash
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
-import { get, post, put } from 'api/api';
+import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
-import { WaPageHeader } from './waKit';
-import { useWaSession } from './waShared';
+import { TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
+import { useRealtimeEvent } from 'realtime/useRealtime';
+import { WaPageHeader, useWaSessions, waButtonSx } from './waKit';
 import {
   buildDefaultFlow,
   cleanDefinition,
@@ -96,24 +112,43 @@ import BotPalette, { DND_TYPE } from './bot/palette';
 import BotInspector from './bot/inspector';
 import BotSimulator from './bot/simulator';
 import BotSettingsTab from './bot/settingsTab';
+import BotMonitor from './bot/monitor';
+import { AssignNumbersDialog, FlowFormDialog, FlowNumbers, FlowStrip, UnassignedBanner } from './bot/flows';
 
 const MANAGERS = ['OWNER', 'ADMIN', 'SUPER_ADMIN'];
 const AUTOSAVE_MS = 2000;
+const FLOWS_POLL_MS = 60000;
+const MAX_FLOWS = 50;
 const INSPECTOR_W = 400;
 const NODE_HALF_W = 142;
 
 const asList = (r) => (Array.isArray(r) ? r : Array.isArray(r?.items) ? r.items : []);
 const botErr = (e, fb) => {
   const status = e?.response?.status;
-  if (status === 404) return 'O Fluxo do Bot ainda não está disponível no servidor. Tente novamente depois da atualização.';
   if (status === 403) return 'Você não tem permissão para esta ação.';
   const m = e?.response?.data?.message ?? e?.message;
   return Array.isArray(m) ? m.join(' | ') : String(m || fb);
 };
+const is404 = (e) => e?.response?.status === 404;
 const markerFor = (h) => ({ type: MarkerType.ArrowClosed, color: TONE[toneOfHandle(h)] || TONE.neutral, width: 16, height: 16 });
 const withWa = (e) => ({ ...e, type: 'wa', markerEnd: markerFor(e.sourceHandle) });
 const unselect = (nds) => (nds.some((n) => n.selected) ? nds.map((n) => (n.selected ? { ...n, selected: false } : n)) : nds);
 const hms = (d) => new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(d);
+const flowUrl = (id) => `/whatsapp/bot/flows/${encodeURIComponent(id)}`;
+// definição padrão (boas-vindas → menu → atendente / encerrar) para fluxos novos sem "duplicar de"
+const defaultPayload = () => {
+  const s = normalizeSettings(null);
+  const f = buildDefaultFlow(s);
+  return { definition: cleanDefinition(f.nodes, f.edges), settings: s };
+};
+// campos da lista que um GET/PUT de fluxo pode atualizar
+const flowListFields = (r) => {
+  const out = {};
+  ['name', 'active', 'position', 'updated_at', 'published_at', 'created_at', 'sessions', 'stats'].forEach((k) => {
+    if (r[k] !== undefined) out[k] = r[k];
+  });
+  return out;
+};
 
 // -----------------------------------------------------------------------------
 // Indicador de salvamento
@@ -164,9 +199,9 @@ function SaveIndicator({ saving, dirty, error, savedAt, offline }) {
 }
 
 // -----------------------------------------------------------------------------
-// Diálogo de ativar / pausar
+// Diálogo de ativar / pausar (por fluxo)
 // -----------------------------------------------------------------------------
-function ActivationDialog({ state, busy, onClose, onConfirm, settings, issues }) {
+function ActivationDialog({ state, busy, onClose, onConfirm, settings, issues, flowName, flowSessions }) {
   if (!state) return null;
   const target = state.target;
   const errors = issues.filter((i) => i.level === 'error');
@@ -181,6 +216,7 @@ function ActivationDialog({ state, busy, onClose, onConfirm, settings, issues })
           : 'ninguém ainda (Modo teste sem contatos)'
         : 'só os contatos com as etiquetas escolhidas';
   const color = target ? WA_GREEN : '#64748B';
+  const numbers = flowSessions || [];
   return (
     <Dialog open onClose={() => !busy && onClose()} maxWidth="xs" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
       <DialogContent sx={{ pt: 3.5, textAlign: 'center' }}>
@@ -201,17 +237,30 @@ function ActivationDialog({ state, busy, onClose, onConfirm, settings, issues })
           {target ? <IconRobot size={30} /> : <IconPlayerPause size={28} />}
         </Box>
         <Typography variant="h4" sx={{ fontWeight: 800, mb: 0.75 }}>
-          {target ? 'Ativar o bot?' : 'Pausar o bot?'}
+          {target ? 'Ligar o bot?' : 'Desligar o bot?'}
         </Typography>
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
           {target ? (
             <>
-              O bot vai começar a responder <b>{audText}</b>. Grupos e conversas em atendimento humano não são afetados.
+              O fluxo <b>“{flowName}”</b> vai começar a responder <b>{audText}</b>
+              {numbers.length ? (
+                <>
+                  {' '}
+                  {numbers.length === 1 ? 'no número' : 'nos números'}{' '}
+                  <b>{numbers.map((s) => s.label || s.phone || 'Número').join(', ')}</b>
+                </>
+              ) : null}
+              . Grupos e conversas em atendimento humano não são afetados.
             </>
           ) : (
-            'O bot para de responder novas mensagens. Conversas que já estão com atendentes continuam normalmente.'
+            'O bot para de responder novas mensagens nos números que usam este fluxo. Conversas que já estão com atendentes continuam normalmente.'
           )}
         </Typography>
+        {target && !numbers.length ? (
+          <Alert severity="warning" sx={{ mt: 2, textAlign: 'left', borderRadius: 2 }}>
+            Nenhum número usa este fluxo. Ele vai ficar ligado, mas não responde ninguém até você atribuir um número (botão <b>Números</b>).
+          </Alert>
+        ) : null}
         {target && aud.mode === 'all' ? (
           <Alert severity="info" sx={{ mt: 2, textAlign: 'left', borderRadius: 2 }}>
             Dica: se ainda não testou no seu celular, comece pelo <b>Modo teste</b> (aba Configurações).
@@ -252,7 +301,7 @@ function ActivationDialog({ state, busy, onClose, onConfirm, settings, issues })
             '&:hover': { bgcolor: target ? WA_DARK : '#475569' }
           }}
         >
-          {target ? 'Ativar bot' : 'Pausar bot'}
+          {target ? 'Ligar bot' : 'Desligar bot'}
         </Button>
       </DialogActions>
     </Dialog>
@@ -327,11 +376,23 @@ function IssuesPopover({ anchorEl, onClose, issues, nodes, onPick }) {
 }
 
 // =============================================================================
-// Página
+// Editor de UM fluxo (montado com key={flowId} — troca de fluxo = estado novo)
 // =============================================================================
-function BotBuilder() {
-  const { user } = useAuth();
-  const canManage = MANAGERS.includes(user?.user?.role);
+function BotBuilder({
+  flowId,
+  flow,
+  allSessions,
+  byId,
+  anyConnected,
+  canManage,
+  bannerKey,
+  onFlowChanged,
+  onManageSessions,
+  onRename,
+  onDuplicate,
+  onDelete,
+  onGone
+}) {
   const theme = useTheme();
   const downLg = useMediaQuery(theme.breakpoints.down('lg'));
   const downSm = useMediaQuery(theme.breakpoints.down('sm'));
@@ -339,10 +400,11 @@ function BotBuilder() {
   const { mode, systemMode } = useColorScheme();
   const isDark = (mode === 'system' ? systemMode : mode) === 'dark';
   const rf = useReactFlow();
-  const { connected, loading: sessionLoading } = useWaSession(60000);
+
+  const meta = flow || {};
+  const flowSessions = useMemo(() => meta.sessions || [], [meta.sessions]);
 
   const [tab, setTab] = useState('flow');
-  const [meta, setMeta] = useState({ id: null, name: 'Fluxo do bot', active: false, published_at: null, stats: null });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -358,6 +420,7 @@ function BotBuilder() {
   const [draggingBlock, setDraggingBlock] = useState(null);
   const [connectMenu, setConnectMenu] = useState(null);
   const [issuesEl, setIssuesEl] = useState(null);
+  const [menuEl, setMenuEl] = useState(null);
   const [actDialog, setActDialog] = useState(null);
   const [actBusy, setActBusy] = useState(false);
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
@@ -373,6 +436,8 @@ function BotBuilder() {
   const lastErrRef = useRef('');
   const addCountRef = useRef(0);
   const viewportRef = useRef(null);
+  const flowIdRef = useRef(flowId);
+  flowIdRef.current = flowId;
 
   const latest = useRef({});
   latest.current = { nodes, edges, settings };
@@ -389,17 +454,10 @@ function BotBuilder() {
   const canAutoRef = useRef(canAutosave);
   canAutoRef.current = canAutosave;
 
-  const applyMeta = useCallback((r) => {
-    if (!r || typeof r !== 'object') return;
-    setMeta((m) => ({
-      ...m,
-      id: r.id ?? m.id,
-      name: r.name ?? m.name,
-      active: typeof r.active === 'boolean' ? r.active : m.active,
-      published_at: r.published_at !== undefined ? r.published_at : m.published_at,
-      stats: r.stats ?? m.stats
-    }));
-  }, []);
+  const gone = useCallback(() => {
+    canAutoRef.current = false;
+    onGone(flowId);
+  }, [onGone, flowId]);
 
   // --------------------------------------------------------------- carga
   const load = useCallback(async () => {
@@ -411,33 +469,30 @@ function BotBuilder() {
     let st = null;
     let ok = false;
     try {
-      const r = await get('/whatsapp/bot');
-      applyMeta(r);
+      const r = await get(flowUrl(flowId));
+      onFlowChanged(r);
       def = r?.definition;
       st = r?.settings;
       ok = true;
     } catch (e) {
-      const status = e?.response?.status;
-      setLoadError({
-        status,
-        message:
-          status === 404
-            ? 'O Fluxo do Bot ainda não está disponível no servidor. Você já pode montar e testar o rascunho — ele poderá ser salvo assim que a atualização for publicada.'
-            : botErr(e, 'Não foi possível carregar o fluxo salvo.')
-      });
+      if (is404(e)) {
+        gone();
+        return;
+      }
+      setLoadError({ status: e?.response?.status, message: botErr(e, 'Não foi possível carregar o fluxo salvo.') });
     }
     const s = normalizeSettings(st);
     const hasDef = def && Array.isArray(def.nodes) && def.nodes.length > 0;
-    const flow = hasDef ? hydrateDefinition(def) : buildDefaultFlow(s);
-    const ee = flow.edges.map(withWa);
+    const built = hasDef ? hydrateDefinition(def) : buildDefaultFlow(s);
+    const ee = built.edges.map(withWa);
     setSettings(s);
-    setNodes(flow.nodes);
+    setNodes(built.nodes);
     setEdges(ee);
-    // nunca salvo → fica "não salvo" e o autosave cria o rascunho no servidor
-    setSavedSig(ok && hasDef ? payloadSig(flow.nodes, ee, s) : null);
+    // fluxo sem blocos (nunca salvo) → fica "não salvo" e o autosave grava o padrão
+    setSavedSig(ok && hasDef ? payloadSig(built.nodes, ee, s) : null);
     setSaveError(null);
     setLoading(false);
-  }, [applyMeta, setNodes, setEdges]);
+  }, [flowId, onFlowChanged, gone, setNodes, setEdges]);
 
   useEffect(() => {
     load();
@@ -460,25 +515,6 @@ function BotBuilder() {
     };
   }, []);
 
-  // status/estatísticas (leve, a cada 60 s com a aba visível)
-  useEffect(() => {
-    if (loadError) return undefined;
-    const id = setInterval(() => {
-      if (document.visibilityState === 'hidden') return;
-      get('/whatsapp/bot')
-        .then((r) =>
-          setMeta((m) => ({
-            ...m,
-            active: typeof r?.active === 'boolean' ? r.active : m.active,
-            published_at: r?.published_at !== undefined ? r.published_at : m.published_at,
-            stats: r?.stats ?? m.stats
-          }))
-        )
-        .catch(() => {});
-    }, 60000);
-    return () => clearInterval(id);
-  }, [loadError]);
-
   // --------------------------------------------------------------- salvar
   const saveNow = useCallback(
     async ({ manual = false } = {}) => {
@@ -488,8 +524,8 @@ function BotBuilder() {
       savingRef.current = true;
       setSaving(true);
       try {
-        const r = await put('/whatsapp/bot', { definition: cleanDefinition(n, e), settings: s });
-        applyMeta(r);
+        const r = await put(flowUrl(flowId), { definition: cleanDefinition(n, e), settings: s });
+        onFlowChanged(r);
         setSavedSig(at);
         setSaveError(null);
         setSavedAt(new Date());
@@ -500,6 +536,10 @@ function BotBuilder() {
         }
         return { ok: true };
       } catch (err) {
+        if (is404(err)) {
+          gone();
+          return { ok: false, message: 'Este fluxo não existe mais.' };
+        }
         const message = botErr(err, 'Não foi possível salvar o fluxo.');
         setSaveError({ sig: at, message });
         if (manual || lastErrRef.current !== message) toast.error(message);
@@ -510,7 +550,7 @@ function BotBuilder() {
         setSaving(false);
       }
     },
-    [applyMeta]
+    [flowId, onFlowChanged, gone]
   );
 
   const ensureSaved = useCallback(async () => {
@@ -528,13 +568,13 @@ function BotBuilder() {
     return () => clearTimeout(t);
   }, [sig, dirty, canAutosave, saving, saveError, saveNow]);
 
-  // ao sair da página: salva o que ficou pendente
+  // ao sair da página / trocar de fluxo: salva o que ficou pendente
   useEffect(
     () => () => {
       if (!canAutoRef.current) return;
       const { nodes: n, edges: e, settings: s } = latest.current;
       if (payloadSig(n, e, s) === savedSigRef.current) return;
-      put('/whatsapp/bot', { definition: cleanDefinition(n, e), settings: s }).catch(() => {});
+      put(flowUrl(flowIdRef.current), { definition: cleanDefinition(n, e), settings: s }).catch(() => {});
     },
     []
   );
@@ -550,7 +590,7 @@ function BotBuilder() {
   }, [dirty]);
 
   const manualSave = useCallback(() => {
-    if (loadError && loadError.status !== 404) {
+    if (loadError) {
       setConfirmOverwrite(true);
       return;
     }
@@ -574,11 +614,11 @@ function BotBuilder() {
       clearTimeout(t2);
       window.removeEventListener('resize', calc);
     };
-  }, [tab, loadError, connected, sessionLoading, loading]);
+  }, [tab, loadError, loading, bannerKey, flowSessions.length]);
 
   // --------------------------------------------------------------- enquadramento inicial
   // Fluxo pequeno: centraliza. Fluxo grande: zoom legível (>= 0,62) alinhado à esquerda,
-  // com o Início na altura do meio. Ao voltar da aba Configurações, restaura a visão anterior.
+  // com o Início na altura do meio. Ao voltar de outra aba, restaura a visão anterior.
   const nodesInitialized = useNodesInitialized();
   const didInitRef = useRef(false);
   useEffect(() => {
@@ -816,7 +856,7 @@ function BotBuilder() {
     [rf, centerOn, setNodes]
   );
 
-  // --------------------------------------------------------------- ativação
+  // --------------------------------------------------------------- ligar / desligar
   const status = botStatusOf(meta.active, settings);
   const requestToggle = (target) => {
     if (!canManage) return;
@@ -829,16 +869,21 @@ function BotBuilder() {
       if (target) {
         const r = await ensureSaved();
         if (!r.ok) {
-          setActDialog((d) => (d ? { ...d, error: r.message || 'Salve o fluxo antes de ativar.' } : d));
+          setActDialog((d) => (d ? { ...d, error: r.message || 'Salve o fluxo antes de ligar.' } : d));
           return;
         }
       }
-      const r = await post('/whatsapp/bot/active', { active: target });
-      applyMeta(r && typeof r.active === 'boolean' ? r : { ...(r || {}), active: target });
-      toast.success(target ? 'Bot ativado! 🎉' : 'Bot pausado.');
+      const r = await post(`${flowUrl(flowId)}/active`, { active: target });
+      onFlowChanged(r && typeof r.active === 'boolean' ? r : { id: flowId, active: target });
+      toast.success(target ? 'Bot ligado! 🎉' : 'Bot desligado.');
       setActDialog(null);
     } catch (e) {
-      const message = botErr(e, target ? 'Não foi possível ativar o bot.' : 'Não foi possível pausar o bot.');
+      if (is404(e)) {
+        setActDialog(null);
+        gone();
+        return;
+      }
+      const message = botErr(e, target ? 'Não foi possível ligar o bot.' : 'Não foi possível desligar o bot.');
       setActDialog((d) => (d ? { ...d, error: message } : d));
     } finally {
       setActBusy(false);
@@ -897,65 +942,31 @@ function BotBuilder() {
     [tags, tagsById, attendants, gateway, settings, vars, issuesByNode, simNodeId, actions, createTag]
   );
 
-  const getPayload = useCallback(
-    () => ({ definition: cleanDefinition(latest.current.nodes, latest.current.edges), settings: latest.current.settings }),
-    []
-  );
+  // simulador: fluxo salvo → só flow_id; rascunho alterado → definition/settings atuais
+  const getPayload = useCallback(() => {
+    const { nodes: n, edges: e, settings: s } = latest.current;
+    if (payloadSig(n, e, s) === savedSigRef.current) return { flow_id: flowId };
+    return { flow_id: flowId, definition: cleanDefinition(n, e), settings: s };
+  }, [flowId]);
   const flowKey = useMemo(() => payloadSig(nodes, edges, settings), [nodes, edges, settings]);
 
   const selectedNode = useMemo(() => nodes.find((n) => n.id === selectedId) || null, [nodes, selectedId]);
   const paletteCompact = downLg || (simOpen && narrow);
   const stats = meta.stats || {};
 
-  // --------------------------------------------------------------- render
-  const header = (
-    <WaPageHeader
-      icon={IconRobot}
-      title="Fluxo do Bot"
-      subtitle="Monte o atendimento automático do seu WhatsApp: mensagens, opções, perguntas, cobrança PIX e transferência para atendentes."
-      sx={{ mb: 2 }}
-      action={
-        <Stack alignItems="flex-end" spacing={0.4}>
-          <Tooltip title={canManage ? '' : 'Só administradores podem ativar ou pausar o bot.'}>
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-              sx={{ pl: 1.25, pr: 0.5, py: 0.4, borderRadius: 3, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
-            >
-              <BotStatusPill status={status} />
-              {!canManage ? <IconLock size={15} style={{ opacity: 0.55 }} /> : null}
-              <Switch
-                checked={Boolean(meta.active)}
-                disabled={!canManage || loading || actBusy}
-                onChange={(e) => requestToggle(e.target.checked)}
-                inputProps={{ 'aria-label': meta.active ? 'Pausar o bot' : 'Ativar o bot' }}
-                sx={{
-                  '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
-                  '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN, opacity: 0.55 }
-                }}
-              />
-            </Stack>
-          </Tooltip>
-          {meta.active && stats.active_sessions != null && !downSm ? (
-            <Typography variant="caption" sx={{ color: 'text.secondary', pr: 0.5 }}>
-              {Number(stats.active_sessions).toLocaleString('pt-BR')} {Number(stats.active_sessions) === 1 ? 'conversa' : 'conversas'} com o
-              bot agora
-            </Typography>
-          ) : null}
-        </Stack>
-      }
-    />
-  );
+  const openMenu = (fn) => () => {
+    setMenuEl(null);
+    fn?.();
+  };
 
+  // --------------------------------------------------------------- render
   return (
     <Box>
       <BotFlowStyles />
-      {header}
 
       {loadError ? (
         <Alert
-          severity={loadError.status === 404 ? 'info' : 'warning'}
+          severity="warning"
           sx={{ mb: 1.5, borderRadius: 2, py: 0.25 }}
           action={
             <Button color="inherit" size="small" onClick={load} sx={{ fontWeight: 700, textTransform: 'none' }}>
@@ -966,26 +977,138 @@ function BotBuilder() {
           {loadError.message}
         </Alert>
       ) : null}
-      {!sessionLoading && !connected ? (
-        <Alert
-          severity="info"
-          icon={<IconDeviceMobile size={20} />}
-          sx={{ mb: 1.5, borderRadius: 2, py: 0.25 }}
-          action={
-            <Button
-              component={RouterLink}
-              to="/whatsapp/settings"
-              color="inherit"
-              size="small"
-              sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
+
+      {/* identidade do fluxo aberto: nome, status, números, ligar/desligar, menu */}
+      <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1.25, columnGap: 1.5, rowGap: 0.75 }}>
+        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flex: '1 1 280px', minWidth: 0 }}>
+          <Box
+            sx={{
+              width: 38,
+              height: 38,
+              flexShrink: 0,
+              borderRadius: 2,
+              display: 'grid',
+              placeItems: 'center',
+              color: '#fff',
+              background: meta.active ? `linear-gradient(135deg, ${WA_GREEN}, ${WA_DARK})` : 'linear-gradient(135deg, #94A3B8, #64748B)'
+            }}
+          >
+            <IconRobot size={21} />
+          </Box>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+              <Tooltip title="Renomear">
+                <Typography
+                  component="button"
+                  type="button"
+                  onClick={onRename}
+                  sx={{
+                    all: 'unset',
+                    display: 'block',
+                    maxWidth: '100%',
+                    cursor: 'pointer',
+                    fontWeight: 800,
+                    fontSize: 17,
+                    lineHeight: 1.2,
+                    minWidth: 0,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    color: 'text.primary',
+                    '&:hover': { color: WA_ACCENT }
+                  }}
+                >
+                  {meta.name || 'Fluxo do bot'}
+                </Typography>
+              </Tooltip>
+              <BotStatusPill status={status} />
+            </Stack>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.4 }}>
+              <FlowNumbers sessions={flowSessions} max={4} emptyText="Nenhum número usa este fluxo" />
+              <Tooltip title={canManage ? 'Escolher os números do WhatsApp que usam este fluxo' : 'Só administradores atribuem números.'}>
+                <span>
+                  <Button
+                    size="small"
+                    onClick={onManageSessions}
+                    disabled={!canManage}
+                    startIcon={<IconDeviceMobile size={14} />}
+                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, py: 0, minHeight: 24, color: WA_ACCENT }}
+                  >
+                    Números
+                  </Button>
+                </span>
+              </Tooltip>
+              {meta.active && stats.active_sessions != null && !downSm ? (
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  · {Number(stats.active_sessions).toLocaleString('pt-BR')} {Number(stats.active_sessions) === 1 ? 'conversa' : 'conversas'}{' '}
+                  com o bot agora
+                </Typography>
+              ) : null}
+            </Stack>
+          </Box>
+        </Stack>
+
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+          <Tooltip title={canManage ? '' : 'Só administradores podem ligar ou desligar o bot.'}>
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              sx={{ pl: 1.25, pr: 0.5, py: 0.3, borderRadius: 3, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
             >
-              Conectar
-            </Button>
-          }
-        >
-          O WhatsApp não está conectado. Você pode montar e testar o fluxo, mas o bot só responde clientes com um número conectado.
-        </Alert>
-      ) : null}
+              {!canManage ? <IconLock size={15} style={{ opacity: 0.55 }} /> : null}
+              <Typography sx={{ fontWeight: 700, fontSize: 13 }}>{meta.active ? 'Ligado' : 'Desligado'}</Typography>
+              <Switch
+                checked={Boolean(meta.active)}
+                disabled={!canManage || loading || actBusy}
+                onChange={(e) => requestToggle(e.target.checked)}
+                inputProps={{ 'aria-label': meta.active ? 'Desligar o bot' : 'Ligar o bot' }}
+                sx={{
+                  '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
+                  '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN, opacity: 0.55 }
+                }}
+              />
+            </Stack>
+          </Tooltip>
+          <Tooltip title="Mais ações">
+            <IconButton size="small" onClick={(e) => setMenuEl(e.currentTarget)} aria-label="Mais ações do fluxo">
+              <IconDotsVertical size={19} />
+            </IconButton>
+          </Tooltip>
+          <Menu
+            open={Boolean(menuEl)}
+            anchorEl={menuEl}
+            onClose={() => setMenuEl(null)}
+            slotProps={{ paper: { sx: { borderRadius: 2.5, minWidth: 220, py: 0.25 } } }}
+          >
+            <MenuItem dense onClick={openMenu(onRename)}>
+              <ListItemIcon>
+                <IconPencil size={17} />
+              </ListItemIcon>
+              <ListItemText primary="Renomear" />
+            </MenuItem>
+            <MenuItem dense onClick={openMenu(onDuplicate)}>
+              <ListItemIcon>
+                <IconCopy size={17} />
+              </ListItemIcon>
+              <ListItemText primary="Duplicar" />
+            </MenuItem>
+            <MenuItem dense onClick={openMenu(onManageSessions)} disabled={!canManage}>
+              <ListItemIcon>
+                <IconDeviceMobile size={17} />
+              </ListItemIcon>
+              <ListItemText primary="Números que usam este fluxo…" />
+            </MenuItem>
+            <Divider sx={{ my: 0.5 }} />
+            <MenuItem dense onClick={openMenu(onDelete)} disabled={!canManage} sx={{ color: 'error.main' }}>
+              <ListItemIcon sx={{ color: 'inherit' }}>
+                <IconTrash size={17} />
+              </ListItemIcon>
+              <ListItemText primary="Excluir fluxo" />
+            </MenuItem>
+          </Menu>
+        </Stack>
+      </Stack>
 
       {/* abas + ações */}
       <Stack
@@ -1015,6 +1138,32 @@ function BotBuilder() {
               <Stack component="span" direction="row" spacing={0.75} alignItems="center">
                 <span>Configurações</span>
                 {settingsIssues ? <Box component="span" sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: '#F59E0B' }} /> : null}
+              </Stack>
+            }
+          />
+          <Tab
+            value="monitor"
+            icon={<IconMessageChatbot size={17} />}
+            iconPosition="start"
+            label={
+              <Stack component="span" direction="row" spacing={0.75} alignItems="center">
+                <span>Conversas</span>
+                {stats.active_sessions ? (
+                  <Box
+                    component="span"
+                    sx={{
+                      px: 0.6,
+                      borderRadius: 5,
+                      fontSize: 11,
+                      fontWeight: 800,
+                      lineHeight: '18px',
+                      color: '#fff',
+                      bgcolor: WA_GREEN
+                    }}
+                  >
+                    {Number(stats.active_sessions).toLocaleString('pt-BR')}
+                  </Box>
+                ) : null}
               </Stack>
             }
           />
@@ -1106,8 +1255,12 @@ function BotBuilder() {
             onToggleActive={requestToggle}
             toggling={actBusy}
             disabled={loading}
-            connected={connected}
+            connected={anyConnected}
+            flowSessions={flowSessions}
+            onManageSessions={onManageSessions}
           />
+        ) : tab === 'monitor' ? (
+          <BotMonitor flowId={flowId} flowName={meta.name || 'Fluxo do bot'} sessions={allSessions} byId={byId} nodes={nodes} />
         ) : (
           <Box
             ref={frameRef}
@@ -1343,6 +1496,8 @@ function BotBuilder() {
         onConfirm={confirmToggle}
         settings={settings}
         issues={issues}
+        flowName={meta.name || 'Fluxo do bot'}
+        flowSessions={flowSessions}
       />
 
       <Dialog
@@ -1390,10 +1545,360 @@ function BotBuilder() {
   );
 }
 
+// =============================================================================
+// Página: lista de fluxos + fluxo aberto (?flow=<id>)
+// =============================================================================
+function BotPage() {
+  const { user } = useAuth();
+  const canManage = MANAGERS.includes(user?.user?.role);
+  const { sessions, byId, connected: anyConnected, loading: sessionsLoading, reload: reloadSessions } = useWaSessions(30000);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const flowParam = searchParams.get('flow') || '';
+  // `setSearchParams` muda de identidade a cada mudança de URL → ref para manter os callbacks estáveis
+  const setParamsRef = useRef(setSearchParams);
+  setParamsRef.current = setSearchParams;
+
+  const [flows, setFlows] = useState(null); // null = carregando
+  const [flowsError, setFlowsError] = useState(null);
+  const [form, setForm] = useState(null); // { mode, flow? }
+  const [formBusy, setFormBusy] = useState(false);
+  const [assign, setAssign] = useState(null); // { flow, preselect? }
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [del, setDel] = useState(null); // flow
+  const [delBusy, setDelBusy] = useState(false);
+  const seq = useRef(0);
+  const rtTimer = useRef(null);
+
+  // --------------------------------------------------------------- lista
+  const loadFlows = useCallback(async ({ silent = false } = {}) => {
+    const s = ++seq.current;
+    try {
+      const r = await get('/whatsapp/bot/flows');
+      if (s !== seq.current) return;
+      setFlows(asList(r));
+      setFlowsError(null);
+    } catch (e) {
+      if (s !== seq.current) return;
+      if (!silent) setFlowsError(botErr(e, 'Não foi possível carregar os fluxos do bot.'));
+      setFlows((p) => p || []);
+    }
+  }, []);
+  useEffect(() => {
+    loadFlows();
+  }, [loadFlows]);
+
+  // stats/números a cada 60 s com a aba visível
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') loadFlows({ silent: true });
+    }, FLOWS_POLL_MS);
+    return () => clearInterval(id);
+  }, [loadFlows]);
+
+  // número criado/removido/alterado (ex.: fluxo trocado em Configurações) → lista na hora (com folga de 400 ms)
+  const rtReload = useCallback(() => {
+    if (rtTimer.current) clearTimeout(rtTimer.current);
+    rtTimer.current = setTimeout(() => loadFlows({ silent: true }), 400);
+  }, [loadFlows]);
+  useRealtimeEvent('wa:sessions', rtReload);
+  useRealtimeEvent('wa:session', rtReload);
+  useEffect(() => () => rtTimer.current && clearTimeout(rtTimer.current), []);
+
+  const patchFlow = useCallback((r) => {
+    if (!r?.id) return;
+    setFlows((p) => (p || []).map((f) => (f.id === r.id ? { ...f, ...flowListFields(r) } : f)));
+  }, []);
+
+  // --------------------------------------------------------------- seleção (URL)
+  const selectFlow = useCallback(
+    (id, { replace = false } = {}) =>
+      setParamsRef.current(
+        (prev) => {
+          const n = new URLSearchParams(prev);
+          if (id) n.set('flow', id);
+          else n.delete('flow');
+          return n;
+        },
+        { replace }
+      ),
+    []
+  );
+  const selected = useMemo(() => (flows || []).find((f) => f.id === flowParam) || null, [flows, flowParam]);
+  useEffect(() => {
+    if (!flows) return;
+    if (flowParam && flows.some((f) => f.id === flowParam)) return;
+    const pick = flows.find((f) => f.active && f.sessions?.length) || flows.find((f) => f.sessions?.length) || flows[0];
+    if (pick) selectFlow(pick.id, { replace: true });
+    else if (flowParam) selectFlow(null, { replace: true });
+  }, [flows, flowParam, selectFlow]);
+
+  const onGone = useCallback(
+    (id) => {
+      toast.error('Este fluxo não existe mais.');
+      setFlows((p) => (p || []).filter((f) => f.id !== id));
+      selectFlow(null, { replace: true });
+      loadFlows({ silent: true });
+      reloadSessions();
+    },
+    [selectFlow, loadFlows, reloadSessions]
+  );
+
+  // --------------------------------------------------------------- ações
+  const submitForm = async ({ mode, name, clone_of, flow }) => {
+    setFormBusy(true);
+    try {
+      if (mode === 'rename') {
+        const r = await put(flowUrl(flow.id), { name });
+        patchFlow(r);
+        toast.success('Fluxo renomeado.');
+      } else {
+        const body = clone_of ? { name, clone_of } : { name, ...defaultPayload() };
+        const r = await post('/whatsapp/bot/flows', body);
+        if (r?.id) {
+          setFlows((p) => [
+            ...(p || []),
+            { sessions: [], stats: { active_sessions: 0, started_24h: 0, handoffs_24h: 0 }, ...flowListFields(r), id: r.id }
+          ]);
+          selectFlow(r.id);
+        } else loadFlows({ silent: true });
+        toast.success(mode === 'duplicate' ? 'Fluxo duplicado.' : 'Fluxo criado! Ele nasce desligado e em Modo teste.');
+      }
+      setForm(null);
+    } catch (e) {
+      toast.error(botErr(e, 'Não foi possível salvar o fluxo.'));
+    } finally {
+      setFormBusy(false);
+    }
+  };
+
+  const submitAssign = async (ids) => {
+    if (!assign?.flow) return;
+    setAssignBusy(true);
+    try {
+      const r = await put(`${flowUrl(assign.flow.id)}/sessions`, { session_ids: ids });
+      patchFlow(r);
+      toast.success(ids.length ? `Fluxo atribuído a ${ids.length} ${ids.length === 1 ? 'número' : 'números'}.` : 'Fluxo sem números.');
+      setAssign(null);
+      // os outros fluxos também mudam (número sai de um e entra no outro)
+      loadFlows({ silent: true });
+      reloadSessions();
+    } catch (e) {
+      toast.error(botErr(e, 'Não foi possível atribuir os números.'));
+    } finally {
+      setAssignBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!del) return;
+    setDelBusy(true);
+    try {
+      await remove(flowUrl(del.id));
+      toast.success(`Fluxo “${del.name}” excluído.`);
+      setFlows((p) => (p || []).filter((f) => f.id !== del.id));
+      if (flowParam === del.id) selectFlow(null, { replace: true });
+      setDel(null);
+      reloadSessions();
+    } catch (e) {
+      toast.error(botErr(e, 'Não foi possível excluir o fluxo.'));
+    } finally {
+      setDelBusy(false);
+    }
+  };
+
+  const openAssign = useCallback(
+    (flow, preselect) => {
+      if (!canManage) {
+        toast.error('Só administradores atribuem números a um fluxo.');
+        return;
+      }
+      if (!flow) return;
+      setAssign({ flow, preselect: preselect || [] });
+    },
+    [canManage]
+  );
+
+  // números conectados sem fluxo
+  const unassigned = useMemo(() => sessions.filter((s) => (s.connected || s.status === 'ready') && !s.bot_flow_id), [sessions]);
+  const noConnection = !sessionsLoading && !anyConnected;
+  const bannerKey = `${unassigned.length}|${noConnection ? 1 : 0}|${flows?.length || 0}`;
+  const canCreate = (flows?.length || 0) < MAX_FLOWS;
+
+  // --------------------------------------------------------------- render
+  return (
+    <Box>
+      <WaPageHeader
+        icon={IconRobot}
+        title="Fluxo do Bot"
+        subtitle="Monte o atendimento automático do seu WhatsApp: mensagens, opções, perguntas, cobrança PIX e transferência para atendentes. Cada número usa um fluxo."
+        sx={{ mb: 2 }}
+        action={
+          flows && flows.length ? (
+            <Tooltip title={canCreate ? '' : `Limite de ${MAX_FLOWS} fluxos por organização.`}>
+              <span>
+                <Button
+                  variant="contained"
+                  disableElevation
+                  startIcon={<IconPlus size={18} />}
+                  disabled={!canCreate}
+                  onClick={() => setForm({ mode: 'create' })}
+                  sx={{ ...waButtonSx, whiteSpace: 'nowrap' }}
+                >
+                  Novo fluxo
+                </Button>
+              </span>
+            </Tooltip>
+          ) : null
+        }
+      />
+
+      {flowsError ? (
+        <Alert
+          severity="warning"
+          sx={{ mb: 1.5, borderRadius: 2, py: 0.25 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => loadFlows()} sx={{ fontWeight: 700, textTransform: 'none' }}>
+              Tentar de novo
+            </Button>
+          }
+        >
+          {flowsError}
+        </Alert>
+      ) : null}
+
+      {noConnection ? (
+        <Alert
+          severity="info"
+          icon={<IconDeviceMobile size={20} />}
+          sx={{ mb: 1.5, borderRadius: 2, py: 0.25 }}
+          action={
+            <Button
+              component={RouterLink}
+              to="/whatsapp/settings"
+              color="inherit"
+              size="small"
+              sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
+            >
+              Conectar
+            </Button>
+          }
+        >
+          Nenhum número do WhatsApp está conectado. Você pode montar e testar os fluxos, mas o bot só responde clientes por um número
+          conectado.
+        </Alert>
+      ) : null}
+
+      {flows && flows.length ? (
+        <UnassignedBanner
+          sessions={unassigned}
+          canManage={canManage}
+          sx={{ mb: 1.5 }}
+          onAssign={() =>
+            openAssign(
+              selected || flows[0],
+              unassigned.map((s) => s.id)
+            )
+          }
+        />
+      ) : null}
+
+      {flows === null ? (
+        <Stack alignItems="center" justifyContent="center" spacing={1.5} sx={{ py: 10 }}>
+          <CircularProgress sx={{ color: WA_GREEN }} />
+          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+            Carregando os fluxos…
+          </Typography>
+        </Stack>
+      ) : !flows.length ? (
+        <TgEmptyState
+          icon={IconRobot}
+          title="Nenhum fluxo do bot ainda"
+          description={
+            unassigned.length
+              ? `Você tem ${unassigned.length === 1 ? 'um número conectado' : `${unassigned.length} números conectados`}. Crie o primeiro fluxo (ele nasce com boas-vindas → menu → atendente, desligado e em Modo teste) e escolha em quais números ele responde.`
+              : 'Crie o primeiro fluxo: ele nasce com boas-vindas → menu → atendente, desligado e em Modo teste. Depois escolha quais números do WhatsApp usam o fluxo.'
+          }
+          action={
+            <Button
+              variant="contained"
+              disableElevation
+              size="large"
+              startIcon={<IconPlus size={18} />}
+              onClick={() => setForm({ mode: 'create' })}
+              sx={waButtonSx}
+            >
+              Criar primeiro fluxo
+            </Button>
+          }
+        />
+      ) : (
+        <>
+          <FlowStrip
+            flows={flows}
+            selectedId={selected?.id || null}
+            onSelect={(id) => selectFlow(id)}
+            onCreate={() => setForm({ mode: 'create' })}
+            canCreate={canCreate}
+            sx={{ mb: 1.5 }}
+          />
+          {selected ? (
+            <BotBuilder
+              key={selected.id}
+              flowId={selected.id}
+              flow={selected}
+              allSessions={sessions}
+              byId={byId}
+              anyConnected={anyConnected}
+              canManage={canManage}
+              bannerKey={bannerKey}
+              onFlowChanged={patchFlow}
+              onManageSessions={() => openAssign(selected)}
+              onRename={() => setForm({ mode: 'rename', flow: selected })}
+              onDuplicate={() =>
+                canCreate ? setForm({ mode: 'duplicate', flow: selected }) : toast.error(`Limite de ${MAX_FLOWS} fluxos.`)
+              }
+              onDelete={() => (canManage ? setDel(selected) : toast.error('Só administradores excluem fluxos.'))}
+              onGone={onGone}
+            />
+          ) : null}
+        </>
+      )}
+
+      <FlowFormDialog state={form} flows={flows || []} busy={formBusy} onClose={() => !formBusy && setForm(null)} onSubmit={submitForm} />
+
+      <AssignNumbersDialog
+        flow={assign?.flow || null}
+        preselect={assign?.preselect}
+        flows={flows || []}
+        sessions={sessions}
+        busy={assignBusy}
+        onClose={() => !assignBusy && setAssign(null)}
+        onSubmit={submitAssign}
+      />
+
+      <TgConfirmDialog
+        open={Boolean(del)}
+        onClose={() => !delBusy && setDel(null)}
+        onConfirm={confirmDelete}
+        loading={delBusy}
+        danger
+        icon={IconTrash}
+        title={del ? `Excluir o fluxo “${del.name}”?` : 'Excluir fluxo?'}
+        message={
+          del?.sessions?.length
+            ? `${del.sessions.length === 1 ? 'O número' : 'Os números'} ${del.sessions.map((s) => s.label || s.phone || 'Número').join(', ')} ${del.sessions.length === 1 ? 'fica' : 'ficam'} sem bot, e as conversas que ele estava conduzindo são encerradas. Isso não pode ser desfeito.`
+            : 'Os blocos e as configurações deste fluxo serão apagados. Isso não pode ser desfeito.'
+        }
+        confirmLabel="Excluir fluxo"
+      />
+    </Box>
+  );
+}
+
 export default function WhatsAppBot() {
   return (
     <ReactFlowProvider>
-      <BotBuilder />
+      <BotPage />
     </ReactFlowProvider>
   );
 }

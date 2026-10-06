@@ -52,15 +52,17 @@ import {
 import { get, post, put } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { TgAvatar, TgCard, TgConfirmDialog, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
-import { WaPageHeader } from './waKit';
+import { WaNumberChip, WaPageHeader, useWaSessions } from './waKit';
 import { WA_DARK, errMsg, fmtDateTime, fmtPhone, tint } from './waShared';
 import ChargeDialog from './crm/ChargeDialog';
-import { CrmKpi, StatusChip, dueText, waPrimaryBtn } from './crm/crmKit';
+import { CrmKpi, StatusChip, WaNumberFilter, chatUrl, dueText, useSessionFilter, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Cobranças: PIX/boleto enviados na conversa (manuais e recorrentes),
 // situação, lembretes, confirmação automática. KPIs: a receber, em atraso,
 // recebido no mês.
+// Multi-número: cada cobrança sai por um número (`session_id` + `session`); `chat_id` = uuid da
+// conversa (pode ser null em cobrança antiga). Filtro "Número" (?session=) e chip do número na linha.
 // ============================================================================
 
 const PAGE_SIZES = [25, 50, 100];
@@ -275,6 +277,8 @@ export default function WhatsAppCharges() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canAdmin = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
+  const { sessions } = useWaSessions(30000);
+  const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [status, setStatus] = useState('all');
@@ -300,7 +304,7 @@ export default function WhatsAppCharges() {
   }, [q]);
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, status, kind, origin, pageSize]);
+  }, [debouncedQ, status, kind, origin, pageSize, sessionId]);
   useEffect(() => {
     get('/whatsapp/charges/settings')
       .then(setSettings)
@@ -321,6 +325,7 @@ export default function WhatsAppCharges() {
             status: status === 'all' ? undefined : status,
             kind: kind === 'all' ? undefined : kind,
             origin: origin === 'all' ? undefined : origin,
+            session_id: sessionId || undefined,
             page,
             page_size: pageSize
           }
@@ -333,7 +338,7 @@ export default function WhatsAppCharges() {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [debouncedQ, status, kind, origin, page, pageSize]
+    [debouncedQ, status, kind, origin, sessionId, page, pageSize]
   );
   useEffect(() => {
     load();
@@ -370,14 +375,17 @@ export default function WhatsAppCharges() {
       setRunBusy(false);
     }
   };
-  const openChat = (c) => navigate(`/whatsapp/chat?chat=${encodeURIComponent(c.chat_id)}`);
+  const openChat = (c) => {
+    if (!c.chat_id) return toast.error('Esta cobrança não tem conversa aberta neste número.');
+    return navigate(chatUrl(c.chat_id));
+  };
 
   const k = data.kpis;
   const items = data.items;
   const total = data.total;
   const from = total ? (data.page - 1) * pageSize + 1 : 0;
   const to = Math.min(total, data.page * pageSize);
-  const filtered = Boolean(debouncedQ || status !== 'all' || kind !== 'all' || origin !== 'all');
+  const filtered = Boolean(debouncedQ || status !== 'all' || kind !== 'all' || origin !== 'all' || sessionId);
 
   return (
     <Box>
@@ -483,6 +491,7 @@ export default function WhatsAppCharges() {
           <MenuItem value="recurring">Recorrente</MenuItem>
           <MenuItem value="bot">Bot</MenuItem>
         </TextField>
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
         <TextField
           select
           size="small"
@@ -562,9 +571,12 @@ export default function WhatsAppCharges() {
                             <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
                               {c.customer?.name || '—'}
                             </Typography>
-                            <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
-                              {fmtPhone(c.customer?.phone)}
-                            </Typography>
+                            <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                                {fmtPhone(c.customer?.phone)}
+                              </Typography>
+                              {multi && c.session ? <WaNumberChip session={c.session} /> : null}
+                            </Stack>
                           </Box>
                         </Stack>
                       </TableCell>
@@ -645,10 +657,12 @@ export default function WhatsAppCharges() {
                         </Typography>
                       </TableCell>
                       <TableCell align="right">
-                        <Tooltip title="Abrir conversa">
-                          <IconButton size="small" onClick={() => openChat(c)}>
-                            <IconMessage size={17} />
-                          </IconButton>
+                        <Tooltip title={c.chat_id ? 'Abrir conversa' : 'Sem conversa aberta neste número'}>
+                          <span>
+                            <IconButton size="small" onClick={() => openChat(c)} disabled={!c.chat_id}>
+                              <IconMessage size={17} />
+                            </IconButton>
+                          </span>
                         </Tooltip>
                         <IconButton size="small" onClick={(e) => setMenu({ anchor: e.currentTarget, charge: c })} disabled={rowBusy[c.id]}>
                           {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconDotsVertical size={17} />}

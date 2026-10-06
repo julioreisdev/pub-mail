@@ -25,6 +25,9 @@ import { MoneyField, formatBRL, waPrimaryBtn } from '../crm/crmKit';
 
 // ============================================================================
 // Abas "Funil", "Tarefas" e "Notas" do painel lateral da conversa (CustomerPanel).
+// Multi-número: `chat.chat_id` É o uuid da conversa ativa (a página de Chat já passa o uuid);
+// é ele que vai em pipeline/chat/:id, pipeline/move, tasks?chat_id=, chats/:id/notes.
+// Nunca montar jid aqui. Eventos em tempo real chegam com `chat_id` = uuid.
 // ============================================================================
 
 const Title = ({ children, action }) => (
@@ -172,7 +175,7 @@ export function TasksTab({ chat, open, customerId }) {
     if (open) load();
   }, [open, load]);
   useRealtimeEvent('wa:task', (p) => {
-    if (open && (p?.task?.chat?.chat_id === chatId || p?.action === 'deleted')) load();
+    if (open && (p?.task?.chat?.chat_id === chatId || p?.chat_id === chatId || p?.action === 'deleted')) load();
   });
   const toggle = async (t) => {
     try {
@@ -289,7 +292,7 @@ export function NotesTab({ chat, open }) {
     if (open) load();
   }, [open, load]);
   useRealtimeEvent('wa:note', (p) => {
-    if (open && (p?.note?.chat_id === chatId || p?.action === 'deleted')) load();
+    if (open && (p?.chat_id === chatId || p?.note?.chat_id === chatId)) load();
   });
 
   const add = async () => {

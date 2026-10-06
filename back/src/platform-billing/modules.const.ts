@@ -45,7 +45,7 @@ const ROUTE_MODULES: Array<[string, ModuleKey]> = [
 ];
 
 // Rotas que NUNCA são bloqueadas por assinatura (fluxo de login/pagamento, admin, dashboard).
-const OPEN_PREFIXES = ['/auth', '/access', '/admin', '/dashboard', '/profile', '/me', '/public', '/webhooks', '/uploads'];
+const OPEN_PREFIXES = ['/auth', '/access', '/admin', '/dashboard', '/profile', '/me', '/public', '/webhooks', '/uploads', '/team'];
 
 // Leituras que módulos de outros grupos precisam (ex.: o construtor de funil do
 // webchat lê `GET /payments/settings` só pra saber se o gateway está pronto —

@@ -50,6 +50,12 @@ export class AdminController {
     return this.admin.removeOrganization(id, req?.user?.organizationId);
   }
 
+  // Números do WhatsApp da org → [{id,label,color,phone,status,connected}] (p/ liberar por usuário).
+  @Get('organizations/:id/whatsapp-sessions')
+  listOrgWhatsAppSessions(@Param('id') id: string, @Req() req: any) {
+    return this.admin.listOrgWhatsAppSessions(id, req?.user?.organizationId);
+  }
+
   // ===== Clientes (org + usuário dono + plano + módulos) =====
   @Post('clients')
   createClient(@Body() dto: CreateClientDto) {

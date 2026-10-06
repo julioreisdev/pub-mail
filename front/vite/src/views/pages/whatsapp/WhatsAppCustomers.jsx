@@ -9,6 +9,9 @@ import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Pagination from '@mui/material/Pagination';
 import Stack from '@mui/material/Stack';
@@ -42,14 +45,28 @@ import {
 import { api, get, post, put } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
-import { WaPageHeader } from './waKit';
-import { WA_DARK, errMsg, fmtPhone, tint, useWaSession } from './waShared';
+import { WaNumberDot, WaPageHeader, sessionLabel, useWaSessions } from './waKit';
+import { WA_DARK, errMsg, fmtPhone, tint } from './waShared';
 import CustomerDialog from './crm/CustomerDialog';
-import { BILLING_STATUS, CrmKpi, StatusChip, dueText, waPrimaryBtn } from './crm/crmKit';
+import {
+  BILLING_STATUS,
+  CrmKpi,
+  CustomerNumberChips,
+  StatusChip,
+  WaNumberFilter,
+  chatUrl,
+  dueText,
+  useSessionFilter,
+  waPrimaryBtn
+} from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Clientes: contatos que são clientes de verdade — o que usam/pagam,
 // situação (em dia / em atraso), próximo vencimento. Abre a conversa com 1 clique.
+// Multi-número: o cliente é da org; `customer.chats[]` = conversas dele (uma por número,
+// mais recente primeiro, `chat_id` = uuid). Chips dos números na tabela, filtro "Número"
+// (?session=, aplicado no cliente sobre `chats[].session_id`) e menu para escolher por
+// qual número abrir/iniciar a conversa quando há mais de um.
 // ============================================================================
 
 const PAGE_SIZES = [25, 50, 100];
@@ -188,7 +205,10 @@ export default function WhatsAppCustomers() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canEdit = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
-  const { connected } = useWaSession(30000);
+  const { sessions, byId: sessionsById, connected } = useWaSessions(30000);
+  const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
+  const connectedSessions = useMemo(() => sessions.filter((s) => s.connected || s.status === 'ready'), [sessions]);
+  const [openMenu, setOpenMenu] = useState(null); // {anchor, customer, mode:'chats'|'sessions'}
 
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -234,6 +254,7 @@ export default function WhatsAppCustomers() {
             status: status === 'all' ? undefined : status,
             billing: billing === 'all' ? undefined : billing,
             product_id: productId || undefined,
+            session_id: sessionId || undefined,
             page,
             page_size: pageSize
           }
@@ -246,7 +267,7 @@ export default function WhatsAppCustomers() {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [debouncedQ, status, billing, productId, page, pageSize]
+    [debouncedQ, status, billing, productId, sessionId, page, pageSize]
   );
   useEffect(() => {
     load();
@@ -254,17 +275,19 @@ export default function WhatsAppCustomers() {
 
   const patchRow = (c) => setData((d) => ({ ...d, items: d.items.map((x) => (x.id === c.id ? c : x)) }));
 
-  const openConversation = async (c) => {
+  // Inicia (ou acha) a conversa do cliente num número e vai para o Chat.
+  const startConversation = async (c, sid) => {
     if (!connected) return toast.error('Conecte o WhatsApp para abrir conversas.');
     setRowBusy((m) => ({ ...m, [c.id]: true }));
     try {
-      let chatId = c.chat_id;
+      const existing = sid ? (c.chats || []).find((x) => x.session_id === sid) : null;
+      let chatId = existing?.chat_id || null;
       if (!chatId) {
-        const chat = await post('/whatsapp/chats/open', { phone: c.phone });
+        const chat = await post('/whatsapp/chats/open', { phone: c.phone, ...(sid ? { session_id: sid } : {}) });
         chatId = chat?.chat_id;
       }
       if (!chatId) throw new Error('Não foi possível abrir a conversa.');
-      navigate(`/whatsapp/chat?chat=${encodeURIComponent(chatId)}`);
+      navigate(chatUrl(chatId));
     } catch (e) {
       toast.error(errMsg(e, 'Não foi possível abrir a conversa.'));
     } finally {
@@ -272,13 +295,26 @@ export default function WhatsAppCustomers() {
     }
     return undefined;
   };
+  // Clique em "Abrir conversa": 1 conversa → abre; várias → menu por número; nenhuma → menu dos
+  // números conectados (ou direto, quando só há um).
+  const openConversation = (c, anchor) => {
+    const chats = c.chats || [];
+    if (chats.length === 1) return navigate(chatUrl(chats[0].chat_id));
+    if (chats.length > 1) return setOpenMenu({ anchor, customer: c, mode: 'chats' });
+    if (connectedSessions.length > 1) return setOpenMenu({ anchor, customer: c, mode: 'sessions' });
+    return startConversation(c, connectedSessions[0]?.id || null);
+  };
 
   const counts = data.counts;
-  const items = data.items;
+  // filtro por número (client-side: o cliente é da org; "está no número" = tem conversa lá)
+  const items = useMemo(
+    () => (sessionId ? data.items.filter((c) => (c.chats || []).some((x) => x.session_id === sessionId)) : data.items),
+    [data.items, sessionId]
+  );
   const total = data.total;
   const from = total ? (data.page - 1) * pageSize + 1 : 0;
   const to = Math.min(total, data.page * pageSize);
-  const filtered = Boolean(debouncedQ || status !== 'all' || billing !== 'all' || productId);
+  const filtered = Boolean(debouncedQ || status !== 'all' || billing !== 'all' || productId || sessionId);
 
   const [importDlg, setImportDlg] = useState(null);
   const exportCsv = useCallback(async () => {
@@ -437,6 +473,7 @@ export default function WhatsAppCustomers() {
             </MenuItem>
           ))}
         </TextField>
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
         <TextField
           select
           size="small"
@@ -471,7 +508,9 @@ export default function WhatsAppCustomers() {
           title={filtered ? 'Nenhum cliente com esses filtros' : 'Nenhum cliente ainda'}
           description={
             filtered
-              ? 'Tente outra busca ou limpe os filtros.'
+              ? sessionId && data.items.length
+                ? 'Nenhum cliente desta página tem conversa nesse número. Mude de página ou limpe o filtro de número.'
+                : 'Tente outra busca ou limpe os filtros.'
               : 'Cadastre aqui ou, na conversa do WhatsApp, abra o painel "Cliente" e clique em "Tornar cliente".'
           }
           action={
@@ -495,6 +534,7 @@ export default function WhatsAppCustomers() {
               <TableHead>
                 <TableRow>
                   <TableCell>Cliente</TableCell>
+                  {multi ? <TableCell>Números</TableCell> : null}
                   <TableCell>Produtos</TableCell>
                   <TableCell>Situação</TableCell>
                   <TableCell>Próximo vencimento</TableCell>
@@ -524,6 +564,17 @@ export default function WhatsAppCustomers() {
                         </Box>
                       </Stack>
                     </TableCell>
+                    {multi ? (
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {c.chats?.length ? (
+                          <CustomerNumberChips chats={c.chats} byId={sessionsById} max={3} onPick={(ch) => navigate(chatUrl(ch.chat_id))} />
+                        ) : (
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            sem conversa
+                          </Typography>
+                        )}
+                      </TableCell>
+                    ) : null}
                     <TableCell sx={{ maxWidth: 260 }}>
                       {c.products.length ? (
                         <Stack direction="row" spacing={0.5} sx={{ overflow: 'hidden' }}>
@@ -574,9 +625,9 @@ export default function WhatsAppCustomers() {
                       {c.monthly_cents ? c.monthly_label : '—'}
                     </TableCell>
                     <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                      <Tooltip title="Abrir conversa">
+                      <Tooltip title={c.chats?.length > 1 ? 'Abrir conversa (escolher o número)' : 'Abrir conversa'}>
                         <span>
-                          <IconButton size="small" onClick={() => openConversation(c)} disabled={rowBusy[c.id]}>
+                          <IconButton size="small" onClick={(e) => openConversation(c, e.currentTarget)} disabled={rowBusy[c.id]}>
                             {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconMessage size={17} />}
                           </IconButton>
                         </span>
@@ -606,6 +657,51 @@ export default function WhatsAppCustomers() {
           </Stack>
         </TgCard>
       )}
+
+      {/* escolha do número: conversas existentes do cliente ou números conectados para iniciar */}
+      <Menu
+        open={Boolean(openMenu)}
+        anchorEl={openMenu?.anchor}
+        onClose={() => setOpenMenu(null)}
+        slotProps={{ paper: { sx: { borderRadius: 2.5, minWidth: 240 } } }}
+      >
+        <Typography variant="caption" sx={{ px: 2, py: 0.5, display: 'block', color: 'text.secondary', fontWeight: 700 }}>
+          {openMenu?.mode === 'chats' ? 'Abrir a conversa pelo número' : 'Iniciar conversa pelo número'}
+        </Typography>
+        {openMenu?.mode === 'chats'
+          ? (openMenu.customer.chats || []).map((ch) => {
+              const sess = ch.session || sessionsById.get(ch.session_id) || { id: ch.session_id, label: 'Número' };
+              return (
+                <MenuItem
+                  key={ch.chat_id}
+                  onClick={() => {
+                    setOpenMenu(null);
+                    navigate(chatUrl(ch.chat_id));
+                  }}
+                >
+                  <ListItemIcon>
+                    <WaNumberDot session={sess} />
+                  </ListItemIcon>
+                  <ListItemText primary={sessionLabel(sess)} secondary={sess.phone ? fmtPhone(sess.phone) : null} />
+                </MenuItem>
+              );
+            })
+          : connectedSessions.map((sess) => (
+              <MenuItem
+                key={sess.id}
+                onClick={() => {
+                  const c = openMenu.customer;
+                  setOpenMenu(null);
+                  startConversation(c, sess.id);
+                }}
+              >
+                <ListItemIcon>
+                  <WaNumberDot session={sess} />
+                </ListItemIcon>
+                <ListItemText primary={sessionLabel(sess)} secondary={sess.phone ? fmtPhone(sess.phone) : null} />
+              </MenuItem>
+            ))}
+      </Menu>
 
       <TgModal
         open={Boolean(importDlg)}

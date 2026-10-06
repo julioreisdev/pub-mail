@@ -3,21 +3,40 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccessService } from '../platform-billing/access.service';
 import { OpenWaClient, OpenWaError } from './openwa.client';
-import { WhatsAppSessionsService } from './whatsapp-sessions.service';
+import { WhatsAppSessionsService, SessionRow, sessionLabel } from './whatsapp-sessions.service';
 import { WhatsAppMediaService } from './whatsapp-media.service';
-import { WhatsAppPacingService } from './whatsapp-pacing.service';
-import { WhatsAppInboundService } from './whatsapp-inbound.service';
-import { isGroupJid, phoneFromJid } from './whatsapp-contacts.service';
-import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppPacingService, brtDayStart } from './whatsapp-pacing.service';
+import { WhatsAppChatService } from './whatsapp-chat.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppCrmService } from './whatsapp-crm.service';
+import { isLidJid, phoneFromJid } from './wa-jid.util';
 
-// Broadcasts (espelho do Telegram): horários diários (minuto-do-dia BRT), copies com rotação,
-// audiência = contatos salvos/tags/selecionados + grupos, fila `whatsapp_broadcast_sends`
-// com worker contínuo (1 envio por vez por org, intervalo configurável), aquecimento por org
-// (PACED = volta amanhã), 429 do gateway respeitado, métricas por run.
+// Broadcasts MULTI-NÚMERO: a campanha tem `session_ids` (1..N números da org). Horários diários
+// (minuto-do-dia BRT), copies com rotação, audiência = contatos salvos/tags/selecionados + grupos.
+//  - Contatos (saved/all/selected) são DISTRIBUÍDOS round-robin entre os números conectados no
+//    disparo, exceto quando o contato já tem conversa num dos números escolhidos (vai por ele —
+//    evita abrir 2 conversas com a mesma pessoa). Grupos saem pelo número da conversa do grupo.
+//  - Fila `whatsapp_broadcast_sends` com `session_id`; worker processa POR NÚMERO (1 envio por vez
+//    por número; números diferentes em paralelo), obedecendo ao ritmo (`pacing`: preset/intervalo/
+//    jitter/limite diário/pausa a cada N/janela de horário) e ao aquecimento de cada número.
+//  - PACED = limite do dia do número atingido → volta amanhã (o `dispatch` reabre os vencidos).
+//  - Métricas por run e por número (`whatsapp_broadcast_runs.by_session`).
 
 const MAX_ATTEMPTS = 3;
+
+export type PacingPreset = 'fast' | 'normal' | 'safe' | 'very_safe' | 'custom';
+export type PacingWindow = { start: string; end: string } | null;
+export type BroadcastPacing = { preset: PacingPreset; interval_ms: number; jitter_pct: number; daily_limit: number | null; pause_every: number; pause_minutes: number; window: PacingWindow };
+
+const PRESET_TABLE: Record<Exclude<PacingPreset, 'custom'>, Omit<BroadcastPacing, 'preset'> & { label: string; description: string; risk: 'high' | 'medium' | 'low' | 'minimal'; warning?: string }> = {
+  fast: { label: 'Rápido', risk: 'high', description: '3 s entre envios (±30 %), sem pausas e sem limite diário.', warning: 'Risco ALTO de restrição ou banimento do número. Use só em números aquecidos e audiências que já conversaram com você.', interval_ms: 3000, jitter_pct: 30, daily_limit: null, pause_every: 0, pause_minutes: 0, window: null },
+  normal: { label: 'Normal', risk: 'medium', description: '8 s entre envios (±30 %), pausa de 10 min a cada 50 envios.', interval_ms: 8000, jitter_pct: 30, daily_limit: null, pause_every: 50, pause_minutes: 10, window: null },
+  safe: { label: 'Seguro', risk: 'low', description: '20 s entre envios (±40 %), pausa de 15 min a cada 30, até 300 envios por dia por número.', interval_ms: 20000, jitter_pct: 40, daily_limit: 300, pause_every: 30, pause_minutes: 15, window: null },
+  very_safe: { label: 'Muito seguro', risk: 'minimal', description: '45 s entre envios (±50 %), pausa de 20 min a cada 20, até 150 por dia por número, só das 08:00 às 20:00.', interval_ms: 45000, jitter_pct: 50, daily_limit: 150, pause_every: 20, pause_minutes: 20, window: { start: '08:00', end: '20:00' } },
+};
+const PRESET_KEYS: PacingPreset[] = ['fast', 'normal', 'safe', 'very_safe', 'custom'];
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function brtMinuteOfDay(d = new Date()) {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d);
@@ -25,23 +44,27 @@ function brtMinuteOfDay(d = new Date()) {
   const m = Number(parts.find((p) => p.type === 'minute')?.value || 0);
   return h * 60 + m;
 }
-function brtStartOfToday(now = new Date()) {
-  const s = new Date(now.getTime() - 3 * 3600_000);
-  return new Date(Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate()) + 3 * 3600_000);
-}
+const brtStartOfToday = (now = new Date()) => brtDayStart(now);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const clamp = (v: any, min: number, max: number, dflt: number) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt; };
+const hhmmToMin = (s: string) => { const m = HHMM_RE.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const isReady = (r: any) => Boolean(r?.openwa_session_id && r.status === 'ready');
 
 // {{nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
 export function fillVars(text: string, vars: Record<string, string>) {
   return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => { const key = String(k).toLowerCase(); return key in vars ? vars[key] ?? '' : m; });
 }
 
+type Target = { session_id: string; chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group' };
+type SessionStats = { total: number; sent: number; failed: number; blocked: number; paced: number; pending: number };
+
 @Injectable()
 export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsAppBroadcastsService.name);
   private stopped = false;
   private loopRunning = false;
-  private readonly busyOrgs = new Set<string>();
+  // chave de ocupação = id do NÚMERO (1 envio por vez por número; números diferentes em paralelo)
+  private readonly busySessions = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -49,12 +72,68 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     private readonly sessions: WhatsAppSessionsService,
     private readonly media: WhatsAppMediaService,
     private readonly pacing: WhatsAppPacingService,
-    private readonly inbound: WhatsAppInboundService,
+    private readonly chat: WhatsAppChatService,
     private readonly access: AccessService,
-    private readonly attendance: WhatsAppAttendanceService,
     private readonly presenter: WhatsAppPresenter,
     private readonly crm: WhatsAppCrmService,
   ) {}
+
+  // ---------------------------------------------------------------- presets / ritmo
+  presets() {
+    return {
+      default: 'normal',
+      items: (Object.keys(PRESET_TABLE) as Array<Exclude<PacingPreset, 'custom'>>).map((key) => ({ key, ...PRESET_TABLE[key] })).concat([{ key: 'custom', label: 'Personalizado', risk: 'medium', description: 'Você define intervalo, variação, limite diário, pausas e janela de horário.', interval_ms: 8000, jitter_pct: 30, daily_limit: null, pause_every: 0, pause_minutes: 0, window: null } as any]),
+      limits: { interval_ms: { min: 1000, max: 120000 }, jitter_pct: { min: 0, max: 80 }, daily_limit: { min: 1, max: 5000 }, pause_every: { min: 0, max: 1000 }, pause_minutes: { min: 0, max: 240 } },
+    };
+  }
+
+  /** Normaliza o JSON `pacing`. `legacyInterval` = coluna `interval_ms` de campanhas antigas (sem `pacing`). */
+  private normPacing(raw: any, legacyInterval?: number | null): BroadcastPacing {
+    const p = raw && typeof raw === 'object' ? raw : null;
+    const preset: PacingPreset = p && PRESET_KEYS.includes(p.preset) ? p.preset : p ? 'custom' : legacyInterval ? 'custom' : 'normal';
+    if (preset !== 'custom') {
+      const t = PRESET_TABLE[preset];
+      return { preset, interval_ms: t.interval_ms, jitter_pct: t.jitter_pct, daily_limit: t.daily_limit, pause_every: t.pause_every, pause_minutes: t.pause_minutes, window: t.window ? { ...t.window } : null };
+    }
+    const dl = Number(p?.daily_limit);
+    const start = p?.window?.start, end = p?.window?.end;
+    const window: PacingWindow = HHMM_RE.test(String(start || '')) && HHMM_RE.test(String(end || '')) && start !== end ? { start: String(start), end: String(end) } : null;
+    return {
+      preset,
+      interval_ms: clamp(p?.interval_ms ?? legacyInterval, 1000, 120000, 8000),
+      jitter_pct: clamp(p?.jitter_pct, 0, 80, 30),
+      daily_limit: Number.isFinite(dl) && dl > 0 ? Math.min(5000, Math.round(dl)) : null,
+      pause_every: clamp(p?.pause_every, 0, 1000, 0),
+      pause_minutes: clamp(p?.pause_minutes, 0, 240, 0),
+      window,
+    };
+  }
+
+  private inWindow(w: PacingWindow, now = new Date()) {
+    if (!w) return true;
+    const s = hhmmToMin(w.start), e = hhmmToMin(w.end);
+    if (s === null || e === null || s === e) return true;
+    const n = brtMinuteOfDay(now);
+    return s < e ? n >= s && n < e : n >= s || n < e; // janela que vira a meia-noite
+  }
+  /** Próximo início da janela (hoje se ainda não passou, senão amanhã), em BRT. */
+  private nextWindowStart(w: PacingWindow, now = new Date()) {
+    const s = w ? hhmmToMin(w.start) : null;
+    if (s === null) return now;
+    let at = new Date(brtStartOfToday(now).getTime() + s * 60_000);
+    if (at.getTime() <= now.getTime()) at = new Date(at.getTime() + 86_400_000);
+    return at;
+  }
+  /** Quando um envio PACED pode voltar: início do dia de amanhã (ou da janela de amanhã). */
+  private tomorrowStart(w: PacingWindow) {
+    const t = brtStartOfToday(new Date(Date.now() + 86_400_000));
+    const s = w ? hhmmToMin(w.start) : null;
+    return s === null ? t : new Date(t.getTime() + s * 60_000);
+  }
+  private intervalFor(p: BroadcastPacing) {
+    const j = (p.jitter_pct || 0) / 100;
+    return Math.round(p.interval_ms * (1 + (Math.random() * 2 - 1) * j));
+  }
 
   // ---------------------------------------------------------------- normalização
   private normTargets(raw: any) {
@@ -62,10 +141,14 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const contacts = ['saved', 'all', 'none', 'selected'].includes(t.contacts) ? t.contacts : 'none';
     return {
       contacts,
-      contact_ids: Array.isArray(t.contact_ids) ? t.contact_ids.map(String).slice(0, 5000) : [],
+      contact_ids: Array.isArray(t.contact_ids) ? [...new Set<string>(t.contact_ids.map((x: any) => String(x)))].slice(0, 5000) : [],
       tags: Array.isArray(t.tags) ? t.tags.map((x: any) => String(x).slice(0, 40)).slice(0, 50) : [],
-      groups: Array.isArray(t.groups) ? t.groups.map(String).filter((g: string) => isGroupJid(g)).slice(0, 200) : [],
+      // uuids de conversas de grupo (campanhas antigas podem ter jids `@g.us` — aceitos como legado)
+      groups: Array.isArray(t.groups) ? [...new Set<string>(t.groups.map((g: any) => String(g).trim()).filter((g: string) => UUID_RE.test(g) || /@g\.us$/.test(g)))].slice(0, 200) : [],
     };
+  }
+  private normSessionIds(raw: any): string[] {
+    return Array.isArray(raw) ? [...new Set<string>(raw.map((x: any) => String(x)).filter(Boolean))].slice(0, 50) : [];
   }
   private normTimes(raw: any) {
     if (!Array.isArray(raw)) return [];
@@ -81,55 +164,124 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     })).filter((m: any) => m.text || m.media_id);
   }
 
-  // ---------------------------------------------------------------- audiência
-  async audience(orgId: string, rawTargets: any) {
-    const t = this.normTargets(rawTargets);
-    const where: any = { organization_id: orgId, is_blocked: false, opted_out_at: null }; // LGPD: descadastrados fora da estimativa também
-    const ids = new Set<string>();
-    if (t.contacts === 'all' || t.contacts === 'saved') {
-      const rows = await this.prisma.whatsapp_contacts.findMany({ where: { ...where, ...(t.contacts === 'saved' ? { saved: true } : {}) }, select: { id: true, tags: true } });
-      for (const r of rows) if (!t.tags.length || (Array.isArray(r.tags) && (r.tags as any[]).some((x) => t.tags.includes(String(x))))) ids.add(r.id);
-    }
-    if (t.contact_ids.length) {
-      const sel = await this.prisma.whatsapp_contacts.findMany({ where: { ...where, id: { in: t.contact_ids } }, select: { id: true } });
-      for (const r of sel) ids.add(r.id);
-    }
-    return { contacts: ids.size, groups: t.groups.length, total: ids.size + t.groups.length };
+  /** Números escolhidos (validados contra a org). `strict` = id desconhecido vira 400; senão é ignorado (número apagado depois). */
+  private async chosenSessions(orgId: string, raw: any, strict: boolean): Promise<SessionRow[]> {
+    const ids = this.normSessionIds(raw);
+    const all = await this.sessions.rowsOf(orgId);
+    const found = ids.map((id) => all.find((r) => r.id === id)).filter(Boolean) as SessionRow[];
+    if (strict && found.length !== ids.length) throw new BadRequestException('Um dos números escolhidos não existe nesta organização.');
+    return found;
   }
 
-  private async resolveAudience(orgId: string, rawTargets: any) {
+  // ---------------------------------------------------------------- audiência
+  /** jid pelo qual este NÚMERO fala com o contato (Baileys = telefone@c.us; whatsapp-web.js = @lid quando conhecido). */
+  private jidForSession(s: SessionRow, c: { wa_id: string; phone: string | null; lid: string | null }) {
+    const phoneJid = c.phone ? `${c.phone}@c.us` : null;
+    if (String(s?.engine || 'wwjs') === 'baileys') return phoneJid || (!isLidJid(c.wa_id) && /@c\.us$/.test(c.wa_id) ? c.wa_id : null);
+    if (c.lid && isLidJid(c.lid)) return c.lid;
+    if (/@c\.us$|@lid$/.test(c.wa_id)) return c.wa_id;
+    return phoneJid;
+  }
+
+  /**
+   * Resolve a audiência em alvos `{session_id, chat_id (jid), contact_id, target_kind}`.
+   * `chosen` = números da campanha; `pool` = números que recebem a distribuição round-robin (os conectados no disparo).
+   * Contato com conversa num número do `pool` vai por ele; sem conversa → round-robin. Grupo sai pelo número da conversa do grupo.
+   */
+  private async resolveAudience(orgId: string, rawTargets: any, chosen: SessionRow[], pool: SessionRow[]): Promise<{ targets: Target[]; warnings: string[] }> {
     const t = this.normTargets(rawTargets);
-    const out: Array<{ chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group' }> = [];
+    const chosenIds = chosen.map((r) => r.id);
+    const poolIds = new Set(pool.map((r) => r.id));
     const base: any = { organization_id: orgId, is_blocked: false, opted_out_at: null }; // LGPD: quem pediu PARE não recebe
+    const select = { id: true, wa_id: true, tags: true, phone: true, lid: true };
     const rows: any[] = [];
     if (t.contacts === 'all' || t.contacts === 'saved') {
-      const pool = await this.prisma.whatsapp_contacts.findMany({ where: { ...base, ...(t.contacts === 'saved' ? { saved: true } : {}) }, select: { id: true, wa_id: true, tags: true, phone: true } });
-      for (const r of pool) if (!t.tags.length || (Array.isArray(r.tags) && (r.tags as any[]).some((x) => t.tags.includes(String(x))))) rows.push(r);
+      const all = await this.prisma.whatsapp_contacts.findMany({ where: { ...base, ...(t.contacts === 'saved' ? { saved: true } : {}) }, select });
+      for (const r of all) if (!t.tags.length || (Array.isArray(r.tags) && (r.tags as any[]).some((x) => t.tags.includes(String(x))))) rows.push(r);
     }
-    if (t.contact_ids.length) rows.push(...(await this.prisma.whatsapp_contacts.findMany({ where: { ...base, id: { in: t.contact_ids } }, select: { id: true, wa_id: true, tags: true, phone: true } })));
-    for (const r of rows) {
-      const chatId = r.wa_id.endsWith('@c.us') || r.wa_id.endsWith('@lid') ? r.wa_id : r.phone ? `${r.phone}@c.us` : null;
-      if (chatId) out.push({ chat_id: chatId, contact_id: r.id, target_kind: 'contact' });
-    }
-    for (const g of t.groups) out.push({ chat_id: g, contact_id: null, target_kind: 'group' });
-    // dedupe por chat
+    if (t.contact_ids.length) rows.push(...(await this.prisma.whatsapp_contacts.findMany({ where: { ...base, id: { in: t.contact_ids } }, select })));
+    const contacts = [...new Map(rows.map((r) => [r.id, r] as [string, any])).values()];
+
+    // conversas já existentes desses contatos nos números escolhidos (qualquer forma de jid)
+    const cand = new Set<string>();
+    for (const c of contacts) { cand.add(c.wa_id); if (c.phone) cand.add(`${c.phone}@c.us`); if (c.lid) cand.add(c.lid); }
+    const chats = cand.size && chosenIds.length ? await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: { in: chosenIds }, chat_id: { in: [...cand] }, kind: 'individual' }, select: { session_id: true, chat_id: true } }) : [];
+    const byJid = new Map<string, Array<{ session_id: string; chat_id: string }>>();
+    for (const ch of chats) byJid.set(ch.chat_id, [...(byJid.get(ch.chat_id) || []), ch]);
+
+    const out: Target[] = [];
     const seen = new Set<string>();
-    return out.filter((x) => (seen.has(x.chat_id) ? false : (seen.add(x.chat_id), true)));
+    const push = (x: Target) => { const k = `${x.session_id}|${x.chat_id}`; if (!seen.has(k)) { seen.add(k); out.push(x); } };
+    let rr = 0;
+    for (const c of contacts) {
+      const cands = [c.wa_id, c.phone ? `${c.phone}@c.us` : null, c.lid].filter(Boolean) as string[];
+      const existing = cands.flatMap((j) => byJid.get(j) || []);
+      // conversa num número conectado → vai por ele (não duplica conversa); só num número desconectado → distribui (a campanha precisa sair)
+      const hit = existing.find((e) => poolIds.has(e.session_id));
+      if (hit) { push({ session_id: hit.session_id, chat_id: hit.chat_id, contact_id: c.id, target_kind: 'contact' }); continue; }
+      if (!pool.length) continue;
+      const s = pool[rr++ % pool.length];
+      const jid = this.jidForSession(s, c);
+      if (jid) push({ session_id: s.id, chat_id: jid, contact_id: c.id, target_kind: 'contact' });
+    }
+
+    const warnings: string[] = [];
+    if (t.groups.length) {
+      const uuids = t.groups.filter((g) => UUID_RE.test(g));
+      const jids = t.groups.filter((g) => !UUID_RE.test(g));
+      type GroupRow = { id: string; session_id: string; chat_id: string };
+      const [byUuid, byLegacy]: [GroupRow[], GroupRow[]] = await Promise.all([
+        uuids.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, id: { in: uuids }, kind: 'group' }, select: { id: true, session_id: true, chat_id: true } }) : ([] as GroupRow[]),
+        jids.length && chosenIds.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: { in: chosenIds }, chat_id: { in: jids }, kind: 'group' }, select: { id: true, session_id: true, chat_id: true } }) : ([] as GroupRow[]),
+      ]);
+      for (const g of uuids) { const row = byUuid.find((r) => r.id === g); if (row) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' }); else warnings.push(`Grupo ${g} não encontrado.`); }
+      for (const g of jids) { const rowsG = byLegacy.filter((r) => r.chat_id === g); if (!rowsG.length) warnings.push(`Grupo ${g} não encontrado nos números escolhidos.`); for (const row of rowsG) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' }); }
+    }
+    return { targets: out, warnings };
+  }
+
+  /** Estimativa: `{ contacts, groups, total, by_session:[{session_id,label,color,connected,contacts,groups}] }`. */
+  async audience(orgId: string, rawTargets: any, sessionIds?: string[]) {
+    const all = await this.sessions.rowsOf(orgId);
+    const ids = this.normSessionIds(sessionIds);
+    const chosen = ids.length ? all.filter((r) => ids.includes(r.id)) : all;
+    const ready = chosen.filter(isReady);
+    const pool = ready.length ? ready : chosen; // sem ninguém conectado, estima como se todos estivessem
+    const { targets, warnings } = await this.resolveAudience(orgId, rawTargets, chosen, pool);
+    const stats = new Map<string, { contacts: number; groups: number }>();
+    for (const x of targets) { const s = stats.get(x.session_id) || { contacts: 0, groups: 0 }; if (x.target_kind === 'group') s.groups++; else s.contacts++; stats.set(x.session_id, s); }
+    const rowsFor = [...chosen, ...all.filter((r) => stats.has(r.id) && !chosen.some((c) => c.id === r.id))]; // grupos de números fora da seleção
+    const by_session = rowsFor.map((r) => ({ session_id: r.id, label: sessionLabel(r), color: r.color || null, connected: isReady(r), contacts: stats.get(r.id)?.contacts || 0, groups: stats.get(r.id)?.groups || 0 }));
+    const contacts = targets.filter((x) => x.target_kind === 'contact').length;
+    const groups = targets.length - contacts;
+    return { contacts, groups, total: targets.length, by_session, warnings };
   }
 
   // ---------------------------------------------------------------- CRUD
-  private async shape(b: any, extra: any = {}) {
-    return { id: b.id, name: b.name, targets: this.normTargets(b.targets), times: this.normTimes(b.times), mode: b.mode, delete_used: b.delete_used, active: b.active, interval_ms: b.interval_ms, risk_ack_at: b.risk_ack_at, created_at: b.created_at, ...extra };
+  private shape(b: any, extra: any = {}) {
+    const pacing = this.normPacing(b.pacing, b.interval_ms);
+    return { id: b.id, name: b.name, session_ids: this.normSessionIds(b.session_ids), pacing, targets: this.normTargets(b.targets), times: this.normTimes(b.times), mode: b.mode, delete_used: b.delete_used, active: b.active, interval_ms: pacing.interval_ms, risk_ack_at: b.risk_ack_at, created_at: b.created_at, ...extra };
   }
 
-  async list(orgId: string) {
+  /** Campanhas que tenham ao menos um número em `allowed` (null = todos). */
+  async list(orgId: string, allowed: Set<string> | null = null) {
     const rows = await this.prisma.whatsapp_broadcasts.findMany({ where: { organization_id: orgId }, orderBy: { created_at: 'desc' }, include: { _count: { select: { copies: true } } } });
-    const session = await this.sessions.row(orgId);
-    const warm = session ? await this.pacing.summary({ paired_at: session.paired_at, pacing_enabled: session.pacing_enabled, organization_id: orgId }) : null;
+    const sessRows = await this.sessions.rowsOf(orgId);
+    const smap = await this.presenter.sessionMap(orgId);
+    const warmCache = new Map<string, any>();
+    const warmOf = async (sid: string) => {
+      if (!warmCache.has(sid)) {
+        const r = sessRows.find((x) => x.id === sid);
+        warmCache.set(sid, r ? await this.pacing.summary({ id: r.id, paired_at: r.paired_at, pacing_enabled: r.pacing_enabled, organization_id: orgId }).catch(() => null) : null);
+      }
+      return warmCache.get(sid);
+    };
     const start = brtStartOfToday();
     const nowMin = brtMinuteOfDay();
     const out: any[] = [];
     for (const b of rows) {
+      const sids = this.normSessionIds(b.session_ids);
+      if (allowed && !sids.some((s) => allowed.has(s))) continue;
       const runs = await this.prisma.whatsapp_broadcast_runs.findMany({ where: { broadcast_id: b.id, run_at: { gte: start } }, orderBy: { run_at: 'desc' } });
       const times = this.normTimes(b.times);
       const time_status: Record<string, string> = {};
@@ -141,7 +293,14 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         else if (run.sent > 0) time_status[String(t)] = 'sent_with_errors';
         else time_status[String(t)] = 'failed';
       }
-      out.push(await this.shape(b, { copies_count: b._count.copies, audience: await this.audience(orgId, b.targets), time_status, warmup: warm }));
+      const warmup = (await Promise.all(sids.map(warmOf))).filter(Boolean);
+      out.push(this.shape(b, {
+        copies_count: b._count.copies,
+        sessions: sids.map((s) => smap.get(s)).filter(Boolean),
+        warmup,
+        audience: await this.audience(orgId, b.targets, sids),
+        time_status,
+      }));
     }
     return out;
   }
@@ -151,13 +310,21 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (!name) throw new BadRequestException('Nome é obrigatório.');
     const targets = this.normTargets(dto.targets);
     if (targets.contacts === 'none' && !targets.contact_ids.length && !targets.groups.length) throw new BadRequestException('Escolha ao menos contatos ou grupos.');
-    return { name, targets, times: this.normTimes(dto.times), mode: dto.mode === 'random' ? 'random' : 'sequential', delete_used: Boolean(dto.delete_used), interval_ms: Math.min(120000, Math.max(1000, Number(dto.interval_ms || 4000))) };
+    return { name, targets, times: this.normTimes(dto.times), mode: dto.mode === 'random' ? 'random' : 'sequential', delete_used: Boolean(dto.delete_used) };
   }
 
   async create(orgId: string, dto: any) {
     const v = this.validateInput(dto);
-    if (!dto.risk_ack) throw new BadRequestException('Confirme que entende o risco de restrição do número.');
-    const b = await this.prisma.whatsapp_broadcasts.create({ data: { organization_id: orgId, ...v, active: Boolean(dto.active), risk_ack_at: new Date() } });
+    let sessions = await this.chosenSessions(orgId, dto.session_ids, true);
+    if (!sessions.length) {
+      const all = await this.sessions.rowsOf(orgId);
+      if (all.length === 1) sessions = all; // org com 1 número: assume
+      else throw new BadRequestException('Escolha ao menos um número para disparar.');
+    }
+    const pacing = this.normPacing(dto.pacing, dto.interval_ms);
+    // só o ritmo "Rápido" exige confirmar o risco (os demais já têm pausas/limites)
+    if (pacing.preset === 'fast' && !dto.risk_ack) throw new BadRequestException('O ritmo "Rápido" tem risco ALTO de restrição do número. Confirme que entende o risco.');
+    const b = await this.prisma.whatsapp_broadcasts.create({ data: { organization_id: orgId, ...v, session_ids: sessions.map((s) => s.id), pacing: pacing as any, interval_ms: pacing.interval_ms, active: Boolean(dto.active), risk_ack_at: new Date() } });
     return this.shape(b);
   }
 
@@ -165,7 +332,19 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const b = await this.prisma.whatsapp_broadcasts.findFirst({ where: { id, organization_id: orgId } });
     if (!b) throw new NotFoundException('Broadcast não encontrado.');
     const v = this.validateInput({ ...b, ...dto, targets: dto.targets ?? b.targets, times: dto.times ?? b.times });
-    const upd = await this.prisma.whatsapp_broadcasts.update({ where: { id }, data: { ...v, ...(dto.active !== undefined ? { active: Boolean(dto.active) } : {}), ...(dto.risk_ack ? { risk_ack_at: new Date() } : {}) } });
+    let sessionIds = this.normSessionIds(b.session_ids);
+    if (dto.session_ids !== undefined) {
+      const sessions = await this.chosenSessions(orgId, dto.session_ids, true);
+      if (!sessions.length) throw new BadRequestException('Escolha ao menos um número para disparar.');
+      sessionIds = sessions.map((s) => s.id);
+    }
+    const prev = this.normPacing(b.pacing, b.interval_ms);
+    const pacing = dto.pacing !== undefined ? this.normPacing(dto.pacing) : dto.interval_ms !== undefined ? this.normPacing({ ...prev, preset: 'custom', interval_ms: dto.interval_ms }) : prev;
+    if (pacing.preset === 'fast' && prev.preset !== 'fast' && !dto.risk_ack) throw new BadRequestException('O ritmo "Rápido" tem risco ALTO de restrição do número. Confirme que entende o risco.');
+    const upd = await this.prisma.whatsapp_broadcasts.update({
+      where: { id },
+      data: { ...v, session_ids: sessionIds, pacing: pacing as any, interval_ms: pacing.interval_ms, ...(dto.active !== undefined ? { active: Boolean(dto.active) } : {}), ...(dto.risk_ack ? { risk_ack_at: new Date() } : {}) },
+    });
     return this.shape(upd);
   }
 
@@ -205,6 +384,13 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     return this.getCopies(orgId, id);
   }
 
+  private bySessionOf(run: any): Record<string, SessionStats> {
+    const raw = run?.by_session && typeof run.by_session === 'object' ? run.by_session : {};
+    const out: Record<string, SessionStats> = {};
+    for (const [sid, v] of Object.entries<any>(raw)) out[sid] = { total: Number(v?.total || 0), sent: Number(v?.sent || 0), failed: Number(v?.failed || 0), blocked: Number(v?.blocked || 0), paced: Number(v?.paced || 0), pending: Number(v?.pending || 0) };
+    return out;
+  }
+
   async runs(orgId: string, id: string, q: any = {}) {
     const b = await this.prisma.whatsapp_broadcasts.findFirst({ where: { id, organization_id: orgId } });
     if (!b) throw new NotFoundException('Broadcast não encontrado.');
@@ -218,11 +404,18 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (q.status === 'clean') { where.status = 'done'; where.failed = 0; where.blocked = 0; }
     if (q.status === 'errors') where.OR = [{ failed: { gt: 0 } }, { blocked: { gt: 0 } }];
     const [total, rows] = await Promise.all([this.prisma.whatsapp_broadcast_runs.count({ where }), this.prisma.whatsapp_broadcast_runs.findMany({ where, orderBy: { run_at: 'desc' }, skip: (page - 1) * size, take: size })]);
+    const smap = await this.presenter.sessionMap(orgId);
     const items: any[] = [];
     for (const r of rows) {
-      const paced = await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: r.id, status: 'PACED' } });
-      const pending = await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: r.id, status: 'PENDING' } });
-      items.push({ id: r.id, run_at: r.run_at, total: r.total, sent: r.sent, failed: r.failed, blocked: r.blocked, paced, pending, status: r.status, finished_at: r.finished_at });
+      const by = this.bySessionOf(r);
+      const sum = (k: keyof SessionStats) => Object.values(by).reduce((a, s) => a + s[k], 0);
+      const hasBy = Object.keys(by).length > 0;
+      const paced = hasBy ? sum('paced') : await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: r.id, status: 'PACED' } });
+      const pending = hasBy ? sum('pending') : await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: r.id, status: 'PENDING' } });
+      items.push({
+        id: r.id, run_at: r.run_at, total: r.total, sent: r.sent, failed: r.failed, blocked: r.blocked, paced, pending, status: r.status, finished_at: r.finished_at,
+        by_session: Object.entries(by).map(([sid, s]) => ({ session_id: sid, session: smap.get(sid) || null, ...s })),
+      });
     }
     return { items, total, page, pages: Math.max(1, Math.ceil(total / size)) };
   }
@@ -234,16 +427,24 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const size = Math.min(200, Math.max(10, parseInt(String(q.page_size || 50), 10) || 50));
     const where: any = { run_id: runId };
     if (q.status && q.status !== 'all') where.status = String(q.status).toUpperCase();
+    if (q.session_id) where.session_id = String(q.session_id);
     const [total, rows] = await Promise.all([this.prisma.whatsapp_broadcast_sends.count({ where }), this.prisma.whatsapp_broadcast_sends.findMany({ where, orderBy: { created_at: 'asc' }, skip: (page - 1) * size, take: size })]);
-    const chatIds = rows.map((r) => r.chat_id);
-    const [contacts, chats] = await Promise.all([
-      this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { in: chatIds } }, select: { wa_id: true, name: true, push_name: true, phone: true } }),
-      this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, chat_id: { in: chatIds } }, select: { chat_id: true, name: true } }),
+    const jids = [...new Set(rows.map((r) => r.chat_id))];
+    const sids = [...new Set(rows.map((r) => r.session_id).filter(Boolean))] as string[];
+    const [contacts, chats, smap] = await Promise.all([
+      jids.length ? this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ wa_id: { in: jids } }, { lid: { in: jids } }] }, select: { wa_id: true, lid: true, name: true, push_name: true, phone: true } }) : [],
+      jids.length && sids.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: { in: sids }, chat_id: { in: jids } }, select: { id: true, session_id: true, chat_id: true, name: true } }) : [],
+      this.presenter.sessionMap(orgId),
     ]);
-    const cmap = new Map(contacts.map((c) => [c.wa_id, c] as [string, any]));
-    const gmap = new Map(chats.map((c) => [c.chat_id, c] as [string, any]));
+    const cmap = new Map<string, any>();
+    for (const c of contacts) { cmap.set(c.wa_id, c); if (c.lid) cmap.set(c.lid, c); }
+    const chmap = new Map(chats.map((c) => [`${c.session_id}|${c.chat_id}`, c] as [string, any]));
     return {
-      items: rows.map((r) => ({ id: r.id, chat_id: r.chat_id, target_kind: r.target_kind, name: cmap.get(r.chat_id)?.name || cmap.get(r.chat_id)?.push_name || gmap.get(r.chat_id)?.name || (phoneFromJid(r.chat_id) ? `+${phoneFromJid(r.chat_id)}` : r.chat_id), status: r.status, attempts: r.attempts, last_error: r.last_error, sent_at: r.sent_at })),
+      items: rows.map((r) => {
+        const ch = r.session_id ? chmap.get(`${r.session_id}|${r.chat_id}`) : null;
+        const c = cmap.get(r.chat_id);
+        return { id: r.id, chat_id: ch?.id || null, jid: r.chat_id, session_id: r.session_id, session: (r.session_id && smap.get(r.session_id)) || null, target_kind: r.target_kind, name: c?.name || c?.push_name || ch?.name || (phoneFromJid(r.chat_id) ? `+${phoneFromJid(r.chat_id)}` : r.chat_id), status: r.status, attempts: r.attempts, last_error: r.last_error, sent_at: r.sent_at };
+      }),
       total, page, pages: Math.max(1, Math.ceil(total / size)),
     };
   }
@@ -258,33 +459,47 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   async fire(orgId: string, id: string, runAt = new Date()) {
     const b = await this.prisma.whatsapp_broadcasts.findFirst({ where: { id, organization_id: orgId } });
     if (!b) throw new NotFoundException('Broadcast não encontrado.');
-    const session = await this.sessions.row(orgId);
-    if (!session?.openwa_session_id || session.status !== 'ready') throw new BadRequestException('Conecte o WhatsApp antes de disparar.');
+    const chosen = await this.chosenSessions(orgId, b.session_ids, false);
+    if (!chosen.length) throw new BadRequestException('A campanha não tem nenhum número válido. Edite e escolha os números.');
+    const ready = chosen.filter(isReady);
+    if (!ready.length) throw new BadRequestException('Conecte ao menos um dos números da campanha antes de disparar.');
     const copies = await this.prisma.whatsapp_broadcast_copies.findMany({ where: { broadcast_id: id }, orderBy: { position: 'asc' } });
     const copy = this.pickCopy(b, copies);
     if (!copy) throw new BadRequestException('Cadastre ao menos uma copy antes de disparar.');
-    const audience = await this.resolveAudience(orgId, b.targets);
-    if (!audience.length) throw new BadRequestException('Audiência vazia.');
+    const { targets, warnings } = await this.resolveAudience(orgId, b.targets, chosen, ready);
+    if (!targets.length) throw new BadRequestException('Audiência vazia.');
+    const pacing = this.normPacing(b.pacing, b.interval_ms);
+    const firstAt = pacing.window && !this.inWindow(pacing.window) ? this.nextWindowStart(pacing.window) : new Date();
+    const by_session: Record<string, SessionStats> = {};
+    for (const t of targets) {
+      const s = by_session[t.session_id] || (by_session[t.session_id] = { total: 0, sent: 0, failed: 0, blocked: 0, paced: 0, pending: 0 });
+      s.total++; s.pending++;
+    }
     let run: any;
     try {
-      run = await this.prisma.whatsapp_broadcast_runs.create({ data: { broadcast_id: id, organization_id: orgId, run_at: runAt, copy_id: copy.id, messages: copy.messages as any, total: audience.length, status: 'running' } });
+      run = await this.prisma.whatsapp_broadcast_runs.create({ data: { broadcast_id: id, organization_id: orgId, run_at: runAt, copy_id: copy.id, messages: copy.messages as any, by_session: by_session as any, total: targets.length, status: 'running' } });
     } catch (e: any) {
       if (e?.code === 'P2002') throw new BadRequestException('Já existe um disparo neste minuto.');
       throw e;
     }
-    for (let i = 0; i < audience.length; i += 500) {
-      await this.prisma.whatsapp_broadcast_sends.createMany({ data: audience.slice(i, i + 500).map((a) => ({ organization_id: orgId, broadcast_id: id, run_id: run.id, target_kind: a.target_kind, chat_id: a.chat_id, contact_id: a.contact_id, status: 'PENDING', next_at: new Date() })) });
+    for (let i = 0; i < targets.length; i += 500) {
+      await this.prisma.whatsapp_broadcast_sends.createMany({ data: targets.slice(i, i + 500).map((a) => ({ organization_id: orgId, session_id: a.session_id, broadcast_id: id, run_id: run.id, target_kind: a.target_kind, chat_id: a.chat_id, contact_id: a.contact_id, status: 'PENDING', next_at: firstAt })) });
     }
-    const data: any = { last_copy_index: (b.last_copy_index + 1) % Math.max(1, copies.length) };
-    await this.prisma.whatsapp_broadcasts.update({ where: { id }, data });
+    await this.prisma.whatsapp_broadcasts.update({ where: { id }, data: { last_copy_index: (b.last_copy_index + 1) % Math.max(1, copies.length) } });
     if (b.delete_used) await this.prisma.whatsapp_broadcast_copies.delete({ where: { id: copy.id } }).catch(() => undefined);
-    this.logger.log(`Broadcast ${b.name} disparado: ${audience.length} destinos (org=${orgId})`);
-    return { run_id: run.id, total: audience.length };
+    const offline = Object.keys(by_session).filter((sid) => !ready.some((r) => r.id === sid));
+    if (offline.length) this.logger.warn(`Broadcast ${b.name}: ${offline.length} número(s) desconectado(s) com grupos na fila — ficam PENDING até reconectar`);
+    this.logger.log(`Broadcast ${b.name} disparado: ${targets.length} destinos em ${Object.keys(by_session).length} número(s) (org=${orgId})`);
+    return { run_id: run.id, total: targets.length, by_session: Object.entries(by_session).map(([session_id, s]) => ({ session_id, total: s.total })), warnings, first_at: firstAt };
   }
 
-  // dispatcher: horários diários
+  // dispatcher: horários diários + reabre PACED vencidos (limite do dia → volta amanhã)
   @Cron(CronExpression.EVERY_MINUTE)
   async dispatch() {
+    try {
+      const reopened = await this.prisma.whatsapp_broadcast_sends.updateMany({ where: { status: 'PACED', next_at: { lte: new Date() } }, data: { status: 'PENDING' } });
+      if (reopened.count) this.logger.log(`${reopened.count} envio(s) PACED voltaram para a fila`);
+    } catch (e: any) { this.logger.debug(`reopen paced: ${e?.message || e}`); }
     const nowMin = brtMinuteOfDay();
     const active = await this.prisma.whatsapp_broadcasts.findMany({ where: { active: true } });
     for (const b of active) {
@@ -305,12 +520,13 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     while (!this.stopped) {
       let did = false;
       try {
-        const orgs = await this.prisma.whatsapp_broadcast_sends.groupBy({ by: ['organization_id'], where: { status: 'PENDING', next_at: { lte: new Date() } } });
-        for (const o of orgs) {
-          if (this.busyOrgs.has(o.organization_id)) continue;
-          this.busyOrgs.add(o.organization_id);
+        const groups = await this.prisma.whatsapp_broadcast_sends.groupBy({ by: ['organization_id', 'session_id'], where: { status: 'PENDING', next_at: { lte: new Date() }, session_id: { not: null } } });
+        for (const g of groups) {
+          const sid = g.session_id as string;
+          if (!sid || this.busySessions.has(sid)) continue;
+          this.busySessions.add(sid);
           did = true;
-          this.processOrg(o.organization_id).catch((e) => this.logger.warn(`org ${o.organization_id}: ${e?.message || e}`)).finally(() => this.busyOrgs.delete(o.organization_id));
+          this.processSession(g.organization_id, sid).catch((e) => this.logger.warn(`número ${sid}: ${e?.message || e}`)).finally(() => this.busySessions.delete(sid));
         }
       } catch (e: any) {
         this.logger.warn(`loop: ${e?.message || e}`);
@@ -319,87 +535,111 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     }
   }
 
-  // 1 envio por vez por org, respeitando intervalo do broadcast e aquecimento.
-  private async processOrg(orgId: string) {
-    const session = await this.sessions.row(orgId);
-    if (!session?.openwa_session_id || session.status !== 'ready') return;
+  // 1 envio por vez por NÚMERO, respeitando ritmo da campanha (intervalo/jitter/janela/pausas/limite) e aquecimento do número.
+  private async processSession(orgId: string, sessionId: string) {
+    const row = await this.sessions.rowById(orgId, sessionId);
+    if (!row?.openwa_session_id || row.status !== 'ready') return;
     if (!(await this.access.isOrgActive(orgId))) return;
+    const pacingRow = { id: row.id, paired_at: row.paired_at, pacing_enabled: row.pacing_enabled, organization_id: orgId };
+    const runCache = new Map<string, any>();
+    const bcCache = new Map<string, any>();
     for (let i = 0; i < 20; i++) {
-      const send = await this.prisma.whatsapp_broadcast_sends.findFirst({ where: { organization_id: orgId, status: 'PENDING', next_at: { lte: new Date() } }, orderBy: { created_at: 'asc' } });
+      const send = await this.prisma.whatsapp_broadcast_sends.findFirst({ where: { organization_id: orgId, session_id: sessionId, status: 'PENDING', next_at: { lte: new Date() } }, orderBy: { created_at: 'asc' } });
       if (!send) return;
-      const run = await this.prisma.whatsapp_broadcast_runs.findUnique({ where: { id: send.run_id } });
-      const bc = await this.prisma.whatsapp_broadcasts.findUnique({ where: { id: send.broadcast_id } });
+      if (!runCache.has(send.run_id)) runCache.set(send.run_id, await this.prisma.whatsapp_broadcast_runs.findUnique({ where: { id: send.run_id } }));
+      if (!bcCache.has(send.broadcast_id)) bcCache.set(send.broadcast_id, await this.prisma.whatsapp_broadcasts.findUnique({ where: { id: send.broadcast_id } }));
+      const run = runCache.get(send.run_id);
+      const bc = bcCache.get(send.broadcast_id);
       if (!run || !bc) { await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { status: 'FAILED', last_error: 'broadcast removido' } }); continue; }
-      // aquecimento
-      const can = await this.pacing.canSend({ paired_at: session.paired_at, pacing_enabled: session.pacing_enabled, organization_id: orgId }, send.chat_id);
-      if (!can.ok) {
-        const tomorrow = brtStartOfToday(new Date(Date.now() + 86_400_000));
-        await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { status: 'PACED', next_at: tomorrow, last_error: can.reason || null } });
+      const pc = this.normPacing(bc.pacing, bc.interval_ms);
+      // janela de horário: fora dela, tudo deste número/run espera o próximo início
+      if (pc.window && !this.inWindow(pc.window)) {
+        const at = this.nextWindowStart(pc.window);
+        await this.prisma.whatsapp_broadcast_sends.updateMany({ where: { run_id: run.id, session_id: sessionId, status: 'PENDING' }, data: { next_at: at } });
         await this.reconcile(run.id);
         continue;
       }
-      await this.sendOne(session, send, run, bc);
+      // aquecimento do número + limite diário da campanha
+      const can = await this.pacing.canSend(pacingRow, send.chat_id, pc.daily_limit);
+      if (!can.ok) {
+        await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { status: 'PACED', next_at: this.tomorrowStart(pc.window), last_error: can.reason || null } });
+        await this.reconcile(run.id);
+        continue;
+      }
+      const status = await this.sendOne(row, send, run, bc);
       await this.reconcile(run.id);
-      await sleep(Math.min(120000, Math.max(1000, bc.interval_ms || 4000)) * (0.8 + Math.random() * 0.4));
+      // pausa a cada N envios concluídos deste número nesta run
+      if (status === 'DONE' && pc.pause_every > 0 && pc.pause_minutes > 0) {
+        const done = await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: run.id, session_id: sessionId, status: 'DONE' } });
+        if (done > 0 && done % pc.pause_every === 0) {
+          const at = new Date(Date.now() + pc.pause_minutes * 60_000);
+          const r = await this.prisma.whatsapp_broadcast_sends.updateMany({ where: { run_id: run.id, session_id: sessionId, status: 'PENDING' }, data: { next_at: at } });
+          if (r.count) this.logger.log(`Broadcast ${bc.name} · ${sessionLabel(row)}: pausa de ${pc.pause_minutes} min após ${done} envios (${r.count} na fila)`);
+          return;
+        }
+      }
+      await sleep(this.intervalFor(pc));
     }
   }
 
-  private async sendOne(session: any, send: any, run: any, bc: any) {
+  private async sendOne(row: SessionRow, send: any, run: any, bc: any): Promise<'DONE' | 'PENDING' | 'BLOCKED' | 'FAILED'> {
+    const orgId = row.organization_id as string;
     const msgs = this.normMessages(run.messages);
     const contact = send.contact_id ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: send.contact_id } }) : null;
     const vars: Record<string, string> = { nome: contact?.name || contact?.push_name || '', name: contact?.name || contact?.push_name || '', telefone: contact?.phone || phoneFromJid(send.chat_id), phone: contact?.phone || phoneFromJid(send.chat_id) };
-    if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(session.organization_id, send.chat_id));
+    if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(orgId, send.chat_id, row.id).catch(() => ({})));
+    const extra = { broadcast: true, broadcast_id: bc.id, run_id: run.id };
     let idx = send.msg_index || 0;
     try {
       for (; idx < msgs.length; idx++) {
         const m = msgs[idx];
-        if (m.delay_seconds) { await this.openwa.typing(session.openwa_session_id, send.chat_id, 'typing').catch(() => undefined); await sleep(Math.min(60, m.delay_seconds) * 1000); }
+        if (m.delay_seconds) { await this.openwa.typing(row.openwa_session_id, send.chat_id, 'typing').catch(() => undefined); await sleep(Math.min(60, m.delay_seconds) * 1000); }
         const text = fillVars(m.text, vars);
-        let r: any;
         if (m.media_id) {
-          const media = await this.media.readBase64(session.organization_id, m.media_id);
+          const media = await this.media.readBase64(orgId, m.media_id);
           const kind = media.kind === 'voice' || media.kind === 'audio' ? 'audio' : media.kind === 'image' ? 'image' : media.kind === 'video' ? 'video' : 'document';
-          r = await this.openwa.sendMedia(session.openwa_session_id, kind as any, send.chat_id, { base64: media.base64, mimetype: media.mime, filename: media.filename || undefined, caption: text || undefined, ...(media.kind === 'voice' ? { ptt: true } : {}) });
-          await this.recordOut(session.organization_id, send.chat_id, r, media.kind === 'voice' ? 'voice' : kind, text || null, m.media_id);
+          const r = await this.openwa.sendMedia(row.openwa_session_id, kind as any, send.chat_id, { base64: media.base64, mimetype: media.mime, filename: media.filename || undefined, caption: text || undefined, ...(media.kind === 'voice' ? { ptt: true } : {}) });
+          await this.chat.recordOut(row, send.chat_id, r as any, { type: media.kind === 'voice' ? 'voice' : kind, body: text || null, media_id: m.media_id, extra });
         } else {
-          r = await this.openwa.sendText(session.openwa_session_id, send.chat_id, text);
-          await this.recordOut(session.organization_id, send.chat_id, r, 'text', text, null);
+          const r = await this.openwa.sendText(row.openwa_session_id, send.chat_id, text);
+          await this.chat.recordOut(row, send.chat_id, r as any, { type: 'text', body: text, media_id: null, extra });
         }
         await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { msg_index: idx + 1 } });
       }
       await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { status: 'DONE', sent_at: new Date(), attempts: send.attempts + 1, last_error: null } });
+      return 'DONE';
     } catch (e: any) {
       const attempts = send.attempts + 1;
       const msg = (e instanceof OpenWaError ? `${e.code}: ${e.message}` : String(e?.message || e)).slice(0, 500);
       if (e instanceof OpenWaError && e.status === 429) {
         // pacing do gateway (se ligado) → espera e mantém PENDING
         await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { next_at: new Date(Date.now() + (e.retryAfterSeconds || 300) * 1000), last_error: msg } });
-        return;
+        return 'PENDING';
       }
       if (e instanceof OpenWaError && (e.status === 403 || /blocked|not.?found|invalid.*(number|jid)/i.test(msg))) {
         await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: { status: 'BLOCKED', attempts, last_error: msg } });
-        return;
+        return 'BLOCKED';
       }
-      await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: attempts >= MAX_ATTEMPTS ? { status: 'FAILED', attempts, last_error: msg } : { attempts, last_error: msg, next_at: new Date(Date.now() + 60_000 * attempts) } });
+      const final = attempts >= MAX_ATTEMPTS;
+      await this.prisma.whatsapp_broadcast_sends.update({ where: { id: send.id }, data: final ? { status: 'FAILED', attempts, last_error: msg } : { attempts, last_error: msg, next_at: new Date(Date.now() + 60_000 * attempts) } });
+      return final ? 'FAILED' : 'PENDING';
     }
   }
 
-  private async recordOut(orgId: string, chatId: string, r: any, type: string, body: string | null, mediaId: string | null) {
-    const at = r?.timestamp ? new Date(Number(r.timestamp) * 1000) : new Date();
-    const waId = String(r?.messageId || `bc_${Date.now()}_${Math.random().toString(36).slice(2)}`);
-    await this.prisma.whatsapp_messages
-      .create({ data: { organization_id: orgId, chat_id: chatId, wa_message_id: waId, direction: 'OUT', type, body, media_id: mediaId, ack: 1, timestamp: at, extra: { broadcast: true } } })
-      .catch(async (e: any) => {
-        if (e?.code === 'P2002') await this.prisma.whatsapp_messages.update({ where: { organization_id_wa_message_id: { organization_id: orgId, wa_message_id: waId } }, data: { extra: { broadcast: true } } }).catch(() => undefined);
-      });
-    await this.inbound.bumpChat(orgId, chatId, { type, body, direction: 'OUT', at });
-    this.presenter.message(orgId, { waId });
-  }
-
-  private async reconcile(runId: string) {
-    const g = await this.prisma.whatsapp_broadcast_sends.groupBy({ by: ['status'], where: { run_id: runId }, _count: { _all: true } });
-    const n = (s: string) => g.find((x) => x.status === s)?._count._all || 0;
-    const open = n('PENDING') + n('PACED');
-    await this.prisma.whatsapp_broadcast_runs.update({ where: { id: runId }, data: { sent: n('DONE'), failed: n('FAILED'), blocked: n('BLOCKED'), status: open ? 'running' : 'done', ...(open ? {} : { finished_at: new Date() }) } });
+  /** Recalcula totais da run e o detalhe por número (`by_session`). */
+  async reconcile(runId: string) {
+    const g = await this.prisma.whatsapp_broadcast_sends.groupBy({ by: ['session_id', 'status'], where: { run_id: runId }, _count: { _all: true } });
+    const by: Record<string, SessionStats> = {};
+    const tot: SessionStats = { total: 0, sent: 0, failed: 0, blocked: 0, paced: 0, pending: 0 };
+    for (const x of g) {
+      const sid = x.session_id || 'unknown';
+      const s = by[sid] || (by[sid] = { total: 0, sent: 0, failed: 0, blocked: 0, paced: 0, pending: 0 });
+      const n = x._count._all;
+      const key: keyof SessionStats | null = x.status === 'DONE' ? 'sent' : x.status === 'FAILED' ? 'failed' : x.status === 'BLOCKED' ? 'blocked' : x.status === 'PACED' ? 'paced' : x.status === 'PENDING' ? 'pending' : null;
+      s.total += n; tot.total += n;
+      if (key) { s[key] += n; tot[key] += n; }
+    }
+    const open = tot.pending + tot.paced;
+    await this.prisma.whatsapp_broadcast_runs.update({ where: { id: runId }, data: { sent: tot.sent, failed: tot.failed, blocked: tot.blocked, by_session: by as any, status: open ? 'running' : 'done', ...(open ? {} : { finished_at: new Date() }) } });
   }
 }

@@ -4,14 +4,15 @@ import { AccessService } from '../platform-billing/access.service';
 import { OpenWaClient } from './openwa.client';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
+import { WhatsAppContactsService } from './whatsapp-contacts.service';
 import { normJid, phoneFromJid } from './wa-jid.util';
 
-// Sincroniza "lidas/não lidas" e as marcações (arquivada, fixada, silenciada) com o celular.
-// O OpenWA não avisa quando o usuário lê uma conversa no celular, então conferimos a lista
-// de conversas do gateway (unreadCount é a verdade dele):
+// Sincroniza "lidas/não lidas" e as marcações (arquivada, fixada, silenciada) com o celular,
+// NÚMERO A NÚMERO. O OpenWA não avisa quando o usuário lê uma conversa no celular, então
+// conferimos a lista de conversas do gateway (unreadCount é a verdade dele no whatsapp-web.js):
 //   - a cada 20 s quando alguém da org está com o painel aberto (WebSocket conectado);
 //   - a cada 3 min quando ninguém está olhando.
-// Só grava e emite o que mudou. Conversa individual é casada pelo id canônico (@lid).
+// Só grava e emite o que mudou. Conversa individual é casada pelo id canônico do motor.
 const FAST_MS = 20_000;
 const SLOW_MS = 180_000;
 
@@ -20,7 +21,7 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsAppChatSyncRunner.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private readonly lastRun = new Map<string, number>();
+  private readonly lastRun = new Map<string, number>(); // por número
 
   constructor(
     private readonly prisma: PrismaService,
@@ -28,21 +29,23 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
     private readonly access: AccessService,
     private readonly presenter: WhatsAppPresenter,
     private readonly inbound: WhatsAppInboundService,
+    private readonly contacts: WhatsAppContactsService,
   ) {}
+  private readonly lastResolve = new Map<string, number>();
 
   // Baileys: as não lidas do gateway não servem (ver inbound.recomputeUnread). Na 1ª passada
-  // de cada org neste processo, recalcula as conversas que estão marcadas com não lidas.
+  // de cada número neste processo, recalcula as conversas que estão marcadas com não lidas.
   private readonly recomputed = new Set<string>();
-  private async recomputeAll(orgId: string) {
-    if (this.recomputed.has(orgId)) return;
-    this.recomputed.add(orgId);
-    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, unread_count: { gt: 0 } }, select: { chat_id: true } });
+  private async recomputeAll(orgId: string, sessionId: string) {
+    if (this.recomputed.has(sessionId)) return;
+    this.recomputed.add(sessionId);
+    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: sessionId, unread_count: { gt: 0 } }, select: { chat_id: true } });
     let fixed = 0;
     for (const c of chats) {
-      const n = await this.inbound.recomputeUnread(orgId, c.chat_id).catch(() => -1);
+      const n = await this.inbound.recomputeUnread(orgId, sessionId, c.chat_id).catch(() => -1);
       if (n === 0) fixed++;
     }
-    if (chats.length) this.logger.log(`não lidas recalculadas org=${orgId}: ${chats.length} conversas, ${fixed} zeradas`);
+    if (chats.length) this.logger.log(`não lidas recalculadas número=${sessionId}: ${chats.length} conversas, ${fixed} zeradas`);
   }
 
   onModuleInit() {
@@ -61,25 +64,32 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
       const now = Date.now();
       for (const row of rows) {
         const every = this.presenter.watching(row.organization_id) ? FAST_MS : SLOW_MS;
-        if (now - (this.lastRun.get(row.organization_id) || 0) < every) continue;
-        this.lastRun.set(row.organization_id, now);
+        if (now - (this.lastRun.get(row.id) || 0) < every) continue;
+        this.lastRun.set(row.id, now);
         if (!(await this.access.isOrgActive(row.organization_id).catch(() => false))) continue;
-        await this.syncOrg(row).catch((e) => this.logger.debug(`chat-sync org=${row.organization_id}: ${e?.message || e}`));
+        await this.syncRow(row).catch((e) => this.logger.debug(`chat-sync número=${row.id}: ${e?.message || e}`));
       }
     } finally {
       this.running = false;
     }
   }
 
-  async syncOrg(row: any) {
+  async syncRow(row: any) {
     const orgId = row.organization_id as string;
+    const sessionId = row.id as string;
     const localUnread = row.engine === 'baileys';
-    if (localUnread) await this.recomputeAll(orgId);
+    if (localUnread) await this.recomputeAll(orgId, sessionId);
     this.openwa.remember(row.openwa_session_id, row.engine);
     const list: any[] = await this.openwa.listChats(row.openwa_session_id, 1000, 0);
     if (!Array.isArray(list) || !list.length) return { changed: 0 };
-    // telefone → @lid (as conversas individuais ficam guardadas pelo @lid)
-    const lids = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });
+    // Baileys: @lid soltos (histórico antigo) são unificados com a conversa do telefone (1ª passada e a cada 10 min)
+    if (localUnread && Date.now() - (this.lastResolve.get(sessionId) || 0) > 10 * 60_000) {
+      this.lastResolve.set(sessionId, Date.now());
+      const r = await this.contacts.resolveLids(orgId, row).catch(() => ({ merged: 0, pending: 0 }));
+      if (r.merged) this.presenter.sync(orgId, { session_id: sessionId, kind: 'chats' });
+    }
+    // telefone → @lid só no whatsapp-web.js (lá as conversas individuais ficam pelo @lid); no Baileys o canônico é o telefone
+    const lids = localUnread ? [] : await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });
     const lidByPhone = new Map(lids.map((c) => [String(c.phone), String(c.lid)] as [string, string]));
     const wanted = new Map<string, { unread: number; archived: boolean; pinned: boolean; muted: boolean }>();
     for (const c of list) {
@@ -97,7 +107,7 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
       });
     }
     const ours = await this.prisma.whatsapp_chats.findMany({
-      where: { organization_id: orgId, chat_id: { in: [...wanted.keys()] } },
+      where: { organization_id: orgId, session_id: sessionId, chat_id: { in: [...wanted.keys()] } },
       select: { id: true, chat_id: true, unread_count: true, archived: true, pinned: true, muted: true, last_message_at: true, flag_overrides: true },
     });
     let changed = 0;
@@ -124,7 +134,7 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
       if (ovChanged) data.flag_overrides = ov;
       if (Object.keys(data).length) {
         await this.prisma.whatsapp_chats.update({ where: { id: c.id }, data });
-        this.presenter.chat(orgId, c.chat_id);
+        this.presenter.chat(orgId, sessionId, c.chat_id);
         changed++;
       }
     }

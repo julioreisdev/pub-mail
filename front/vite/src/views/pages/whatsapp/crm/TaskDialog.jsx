@@ -12,13 +12,14 @@ import { IconCheck, IconTrash } from '@tabler/icons-react';
 import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { TgConfirmDialog, TgModal } from 'views/pages/telegram/ui';
-import { brtLocalNow, brtLocalToIso, isoToBrtLocal } from '../waKit';
+import { WaNumberChip, brtLocalNow, brtLocalToIso, isoToBrtLocal } from '../waKit';
 import { errMsg } from '../waShared';
 import { waPrimaryBtn } from './crmKit';
 
 // ============================================================================
 // Criar/editar tarefa (usada na página Tarefas e no painel da conversa).
-// `chat` fixa a conversa; `task` = edição.
+// `chat` fixa a conversa (`chat.chat_id` = uuid da conversa, `chat.session` = número);
+// `task` = edição.
 // ============================================================================
 
 const QUICK = [
@@ -102,11 +103,14 @@ export default function TaskDialog({ open, onClose, task, chat, customerId, onSa
         onClose={() => !busy && onClose?.()}
         title={task ? 'Editar tarefa' : 'Nova tarefa'}
         subtitle={
-          chat
-            ? `Conversa: ${chat.name || chat.phone || chat.chat_id}`
-            : task?.chat?.name
-              ? `Conversa: ${task.chat.name}`
-              : 'Lembrete interno da equipe (nada é enviado ao cliente)'
+          chat || task?.chat ? (
+            <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex' }}>
+              <span>Conversa: {chat ? chat.name || chat.phone || 'sem nome' : task.chat.name || task.chat.phone || 'sem nome'}</span>
+              {(chat || task.chat)?.session ? <WaNumberChip session={(chat || task.chat).session} /> : null}
+            </Stack>
+          ) : (
+            'Lembrete interno da equipe (nada é enviado ao cliente)'
+          )
         }
         maxWidth="sm"
         disableClose={busy}

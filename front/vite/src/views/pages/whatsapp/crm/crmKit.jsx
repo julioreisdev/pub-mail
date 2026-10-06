@@ -1,12 +1,18 @@
+import { useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import InputAdornment from '@mui/material/InputAdornment';
+import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { IconAlertTriangle, IconCircleCheck, IconCircleDashed, IconUserOff } from '@tabler/icons-react';
 
 import { TgCard } from 'views/pages/telegram/ui';
 import { WA_DARK, WA_GREEN, tint } from '../waShared';
+import { WaNumberChip, WaNumberSelect, sessionLabel } from '../waKit';
 
 // ============================================================================
 // Kit do CRM do WhatsApp (Produtos, Clientes, painel "Cliente" no chat):
@@ -157,3 +163,94 @@ export function CrmKpi({ icon: Icon, label, value, accent, hint }) {
 }
 
 export const waPrimaryBtn = { fontWeight: 700, textTransform: 'none', borderRadius: 2, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } };
+
+// ----------------------------------------------------------------------------
+// Multi-número (CRM): filtro "Número" persistido em ?session=, chips e links.
+// A conversa é sempre identificada pelo uuid (`chat_id`); o jid fica em `jid`.
+// ----------------------------------------------------------------------------
+
+/** URL da conversa no Chat (`chat_id` = uuid da conversa). */
+export const chatUrl = (chatId) => `/whatsapp/chat?chat=${encodeURIComponent(chatId)}`;
+
+/**
+ * Filtro por número persistido na URL (`?session=<id>`; vazio = todos).
+ * Só vale um id que exista na lista (`sessions`); id desconhecido conta como "todos".
+ * Devolve { value, set, multi } — `multi` = a org tem mais de um número (quando mostrar filtro/chips).
+ */
+export function useSessionFilter(sessions = []) {
+  const [params, setParams] = useSearchParams();
+  const raw = params.get('session') || '';
+  const value = useMemo(() => (raw && sessions.some((s) => s.id === raw) ? raw : ''), [raw, sessions]);
+  const set = useCallback(
+    (id) =>
+      setParams(
+        (prev) => {
+          const n = new URLSearchParams(prev);
+          if (id) n.set('session', id);
+          else n.delete('session');
+          return n;
+        },
+        { replace: true }
+      ),
+    [setParams]
+  );
+  return { value, set, multi: sessions.length > 1 };
+}
+
+/** Select "Número" com "Todos os números" — só aparece quando a org tem mais de um número. */
+export function WaNumberFilter({ sessions = [], value, onChange, label = 'Número', sx, size = 'small' }) {
+  if (sessions.length < 2) return null;
+  return (
+    <WaNumberSelect
+      sessions={sessions}
+      value={value}
+      onChange={onChange}
+      allowAll
+      label={label}
+      size={size}
+      fullWidth={false}
+      sx={{ minWidth: 200, ...sx }}
+    />
+  );
+}
+
+/**
+ * Chips dos números em que o cliente tem conversa (`customer.chats[]`, mais recente primeiro).
+ * Mostra até `max` + "+N". `onPick(chat)` torna cada chip clicável (abrir a conversa daquele número).
+ */
+export function CustomerNumberChips({ chats = [], byId, max = 3, onPick, size = 'small', sx }) {
+  const list = (chats || []).filter((c) => c?.session_id);
+  if (!list.length) return null;
+  const shown = list.slice(0, max);
+  const rest = list.length - shown.length;
+  const sessionOf = (c) => c.session || byId?.get?.(c.session_id) || { id: c.session_id, label: 'Número' };
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={sx}>
+      {shown.map((c) => (
+        <WaNumberChip
+          key={c.chat_id || c.session_id}
+          session={sessionOf(c)}
+          size={size}
+          onClick={
+            onPick
+              ? (e) => {
+                  e.stopPropagation();
+                  onPick(c);
+                }
+              : undefined
+          }
+        />
+      ))}
+      {rest > 0 ? (
+        <Tooltip
+          title={list
+            .slice(max)
+            .map((c) => sessionLabel(sessionOf(c)))
+            .join(', ')}
+        >
+          <Chip size="small" label={`+${rest}`} sx={{ height: 20, fontSize: 11, fontWeight: 700 }} />
+        </Tooltip>
+      ) : null}
+    </Stack>
+  );
+}

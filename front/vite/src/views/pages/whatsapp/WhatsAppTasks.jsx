@@ -32,14 +32,16 @@ import { get, post } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { useRealtimeEvent } from 'realtime/useRealtime';
 import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'views/pages/telegram/ui';
-import { WaPageHeader, fmtDateBRT, relTime, useNow } from './waKit';
+import { WaNumberChip, WaPageHeader, fmtDateBRT, relTime, useNow, useWaSessions } from './waKit';
 import { errMsg, tint } from './waShared';
 import TaskDialog from './crm/TaskDialog';
-import { CrmKpi, waPrimaryBtn } from './crm/crmKit';
+import { CrmKpi, WaNumberFilter, chatUrl, useSessionFilter, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Tarefas: lembretes da equipe (ligados ou não a uma conversa/cliente).
 // Abas Minhas / Todas / Concluídas; grupos Atrasadas / Hoje / Próximas / Sem prazo.
+// Multi-número: `task.chat.chat_id` = uuid da conversa + `task.chat.session` (chip do número);
+// filtro "Número" (?session=) manda `session_id` ao back. Tarefa sem conversa é de todos.
 // ============================================================================
 
 const groupOf = (t, now) => {
@@ -63,6 +65,8 @@ export default function WhatsAppTasks() {
   const { user } = useAuth();
   const myId = user?.user?.id || null;
   const now = useNow(30000);
+  const { sessions } = useWaSessions(30000);
+  const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
   const [tab, setTab] = useState('mine'); // mine | all | done
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -86,17 +90,17 @@ export default function WhatsAppTasks() {
 
   const loadCounts = useCallback(
     () =>
-      get('/whatsapp/tasks/counts')
+      get('/whatsapp/tasks/counts', { params: sessionId ? { session_id: sessionId } : {} })
         .then(setCounts)
         .catch(() => undefined),
-    []
+    [sessionId]
   );
   const load = useCallback(
     async ({ silent = false } = {}) => {
       const s = ++seq.current;
       if (!silent) setLoading(true);
       try {
-        const params = { page_size: 200, q: debouncedQ || undefined };
+        const params = { page_size: 200, q: debouncedQ || undefined, session_id: sessionId || undefined };
         if (tab === 'mine') {
           params.scope = 'mine';
           params.status = 'open';
@@ -117,7 +121,7 @@ export default function WhatsAppTasks() {
       }
       loadCounts();
     },
-    [tab, assignee, debouncedQ, loadCounts]
+    [tab, assignee, debouncedQ, sessionId, loadCounts]
   );
   useEffect(() => {
     load();
@@ -217,6 +221,7 @@ export default function WhatsAppTasks() {
             ))}
           </TextField>
         ) : null}
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
         <Box sx={{ flex: 1 }} />
         <Tooltip title="Atualizar">
           <span>
@@ -320,18 +325,27 @@ export default function WhatsAppTasks() {
                     </Stack>
                   </Box>
                   {t.chat ? (
-                    <Tooltip title={`Abrir conversa: ${t.chat.name || t.chat.chat_id}`}>
-                      <Chip
-                        size="small"
-                        avatar={<TgAvatar name={t.chat.name} size={20} kind="contact" />}
-                        label={t.chat.name || t.chat.chat_id}
-                        onClick={() => navigate(`/whatsapp/chat?chat=${encodeURIComponent(t.chat.chat_id)}`)}
-                        icon={undefined}
-                        deleteIcon={<IconMessage size={14} />}
-                        onDelete={() => navigate(`/whatsapp/chat?chat=${encodeURIComponent(t.chat.chat_id)}`)}
-                        sx={{ maxWidth: 220, height: 24, borderRadius: 1.5 }}
-                      />
-                    </Tooltip>
+                    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+                      {multi && t.chat.session ? <WaNumberChip session={t.chat.session} /> : null}
+                      <Tooltip
+                        title={
+                          t.chat.chat_id
+                            ? `Abrir conversa: ${t.chat.name || t.chat.phone || ''}`
+                            : 'A conversa desta tarefa não existe mais neste número'
+                        }
+                      >
+                        <Chip
+                          size="small"
+                          avatar={<TgAvatar name={t.chat.name} size={20} kind={t.chat.kind === 'group' ? 'group' : 'contact'} />}
+                          label={t.chat.name || t.chat.phone || 'Conversa'}
+                          onClick={t.chat.chat_id ? () => navigate(chatUrl(t.chat.chat_id)) : undefined}
+                          icon={undefined}
+                          deleteIcon={<IconMessage size={14} />}
+                          onDelete={t.chat.chat_id ? () => navigate(chatUrl(t.chat.chat_id)) : undefined}
+                          sx={{ maxWidth: 220, height: 24, borderRadius: 1.5, opacity: t.chat.chat_id ? 1 : 0.6 }}
+                        />
+                      </Tooltip>
+                    </Stack>
                   ) : null}
                   <IconButton size="small" onClick={() => setDlg({ task: t })}>
                     <IconPencil size={16} />

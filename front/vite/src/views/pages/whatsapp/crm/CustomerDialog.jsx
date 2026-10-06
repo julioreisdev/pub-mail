@@ -272,7 +272,6 @@ function SubscriptionRow({ s, onEdit, onRemove }) {
 
 // ============================================================================
 export default function CustomerDialog({ open, onClose, customer, contact, products = [], fields = [], onSaved, onDeleted, canDelete }) {
-
   const [tab, setTab] = useState('data');
   const [f, setF] = useState(() => formFrom(customer, contact));
   const [cur, setCur] = useState(customer || null); // cliente após salvar (assinaturas)

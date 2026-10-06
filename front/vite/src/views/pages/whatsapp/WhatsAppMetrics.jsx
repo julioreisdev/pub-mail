@@ -24,6 +24,7 @@ import {
   IconChartBar,
   IconCircleCheck,
   IconClockHour4,
+  IconDeviceMobile,
   IconHeadset,
   IconHourglass,
   IconMessage2,
@@ -37,13 +38,15 @@ import {
 
 import { get } from 'api/api';
 import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'views/pages/telegram/ui';
-import { WaPageHeader } from './waKit';
-import { WA_DARK, WA_GREEN, errMsg, fmtPhone, tint } from './waShared';
-import { CrmKpi } from './crm/crmKit';
+import { WaNumberChip, WaPageHeader, fmtPhoneBR, useWaSessions } from './waKit';
+import { WA_DARK, WA_GREEN, errMsg } from './waShared';
+import { CrmKpi, WaNumberFilter, useSessionFilter } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Métricas: volume, tempo até a 1ª resposta humana, resolução, atendimentos,
 // satisfação, por atendente, por etiqueta, funil e cobranças do período.
+// Multi-número: filtro "Número" (?session=) manda `session_id` e recalcula tudo; a seção
+// "Por número" (`by_session`) aparece quando a org tem mais de um número.
 // ============================================================================
 
 const PRESETS = [
@@ -98,6 +101,8 @@ function Section({ title, icon: Icon, children, right }) {
 export default function WhatsAppMetrics() {
   const theme = useTheme();
   const navigate = useNavigate();
+  const { sessions } = useWaSessions(60000);
+  const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
   const [preset, setPreset] = useState('30');
   const [from, setFrom] = useState(() => isoDay(new Date(Date.now() - 29 * 86400000)));
   const [to, setTo] = useState(() => isoDay(new Date()));
@@ -117,7 +122,11 @@ export default function WhatsAppMetrics() {
     setLoading(true);
     try {
       const r = await get('/whatsapp/metrics', {
-        params: { from: new Date(`${from}T00:00:00-03:00`).toISOString(), to: new Date(`${to}T23:59:59.999-03:00`).toISOString() }
+        params: {
+          from: new Date(`${from}T00:00:00-03:00`).toISOString(),
+          to: new Date(`${to}T23:59:59.999-03:00`).toISOString(),
+          session_id: sessionId || undefined
+        }
       });
       setData(r);
     } catch (e) {
@@ -125,7 +134,7 @@ export default function WhatsAppMetrics() {
     } finally {
       setLoading(false);
     }
-  }, [from, to]);
+  }, [from, to, sessionId]);
   useEffect(() => {
     load();
   }, [load]);
@@ -187,6 +196,8 @@ export default function WhatsAppMetrics() {
 
   const maxTag = Math.max(1, ...(data?.by_tag || []).map((x) => x.count));
   const maxStage = Math.max(1, ...(data?.funnel || []).map((x) => x.count));
+  const bySession = useMemo(() => data?.by_session || [], [data]);
+  const maxSessionMsgs = Math.max(1, ...bySession.map((x) => (x.msgs_in || 0) + (x.msgs_out || 0)));
 
   return (
     <Box>
@@ -245,6 +256,8 @@ export default function WhatsAppMetrics() {
             {from.split('-').reverse().join('/')} – {to.split('-').reverse().join('/')}
           </Typography>
         )}
+        <Box sx={{ flex: 1 }} />
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
       </TgFilterBar>
 
       {loading && !data ? (
@@ -295,6 +308,90 @@ export default function WhatsAppMetrics() {
               value={data.ratings.avg == null ? '—' : `${data.ratings.avg.toFixed(1).replace('.', ',')} / 5`}
             />
           </Box>
+
+          {multi && !sessionId && bySession.length ? (
+            <Section
+              title="Por número"
+              icon={IconDeviceMobile}
+              right={
+                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                  Clique num número para ver só ele
+                </Typography>
+              }
+            >
+              <TableContainer>
+                <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Número</TableCell>
+                      <TableCell sx={{ width: '30%' }}>Mensagens</TableCell>
+                      <TableCell align="right">Recebidas</TableCell>
+                      <TableCell align="right">Enviadas</TableCell>
+                      <TableCell align="right">Conversas ativas</TableCell>
+                      <TableCell align="right">Assumidos</TableCell>
+                      <TableCell align="right">Encerrados</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {bySession.map((row) => {
+                      const totalMsgs = (row.msgs_in || 0) + (row.msgs_out || 0);
+                      return (
+                        <TableRow key={row.session_id} hover sx={{ cursor: 'pointer' }} onClick={() => setSessionId(row.session_id)}>
+                          <TableCell>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <WaNumberChip
+                                session={sessions.find((x) => x.id === row.session_id) || { ...row, id: row.session_id, connected: true }}
+                                size="medium"
+                              />
+                              {row.phone ? (
+                                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                                  {fmtPhoneBR(row.phone)}
+                                </Typography>
+                              ) : null}
+                            </Stack>
+                          </TableCell>
+                          <TableCell>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <LinearProgress
+                                variant="determinate"
+                                value={(totalMsgs / maxSessionMsgs) * 100}
+                                sx={{
+                                  flex: 1,
+                                  height: 6,
+                                  borderRadius: 3,
+                                  bgcolor: 'action.hover',
+                                  '& .MuiLinearProgress-bar': { bgcolor: row.color || WA_GREEN }
+                                }}
+                              />
+                              <Typography variant="caption" sx={{ fontWeight: 700, minWidth: 40, textAlign: 'right' }}>
+                                {n(totalMsgs)}
+                              </Typography>
+                            </Stack>
+                          </TableCell>
+                          <TableCell align="right">{n(row.msgs_in)}</TableCell>
+                          <TableCell align="right">{n(row.msgs_out)}</TableCell>
+                          <TableCell align="right">{n(row.chats_active)}</TableCell>
+                          <TableCell align="right">{n(row.assumed)}</TableCell>
+                          <TableCell align="right">{n(row.closed)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Section>
+          ) : null}
+          {multi && sessionId ? (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                Mostrando só o número
+              </Typography>
+              <WaNumberChip session={sessions.find((x) => x.id === sessionId)} size="medium" />
+              <Button size="small" onClick={() => setSessionId('')} sx={{ textTransform: 'none', fontWeight: 700 }}>
+                Ver todos os números
+              </Button>
+            </Stack>
+          ) : null}
 
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', lg: '2fr 1fr' } }}>
             <Section title="Volume por dia" icon={IconMessage2}>
@@ -489,10 +586,6 @@ export default function WhatsAppMetrics() {
               {n(t.optouts)} contato{t.optouts === 1 ? '' : 's'} pediu descadastro (LGPD) no período — veja em Contatos.
             </Typography>
           ) : null}
-          <Box sx={{ display: 'none' }}>
-            {fmtPhone('')}
-            {tint && null}
-          </Box>
         </Stack>
       )}
     </Box>

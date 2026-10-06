@@ -32,4 +32,12 @@ export class CreateClientDto {
   @IsInt() @Min(0) price_cents: number;
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsInt() @Min(1) @Max(3650) period_days?: number | null;
   @IsOptional() @IsIn(['OWNER', 'ADMIN', 'MEMBER']) role?: string;
+  // Números do WhatsApp liberados p/ o usuário dono (`null`/ausente = todos). A org é nova
+  // (ainda sem números), então um array vira `[]` = nenhum até o admin liberar.
+  @IsOptional() @IsArray() @IsString({ each: true }) whatsapp_sessions?: string[] | null;
+}
+
+// Números do WhatsApp liberados p/ um usuário (`null` = todos).
+export class UserWhatsAppSessionsDto {
+  @IsOptional() @IsArray() @IsString({ each: true }) whatsapp_sessions?: string[] | null;
 }

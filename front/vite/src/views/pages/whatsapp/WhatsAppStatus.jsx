@@ -36,7 +36,8 @@ import {
   IconHistory,
   IconAlertTriangle,
   IconCheck,
-  IconX
+  IconX,
+  IconDeviceMobile
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
@@ -51,7 +52,10 @@ import { FONTS, PALETTE, dropExpired, fontFamily, sortContacts } from './status/
 import {
   WaPageHeader,
   WaSessionBanner,
-  useWaSession,
+  WaNumberChip,
+  WaNumberMultiSelect,
+  WaNumberSelect,
+  useWaSessions,
   useNow,
   errMsg,
   fmtDateBRT,
@@ -60,18 +64,20 @@ import {
   isoToBrtLocal,
   brtLocalNow,
   mediaKind,
+  sessionLabel,
   waButtonSx,
   WA_GREEN,
   WA_DARK
 } from './waKit';
 
 // ============================================================================
-// WhatsApp → Status
-//  • Status dos contatos: faixa com anel (novo/visto) + visualizador em tela
-//    cheia com responder/reagir (status/*; contrato /whatsapp/contact-statuses).
-//  • Meus status: publicar (texto / imagem-vídeo / áudio) agora ou agendado
-//    (horário de Brasília), agendados com countdown e histórico.
-//    Contrato: GET/POST /whatsapp/statuses, PATCH/DELETE /whatsapp/statuses/:id.
+// WhatsApp → Status (multi-número)
+//  • Status dos contatos: um bloco por número (status/*; GET /whatsapp/contact-statuses
+//    devolve `sessions[]`), visualizador em tela cheia com responder/reagir pelo número do status.
+//  • Meus status: publicar (texto / imagem-vídeo / áudio) em 1..N números — agora ou agendado
+//    (horário de Brasília). POST /whatsapp/statuses { session_ids, … } cria UMA LINHA POR NÚMERO
+//    (mesmo `batch_id`); a tela agrupa o lote e mostra cada número com seu status/ações.
+//    GET /whatsapp/statuses?status=&session_id=&page= · PATCH/DELETE /whatsapp/statuses/:id (por linha).
 // ============================================================================
 
 const TYPE_UI = {
@@ -89,6 +95,24 @@ const STATUS_UI = {
 };
 const PHONE_W = 216;
 const PHONE_H = Math.round((PHONE_W * 16) / 9);
+const isReady = (s) => Boolean(s && (s.connected || s.status === 'ready'));
+
+// linhas do mesmo lote (`batch_id`) viram um grupo; sem lote, cada linha é um grupo
+const groupByBatch = (items) => {
+  const map = new Map();
+  const out = [];
+  (items || []).forEach((it) => {
+    const k = it.batch_id || it.id;
+    let g = map.get(k);
+    if (!g) {
+      g = { key: k, batch_id: it.batch_id || null, items: [] };
+      map.set(k, g);
+      out.push(g);
+    }
+    g.items.push(it);
+  });
+  return out;
+};
 
 // ---------------------------------------------------------------- preview 9:16
 function StatusPhonePreview({ type, body, bgColor, font, media }) {
@@ -242,10 +266,18 @@ function StatusThumb({ item, width = 60 }) {
 const TAB_OF_TYPE = { text: 'text', image: 'media', video: 'media', voice: 'voice' };
 const emptyForm = () => ({ tab: 'text', body: '', bg_color: PALETTE[1], font: 0, media: null, when: 'now', at: brtLocalNow(60) });
 
-function StatusComposer({ open, onClose, initial, connected }) {
+/**
+ * `initial`: null (novo) | linha com `id` (editar UMA linha do lote) | sem `id` (publicar novamente)
+ * `initial.session_ids` pré-seleciona números (ex.: clique no "Meu status" de um número).
+ */
+function StatusComposer({ open, onClose, initial, sessions, byId }) {
   const editing = Boolean(initial?.id);
   const [form, setForm] = useState(emptyForm);
+  const [sessionIds, setSessionIds] = useState([]);
   const [saving, setSaving] = useState(false);
+
+  const connectedIds = useMemo(() => sessions.filter(isReady).map((s) => s.id), [sessions]);
+  const single = sessions.length <= 1;
 
   useEffect(() => {
     if (!open) return;
@@ -260,17 +292,36 @@ function StatusComposer({ open, onClose, initial, connected }) {
         at: initial.schedule_at ? isoToBrtLocal(initial.schedule_at) : brtLocalNow(60)
       });
     } else setForm(emptyForm());
+    // números: editar = só o da linha; publicar de novo = o da linha se conectado; novo = todos os conectados
+    const wanted = (Array.isArray(initial?.session_ids) ? initial.session_ids : initial?.session_id ? [initial.session_id] : []).filter(
+      (id) => byId.has(id)
+    );
+    if (editing) setSessionIds(wanted);
+    else {
+      const ok = wanted.filter((id) => connectedIds.includes(id));
+      setSessionIds(ok.length ? ok : connectedIds.length ? connectedIds : sessions.map((s) => s.id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial, editing]);
 
   const setF = (p) => setForm((f) => ({ ...f, ...p }));
   const type = form.tab === 'text' ? 'text' : form.tab === 'voice' ? 'voice' : mediaKind(form.media) || 'image';
   const scheduleIso = form.when === 'schedule' ? brtLocalToIso(form.at) : null;
   const scheduleInPast = form.when === 'schedule' && scheduleIso && new Date(scheduleIso).getTime() < Date.now() + 30000;
+  const nowDisabled = !editing && !connectedIds.length;
+  // "publicar agora" só em números conectados; agendar aceita qualquer número (publica se estiver ativo no horário)
+  const selectable = form.when === 'now' && !editing ? connectedIds : sessions.map((s) => s.id);
+  const effectiveIds = editing ? sessionIds : sessionIds.filter((id) => selectable.includes(id));
+  const setWhen = (when) => {
+    setF({ when });
+    if (when === 'now' && !editing) setSessionIds((ids) => ids.filter((id) => connectedIds.includes(id)));
+  };
 
   const valid = (() => {
     if (type === 'text' && !form.body.trim()) return false;
     if (type !== 'text' && !form.media?.id) return false;
     if (form.when === 'schedule' && (!scheduleIso || scheduleInPast)) return false;
+    if (!editing && !effectiveIds.length) return false;
     return true;
   })();
 
@@ -284,14 +335,26 @@ function StatusComposer({ open, onClose, initial, connected }) {
         await patch(`/whatsapp/statuses/${initial.id}`, body);
         toast.success(scheduleIso ? 'Agendamento atualizado.' : 'Status enviado para publicação.');
       } else {
-        const body = { type, schedule_at: scheduleIso };
+        const body = { type, schedule_at: scheduleIso, session_ids: effectiveIds };
         if (type === 'text') Object.assign(body, { body: form.body, bg_color: form.bg_color, font: form.font });
         else {
           body.media_id = form.media.id;
           if (form.body.trim()) body.body = form.body;
         }
-        await post('/whatsapp/statuses', body);
-        toast.success(scheduleIso ? `Status agendado para ${fmtDateBRT(scheduleIso)}.` : 'Status publicado!');
+        const r = await post('/whatsapp/statuses', body);
+        const items = Array.isArray(r?.items) ? r.items : [];
+        const n = items.length || effectiveIds.length;
+        const where = n > 1 ? ` em ${n} números` : '';
+        if (scheduleIso) toast.success(`Status agendado para ${fmtDateBRT(scheduleIso)}${where}.`);
+        else {
+          const failed = items.filter((x) => x.status === 'failed');
+          if (!failed.length) toast.success(`Status publicado${where}!`);
+          else if (failed.length === items.length) toast.error(`Não foi possível publicar: ${failed[0].error || 'falha no WhatsApp'}`);
+          else {
+            toast.success(`Publicado em ${items.length - failed.length} de ${items.length} números.`);
+            failed.forEach((f) => toast.error(`${sessionLabel(f.session || byId.get(f.session_id))}: ${f.error || 'falhou'}`));
+          }
+        }
       }
       onClose(true);
     } catch (e) {
@@ -301,8 +364,8 @@ function StatusComposer({ open, onClose, initial, connected }) {
     }
   };
 
-  const nowDisabled = !connected;
   const tabSx = { textTransform: 'none', fontWeight: 700, minHeight: 40 };
+  const editingSession = editing ? initial.session || byId.get(initial.session_id) : null;
 
   return (
     <TgModal
@@ -313,7 +376,7 @@ function StatusComposer({ open, onClose, initial, connected }) {
       title={editing ? 'Editar status agendado' : initial ? 'Publicar novamente' : 'Novo status'}
       subtitle={
         editing
-          ? 'Só o texto, a cor, a fonte e o horário podem mudar. Para trocar a mídia, cancele e crie outro.'
+          ? 'Só o texto, a cor, a fonte e o horário podem mudar — e só neste número. Para trocar a mídia, cancele e crie outro.'
           : 'O status aparece para os contatos por 24 horas.'
       }
       tabs={
@@ -350,7 +413,15 @@ function StatusComposer({ open, onClose, initial, connected }) {
             }
             sx={{ ...waButtonSx, minWidth: 140 }}
           >
-            {form.when === 'now' ? (editing ? 'Publicar agora' : 'Publicar') : editing ? 'Salvar agendamento' : 'Agendar'}
+            {form.when === 'now'
+              ? editing
+                ? 'Publicar agora'
+                : effectiveIds.length > 1
+                  ? `Publicar em ${effectiveIds.length} números`
+                  : 'Publicar'
+              : editing
+                ? 'Salvar agendamento'
+                : 'Agendar'}
           </Button>
         </Stack>
       }
@@ -358,6 +429,37 @@ function StatusComposer({ open, onClose, initial, connected }) {
       <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', md: `1fr ${PHONE_W}px` }, alignItems: 'start' }}>
         {/* ---------- formulário ---------- */}
         <Stack spacing={2.25}>
+          {/* ---------- em quais números ---------- */}
+          {editing ? (
+            editingSession ? (
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Typography sx={{ fontWeight: 700, fontSize: 13.5 }}>Número:</Typography>
+                <WaNumberChip session={editingSession} showPhone size="medium" />
+              </Stack>
+            ) : null
+          ) : !single ? (
+            <Box>
+              <Typography sx={{ fontWeight: 700, fontSize: 13.5, mb: 1 }}>Publicar em</Typography>
+              <WaNumberMultiSelect
+                sessions={sessions}
+                value={effectiveIds}
+                onChange={setSessionIds}
+                onlyConnected={form.when === 'now'}
+                size="small"
+              />
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.75 }}>
+                {form.when === 'now'
+                  ? 'Só números conectados. O mesmo status é publicado em cada um.'
+                  : 'Cada número publica na hora marcada, se estiver conectado.'}
+              </Typography>
+            </Box>
+          ) : sessions[0] ? (
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Typography sx={{ fontWeight: 700, fontSize: 13.5 }}>Número:</Typography>
+              <WaNumberChip session={sessions[0]} showPhone size="medium" />
+            </Stack>
+          ) : null}
+
           {form.tab === 'text' ? (
             <>
               <TextField
@@ -484,10 +586,10 @@ function StatusComposer({ open, onClose, initial, connected }) {
                 const on = form.when === o.key;
                 const Icon = o.icon;
                 return (
-                  <Tooltip key={o.key} title={o.disabled ? 'Conecte o WhatsApp para publicar agora' : ''}>
+                  <Tooltip key={o.key} title={o.disabled ? 'Conecte um número para publicar agora' : ''}>
                     <Box
                       role="button"
-                      onClick={() => !o.disabled && setF({ when: o.key })}
+                      onClick={() => !o.disabled && setWhen(o.key)}
                       sx={{
                         flex: 1,
                         display: 'flex',
@@ -531,7 +633,7 @@ function StatusComposer({ open, onClose, initial, connected }) {
               />
             ) : nowDisabled ? (
               <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 1 }}>
-                O WhatsApp não está conectado — você pode agendar e a publicação sai quando a sessão estiver ativa no horário.
+                Nenhum número conectado — você pode agendar e a publicação sai quando o número estiver ativo no horário.
               </Typography>
             ) : null}
           </Box>
@@ -549,16 +651,47 @@ function StatusComposer({ open, onClose, initial, connected }) {
   );
 }
 
-// ---------------------------------------------------------------- card agendado
-function ScheduledCard({ item, now, onEdit, onCancel }) {
-  const T = TYPE_UI[item.type] || TYPE_UI.text;
+// ---------------------------------------------------------------- linha de um número dentro do lote
+function NumberLine({ item, byId, showNumber, children }) {
+  const st = STATUS_UI[item.status] || STATUS_UI.pending;
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+      {showNumber ? <WaNumberChip session={item.session || byId.get(item.session_id) || { id: item.session_id, label: 'Número' }} /> : null}
+      <TgStatusPill status={st.pill} label={st.label} />
+      {item.status === 'failed' && item.error ? (
+        <Tooltip title={item.error}>
+          <Stack direction="row" spacing={0.4} alignItems="center" sx={{ color: 'error.main', minWidth: 0 }}>
+            <IconAlertTriangle size={13} />
+            <Typography variant="caption" noWrap sx={{ fontWeight: 600, maxWidth: 220 }}>
+              {item.error}
+            </Typography>
+          </Stack>
+        </Tooltip>
+      ) : null}
+      {item.status === 'posted' && item.posted_at ? (
+        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+          {fmtDateBRT(item.posted_at)}
+        </Typography>
+      ) : null}
+      <Box sx={{ flex: 1 }} />
+      {children}
+    </Stack>
+  );
+}
+
+// ---------------------------------------------------------------- card agendado (lote)
+function ScheduledCard({ group, now, byId, showNumber, onEdit, onCancel }) {
+  const first = group.items[0];
+  const T = TYPE_UI[first.type] || TYPE_UI.text;
   const TIcon = T.icon;
-  const posting = item.status === 'posting';
+  const many = group.items.length > 1;
+  const earliest = group.items.reduce((a, b) => (new Date(a.schedule_at || 0) <= new Date(b.schedule_at || 0) ? a : b));
+  const posting = group.items.some((x) => x.status === 'posting');
   return (
     <TgCard sx={{ p: 1.75, display: 'flex', gap: 1.5, alignItems: 'stretch' }}>
-      <StatusThumb item={item} width={58} />
+      <StatusThumb item={first} width={58} />
       <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ mb: 0.5 }}>
+        <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
           <Chip
             size="small"
             icon={<TIcon size={13} />}
@@ -566,7 +699,14 @@ function ScheduledCard({ item, now, onEdit, onCancel }) {
             variant="outlined"
             sx={{ height: 22, borderRadius: 1, fontWeight: 700 }}
           />
-          <TgStatusPill status={STATUS_UI[item.status]?.pill || 'pending'} label={STATUS_UI[item.status]?.label} />
+          {many ? (
+            <Chip
+              size="small"
+              icon={<IconDeviceMobile size={13} />}
+              label={`em ${group.items.length} números`}
+              sx={{ height: 22, borderRadius: 1, fontWeight: 700, bgcolor: 'action.selected' }}
+            />
+          ) : null}
         </Stack>
         <Typography
           variant="body2"
@@ -575,51 +715,68 @@ function ScheduledCard({ item, now, onEdit, onCancel }) {
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-            color: item.body ? 'text.primary' : 'text.disabled',
+            color: first.body ? 'text.primary' : 'text.disabled',
             mb: 0.75
           }}
         >
-          {item.body || item.media?.filename || 'Sem legenda'}
+          {first.body || first.media?.filename || 'Sem legenda'}
         </Typography>
-        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ color: 'text.secondary', mt: 'auto' }}>
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ color: 'text.secondary', mb: 0.75 }}>
           <IconClock size={14} />
           <Typography variant="caption" sx={{ fontWeight: 700 }}>
-            {fmtDateBRT(item.schedule_at)}
+            {fmtDateBRT(earliest.schedule_at)}
           </Typography>
           <Typography variant="caption" sx={{ color: posting ? 'info.main' : WA_DARK, fontWeight: 700 }}>
-            · {posting ? 'publicando…' : relTime(item.schedule_at, now)}
+            · {posting ? 'publicando…' : relTime(earliest.schedule_at, now)}
           </Typography>
         </Stack>
+        {/* uma linha por número: status + ações (editar/cancelar são por linha) */}
+        <Stack spacing={0.5} sx={{ mt: 'auto' }}>
+          {group.items.map((item) => {
+            const busy = item.status === 'posting';
+            return (
+              <NumberLine key={item.id} item={item} byId={byId} showNumber={showNumber || many}>
+                {many && item.schedule_at !== earliest.schedule_at ? (
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    {fmtDateBRT(item.schedule_at)}
+                  </Typography>
+                ) : null}
+                <Tooltip title={many ? 'Editar só neste número' : 'Editar'}>
+                  <span>
+                    <IconButton size="small" onClick={() => onEdit(item)} disabled={busy}>
+                      <IconPencil size={16} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title={many ? 'Cancelar só neste número' : 'Cancelar agendamento'}>
+                  <span>
+                    <IconButton size="small" color="error" onClick={() => onCancel(item)} disabled={busy}>
+                      <IconX size={16} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </NumberLine>
+            );
+          })}
+        </Stack>
       </Box>
-      <Stack spacing={0.25} sx={{ flexShrink: 0 }}>
-        <Tooltip title="Editar">
-          <span>
-            <IconButton size="small" onClick={() => onEdit(item)} disabled={posting}>
-              <IconPencil size={17} />
-            </IconButton>
-          </span>
-        </Tooltip>
-        <Tooltip title="Cancelar agendamento">
-          <span>
-            <IconButton size="small" color="error" onClick={() => onCancel(item)} disabled={posting}>
-              <IconX size={17} />
-            </IconButton>
-          </span>
-        </Tooltip>
-      </Stack>
     </TgCard>
   );
 }
 
-// ---------------------------------------------------------------- linha histórico
-function HistoryRow({ item, onRetry, onDelete }) {
-  const T = TYPE_UI[item.type] || TYPE_UI.text;
+// ---------------------------------------------------------------- linha histórico (lote)
+function HistoryRow({ group, byId, showNumber, onRetry, onDelete }) {
+  const first = group.items[0];
+  const T = TYPE_UI[first.type] || TYPE_UI.text;
   const TIcon = T.icon;
-  const st = STATUS_UI[item.status] || STATUS_UI.posted;
-  const when = item.posted_at || item.schedule_at || item.created_at;
+  const many = group.items.length > 1;
+  const allCanceled = group.items.every((x) => x.status === 'canceled');
+  const when = first.posted_at || first.schedule_at || first.created_at;
+  const posted = group.items.filter((x) => x.status === 'posted').length;
+  const failed = group.items.filter((x) => x.status === 'failed').length;
   return (
-    <TgCard hover={false} sx={{ p: 1.5, display: 'flex', gap: 1.5, alignItems: 'center', opacity: item.status === 'canceled' ? 0.7 : 1 }}>
-      <StatusThumb item={item} width={44} />
+    <TgCard hover={false} sx={{ p: 1.5, display: 'flex', gap: 1.5, alignItems: 'flex-start', opacity: allCanceled ? 0.7 : 1 }}>
+      <StatusThumb item={first} width={44} />
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.25 }}>
           <Chip
@@ -629,49 +786,59 @@ function HistoryRow({ item, onRetry, onDelete }) {
             variant="outlined"
             sx={{ height: 22, borderRadius: 1, fontWeight: 700 }}
           />
-          <TgStatusPill status={st.pill} label={st.label} />
+          {many ? (
+            <Chip
+              size="small"
+              icon={<IconDeviceMobile size={13} />}
+              label={`em ${group.items.length} números${posted ? ` · ${posted} ok` : ''}${failed ? ` · ${failed} ${failed === 1 ? 'falha' : 'falhas'}` : ''}`}
+              sx={{ height: 22, borderRadius: 1, fontWeight: 700, bgcolor: 'action.selected' }}
+            />
+          ) : null}
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-            {item.status === 'posted' ? 'publicado em ' : ''}
+            {!many && first.status === 'posted' ? 'publicado em ' : ''}
             {fmtDateBRT(when)}
           </Typography>
         </Stack>
-        <Typography variant="body2" noWrap sx={{ color: item.body ? 'text.primary' : 'text.disabled' }}>
-          {item.body || item.media?.filename || 'Sem legenda'}
+        <Typography variant="body2" noWrap sx={{ color: first.body ? 'text.primary' : 'text.disabled', mb: 0.5 }}>
+          {first.body || first.media?.filename || 'Sem legenda'}
         </Typography>
-        {item.status === 'failed' && item.error ? (
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ color: 'error.main', mt: 0.25 }}>
-            <IconAlertTriangle size={13} />
-            <Typography variant="caption" noWrap sx={{ fontWeight: 600 }}>
-              {item.error}
-            </Typography>
-          </Stack>
-        ) : null}
+        <Stack spacing={0.4}>
+          {group.items.map((item) => (
+            <NumberLine key={item.id} item={item} byId={byId} showNumber={showNumber || many}>
+              {item.status === 'failed' || item.status === 'canceled' ? (
+                <Tooltip title={many ? 'Publicar novamente neste número' : 'Publicar novamente'}>
+                  <IconButton size="small" onClick={() => onRetry(item)} sx={{ color: WA_DARK }}>
+                    <IconRefresh size={16} />
+                  </IconButton>
+                </Tooltip>
+              ) : null}
+              {item.status === 'posted' ? (
+                <Tooltip title={many ? 'Apagar do WhatsApp deste número' : 'Apagar do WhatsApp'}>
+                  <IconButton size="small" color="error" onClick={() => onDelete(item)}>
+                    <IconTrash size={16} />
+                  </IconButton>
+                </Tooltip>
+              ) : null}
+            </NumberLine>
+          ))}
+        </Stack>
       </Box>
-      <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0 }}>
-        {item.status === 'failed' || item.status === 'canceled' ? (
-          <Tooltip title="Publicar novamente">
-            <IconButton size="small" onClick={() => onRetry(item)} sx={{ color: WA_DARK }}>
-              <IconRefresh size={17} />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        {item.status === 'posted' ? (
-          <Tooltip title="Apagar do WhatsApp">
-            <IconButton size="small" color="error" onClick={() => onDelete(item)}>
-              <IconTrash size={17} />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-      </Stack>
     </TgCard>
   );
 }
 
 // =================== PÁGINA ===================
 export default function WhatsAppStatus() {
-  const { session, loading: sessionLoading, connected } = useWaSession();
+  const { sessions, byId, connected, loading: sessionLoading, gateway_error } = useWaSessions();
   const now = useNow(30000);
+  const many = sessions.length > 1;
+  // objeto "agregado" só para a faixa de aviso (compat com o WaSessionBanner)
+  const bannerSession = useMemo(
+    () => ({ status: connected ? 'ready' : sessions[0]?.status || 'none', sessions, gateway_error }),
+    [connected, sessions, gateway_error]
+  );
 
+  const [sessionFilter, setSessionFilter] = useState(''); // '' = todos os números
   const [scheduled, setScheduled] = useState([]);
   const [loadingSched, setLoadingSched] = useState(true);
   const [history, setHistory] = useState({ items: [], total: 0, page: 1, pages: 1 });
@@ -684,49 +851,71 @@ export default function WhatsAppStatus() {
   const [deleteFor, setDeleteFor] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // ---------- status dos contatos ----------
+  // ---------- status dos contatos (um bloco por número) ----------
   const navigate = useNavigate();
   const cs = useContactStatuses({ connected });
-  const liveContacts = useMemo(() => sortContacts(dropExpired(cs.contacts, now)), [cs.contacts, now]);
-  const [viewer, setViewer] = useState({ open: false, chatId: null, queue: [] });
-  const openViewer = useCallback((chatId, queue) => setViewer({ open: true, chatId, queue: queue?.length ? queue : [chatId] }), []);
+  const liveBlocks = useMemo(
+    () => cs.blocks.map((b) => ({ ...b, contacts: sortContacts(dropExpired(b.contacts, now)) })),
+    [cs.blocks, now]
+  );
+  const [viewer, setViewer] = useState({ open: false, key: null, queue: [] });
+  const openViewer = useCallback((key, queue) => setViewer({ open: true, key, queue: queue?.length ? queue : [key] }), []);
   const closeViewer = useCallback(() => setViewer((v) => ({ ...v, open: false })), []);
 
-  // perfil do próprio número (foto do "Meu status") + quantos publiquei nas últimas 24 h
-  const [me, setMe] = useState(null);
+  // perfil de cada número conectado (foto/nome do "Meu status") + quantos cada um publicou nas últimas 24 h
+  const [profiles, setProfiles] = useState({});
+  const connectedKey = sessions
+    .filter(isReady)
+    .map((s) => s.id)
+    .join(',');
   useEffect(() => {
-    if (!connected) return undefined;
+    if (!connectedKey) return undefined;
     let alive = true;
-    get('/whatsapp/profile')
-      .then((p) => alive && setMe(p || null))
-      .catch(() => {});
+    connectedKey.split(',').forEach((id) => {
+      if (profiles[id]) return;
+      get(`/whatsapp/sessions/${encodeURIComponent(id)}/profile`)
+        .then((p) => alive && p && setProfiles((m) => ({ ...m, [id]: p })))
+        .catch(() => {});
+    });
     return () => {
       alive = false;
     };
-  }, [connected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectedKey]);
   const [mine24h, setMine24h] = useState([]);
   const loadMine24h = useCallback(async () => {
     try {
-      const r = await get('/whatsapp/statuses', { params: { status: 'posted', page: 1, page_size: 30 } });
+      const r = await get('/whatsapp/statuses', { params: { status: 'posted', page: 1, page_size: 100 } });
       setMine24h((Array.isArray(r) ? r : r?.items || []).filter((x) => x.status === 'posted'));
     } catch {
       /* só enfeite da faixa */
     }
   }, []);
-  const myPostedCount = useMemo(
-    () =>
-      mine24h.filter((x) => Date.now() - new Date(x.posted_at || x.schedule_at || x.created_at || 0).getTime() < 24 * 3600 * 1000).length,
+  const mine = useMemo(() => {
+    const m = new Map();
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    sessions.forEach((s) => {
+      const postedCount = mine24h.filter(
+        (x) => x.session_id === s.id && new Date(x.posted_at || x.schedule_at || x.created_at || 0).getTime() > cutoff
+      ).length;
+      m.set(s.id, { picture: profiles[s.id]?.picture || null, name: profiles[s.id]?.name || s.push_name || '', postedCount });
+    });
+    return m;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mine24h, now]
-  );
+  }, [sessions, mine24h, profiles, now]);
+
+  const listParams = (extra) => ({ ...extra, ...(sessionFilter ? { session_id: sessionFilter } : {}) });
 
   const schedSeq = useRef(0);
   const loadScheduled = useCallback(async () => {
     const s = ++schedSeq.current;
     try {
-      const r = await get('/whatsapp/statuses', { params: { status: 'pending', page: 1, page_size: 100 } });
+      const r = await get('/whatsapp/statuses', { params: listParams({ status: 'pending', page: 1, page_size: 100 }) });
+      const r2 = await get('/whatsapp/statuses', { params: listParams({ status: 'posting', page: 1, page_size: 50 }) }).catch(() => null);
       if (s !== schedSeq.current) return;
-      const items = (Array.isArray(r) ? r : r?.items || []).filter((x) => ['pending', 'posting'].includes(x.status));
+      const items = [...(Array.isArray(r) ? r : r?.items || []), ...(Array.isArray(r2) ? r2 : r2?.items || [])].filter((x) =>
+        ['pending', 'posting'].includes(x.status)
+      );
       items.sort((a, b) => new Date(a.schedule_at || 0) - new Date(b.schedule_at || 0));
       setScheduled(items);
     } catch (e) {
@@ -734,14 +923,15 @@ export default function WhatsAppStatus() {
     } finally {
       if (s === schedSeq.current) setLoadingSched(false);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionFilter]);
 
   const histSeq = useRef(0);
   const loadHistory = useCallback(async () => {
     const s = ++histSeq.current;
     setLoadingHist(true);
     try {
-      const r = await get('/whatsapp/statuses', { params: { status: histStatus, page: histPage, page_size: 12 } });
+      const r = await get('/whatsapp/statuses', { params: listParams({ status: histStatus, page: histPage, page_size: 24 }) });
       if (s !== histSeq.current) return;
       const items = (Array.isArray(r) ? r : r?.items || []).filter((x) => !['pending', 'posting'].includes(x.status));
       setHistory({ items, total: r?.total ?? items.length, page: r?.page ?? histPage, pages: r?.pages ?? 1 });
@@ -750,7 +940,8 @@ export default function WhatsAppStatus() {
     } finally {
       if (s === histSeq.current) setLoadingHist(false);
     }
-  }, [histStatus, histPage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [histStatus, histPage, sessionFilter]);
 
   useEffect(() => {
     loadScheduled();
@@ -763,7 +954,7 @@ export default function WhatsAppStatus() {
   }, [loadHistory]);
   useEffect(() => {
     setHistPage(1);
-  }, [histStatus]);
+  }, [histStatus, sessionFilter]);
 
   // agendados mudam sozinhos (cron publica) → polling leve
   useEffect(() => {
@@ -812,32 +1003,52 @@ export default function WhatsAppStatus() {
     }
   };
 
-  // re-criar a partir de um item (falhou/cancelado) — sem id ⇒ POST novo
+  // re-criar a partir de uma linha (falhou/cancelado) no MESMO número — sem id ⇒ POST novo
   const retry = (item) =>
     setComposer({
-      initial: { type: item.type, body: item.body, bg_color: item.bg_color, font: item.font, media: item.media, schedule_at: null }
+      initial: {
+        type: item.type,
+        body: item.body,
+        bg_color: item.bg_color,
+        font: item.font,
+        media: item.media,
+        schedule_at: null,
+        session_ids: [item.session_id]
+      }
     });
+  const openNew = (sessionId) => setComposer({ initial: sessionId ? { session_ids: [sessionId] } : null });
 
   const newBtn = (
-    <Button
-      variant="contained"
-      disableElevation
-      startIcon={<IconPlus size={18} />}
-      onClick={() => setComposer({ initial: null })}
-      sx={waButtonSx}
-    >
+    <Button variant="contained" disableElevation startIcon={<IconPlus size={18} />} onClick={() => openNew()} sx={waButtonSx}>
       Novo status
     </Button>
   );
 
+  const scheduledGroups = useMemo(() => groupByBatch(scheduled), [scheduled]);
+  const historyGroups = useMemo(() => groupByBatch(history.items), [history.items]);
   const nextUp = useMemo(() => scheduled.find((x) => x.status === 'pending'), [scheduled]);
+  const numberFilter = many ? (
+    <WaNumberSelect
+      sessions={sessions}
+      value={sessionFilter}
+      onChange={setSessionFilter}
+      allowAll
+      label="Número"
+      sx={{ minWidth: 200 }}
+      fullWidth={false}
+    />
+  ) : null;
 
   return (
     <Box>
       <WaPageHeader
         icon={IconCircleDashed}
         title="Status"
-        subtitle="Veja e responda os status dos seus contatos e publique os seus — agora ou no horário que você marcar."
+        subtitle={
+          many
+            ? 'Veja e responda os status dos contatos de cada número e publique os seus — em um ou em vários números, agora ou no horário que você marcar.'
+            : 'Veja e responda os status dos seus contatos e publique os seus — agora ou no horário que você marcar.'
+        }
         action={
           <Stack direction="row" spacing={1} alignItems="center">
             <Tooltip title="Recarregar a página">
@@ -849,7 +1060,7 @@ export default function WhatsAppStatus() {
             {/* celular: só o "+" (o título e a descrição ficam com a largura toda) */}
             <Tooltip title="Novo status">
               <IconButton
-                onClick={() => setComposer({ initial: null })}
+                onClick={() => openNew()}
                 aria-label="Novo status"
                 sx={{ ...waButtonSx, display: { xs: 'inline-flex', sm: 'none' }, width: 42, height: 42, borderRadius: '50%' }}
               >
@@ -860,33 +1071,37 @@ export default function WhatsAppStatus() {
         }
       />
 
-      <WaSessionBanner session={session} loading={sessionLoading} connected={connected} what="ver, responder e publicar status" />
+      <WaSessionBanner session={bannerSession} loading={sessionLoading} connected={connected} what="ver, responder e publicar status" />
 
       {/* ---------- status dos contatos ---------- */}
       <ContactStatusStrip
-        contacts={liveContacts}
-        loading={cs.loading}
+        blocks={liveBlocks}
+        sessionsById={byId}
+        loading={cs.loading || (sessionLoading && !cs.blocks.length)}
         syncing={cs.syncing}
+        syncingId={cs.syncingId}
         unavailable={cs.unavailable}
         error={cs.error}
         syncedAt={cs.syncedAt}
         now={now}
         connected={connected}
         onOpen={openViewer}
-        onSync={() => cs.sync()}
+        onSync={(sessionId) => cs.sync({ sessionId: sessionId || null })}
         onReload={() => cs.load()}
-        onNew={() => setComposer({ initial: null })}
-        myPicture={me?.picture || null}
-        myName={me?.name || session?.push_name || ''}
-        myPostedCount={myPostedCount}
-        connectedSince={connected ? session?.paired_at : null}
+        onNew={(sessionId) => openNew(isReady(byId.get(sessionId)) ? sessionId : null)}
+        mine={mine}
       />
 
       {/* ---------- meus status ---------- */}
       <SectionTitle
         icon={IconCircleDashed}
         title="Meus status"
-        caption="O que você publicou, o que está agendado e o histórico."
+        caption={
+          many
+            ? 'O que cada número publicou, o que está agendado e o histórico.'
+            : 'O que você publicou, o que está agendado e o histórico.'
+        }
+        action={numberFilter}
         sx={{ mb: 2.5 }}
       />
 
@@ -896,7 +1111,7 @@ export default function WhatsAppStatus() {
         <Typography variant="h5" sx={{ fontWeight: 700 }}>
           Agendados
         </Typography>
-        <Chip size="small" label={scheduled.length} sx={{ fontWeight: 700, height: 22 }} />
+        <Chip size="small" label={scheduledGroups.length} sx={{ fontWeight: 700, height: 22 }} />
         {nextUp ? (
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
             · próximo {relTime(nextUp.schedule_at, now)}
@@ -905,11 +1120,11 @@ export default function WhatsAppStatus() {
       </Stack>
       {loadingSched ? (
         <TgListSkeleton rows={2} />
-      ) : scheduled.length === 0 ? (
+      ) : scheduledGroups.length === 0 ? (
         <TgEmptyState
           dense
           icon={IconCalendarTime}
-          title="Nada agendado"
+          title={sessionFilter ? 'Nada agendado neste número' : 'Nada agendado'}
           description="Crie um status e escolha “Agendar” para publicar em um horário específico (Brasília)."
           action={newBtn}
         />
@@ -921,8 +1136,16 @@ export default function WhatsAppStatus() {
             gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(3, minmax(0, 1fr))' }
           }}
         >
-          {scheduled.map((item) => (
-            <ScheduledCard key={item.id} item={item} now={now} onEdit={(it) => setComposer({ initial: it })} onCancel={setCancelFor} />
+          {scheduledGroups.map((g) => (
+            <ScheduledCard
+              key={g.key}
+              group={g}
+              now={now}
+              byId={byId}
+              showNumber={many}
+              onEdit={(it) => setComposer({ initial: it })}
+              onCancel={setCancelFor}
+            />
           ))}
         </Box>
       )}
@@ -949,12 +1172,12 @@ export default function WhatsAppStatus() {
       </Stack>
       {loadingHist ? (
         <TgListSkeleton rows={3} />
-      ) : history.items.length === 0 ? (
+      ) : historyGroups.length === 0 ? (
         <TgEmptyState dense icon={IconHistory} title="Nenhum status ainda" description="Os status publicados e as falhas aparecem aqui." />
       ) : (
         <Stack spacing={1}>
-          {history.items.map((item) => (
-            <HistoryRow key={item.id} item={item} onRetry={retry} onDelete={setDeleteFor} />
+          {historyGroups.map((g) => (
+            <HistoryRow key={g.key} group={g} byId={byId} showNumber={many} onRetry={retry} onDelete={setDeleteFor} />
           ))}
           {history.pages > 1 ? (
             <Stack direction="row" alignItems="center" justifyContent="center" spacing={1.5} sx={{ pt: 1 }}>
@@ -978,18 +1201,20 @@ export default function WhatsAppStatus() {
 
       <StoryViewer
         open={viewer.open}
-        startChatId={viewer.chatId}
+        startKey={viewer.key}
         queue={viewer.queue}
         byId={cs.byId}
         onClose={closeViewer}
         onViewed={cs.markViewed}
         onOpenChat={(chatId) => navigate(`/whatsapp/chat?chat=${encodeURIComponent(chatId)}`)}
         blocked={!sessionLoading && !connected}
+        showNumber={many}
       />
       <StatusComposer
         open={!!composer}
         initial={composer?.initial || null}
-        connected={connected}
+        sessions={sessions}
+        byId={byId}
         onClose={(ok) => {
           setComposer(null);
           if (ok) reloadAll();
@@ -1004,7 +1229,11 @@ export default function WhatsAppStatus() {
         icon={IconX}
         title="Cancelar agendamento?"
         confirmLabel="Cancelar agendamento"
-        message={cancelFor ? `O status marcado para ${fmtDateBRT(cancelFor.schedule_at)} não será publicado.` : ''}
+        message={
+          cancelFor
+            ? `O status marcado para ${fmtDateBRT(cancelFor.schedule_at)}${many ? ` no número ${sessionLabel(cancelFor.session || byId.get(cancelFor.session_id))}` : ''} não será publicado.${cancelFor.batch_id && scheduled.filter((x) => x.batch_id === cancelFor.batch_id).length > 1 ? ' Os outros números do lote continuam agendados.' : ''}`
+            : ''
+        }
       />
       <TgConfirmDialog
         open={!!deleteFor}
@@ -1015,7 +1244,7 @@ export default function WhatsAppStatus() {
         icon={IconTrash}
         title="Apagar do WhatsApp?"
         confirmLabel="Apagar"
-        message="O Pub Mail vai tentar remover este status do seu WhatsApp. Quem já viu não recebe aviso."
+        message={`O Pub Mail vai tentar remover este status do WhatsApp${many && deleteFor ? ` do número ${sessionLabel(deleteFor.session || byId.get(deleteFor.session_id))}` : ''}. Quem já viu não recebe aviso.`}
       />
     </Box>
   );

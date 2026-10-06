@@ -44,7 +44,8 @@ import {
   IconLock,
   IconLockOpen,
   IconUser,
-  IconReceipt2
+  IconReceipt2,
+  IconBrandWhatsapp
 } from '@tabler/icons-react';
 
 import MainCard from 'ui-component/cards/MainCard';
@@ -52,6 +53,12 @@ import { get, post, patch, remove } from 'api/api';
 
 import ModulesPicker, { ModuleChips, ALL_MODULE_KEYS, normalizeModules } from './ModulesPicker';
 import PlanFields, { planLabel, AccessPill, fmtBRL, fmtDate, ExtendDialog } from './PlanFields';
+import WhatsAppNumbersPicker, {
+  WhatsAppAccessChip,
+  roleSeesAllNumbers,
+  normalizeWaSessions,
+  sameWaSessions
+} from './WhatsAppNumbersPicker';
 
 const ROLE_OPTIONS = ['SUPER_ADMIN', 'OWNER', 'ADMIN', 'MEMBER'];
 
@@ -127,6 +134,34 @@ function PasswordField({ value, onChange, label = 'Senha', helperText = 'Mínimo
 }
 
 const SETTINGS_WARNING = 'Sem Configurações o usuário não cadastra chaves de IA/Resend nem domínios — Webchat e E-mail ficam limitados.';
+
+// ===== Números do WhatsApp liberados p/ o usuário =====
+// Só aparece quando o módulo `whatsapp` está marcado. Para OWNER/ADMIN/SUPER_ADMIN o
+// picker vira só a nota "donos e admins veem todos os números" (o back ignora o campo).
+const hasWhatsApp = (modules) => Array.isArray(modules) && modules.includes('whatsapp');
+
+/**
+ * Valor de `whatsapp_sessions` p/ o payload:
+ *  - módulo WhatsApp + MEMBER → `null` (todos) ou array de ids
+ *  - demais casos → `undefined` (não envia; no PATCH = não mexe, no create = todos)
+ */
+const waSessionsForPayload = (modules, role, value) => {
+  if (!hasWhatsApp(modules) || roleSeesAllNumbers(role)) return undefined;
+  return normalizeWaSessions(value);
+};
+
+function WaNumbersSection({ orgId, role, value, onChange, disabled }) {
+  return (
+    <>
+      <SectionHeader
+        icon={IconBrandWhatsapp}
+        title="Números do WhatsApp"
+        hint={roleSeesAllNumbers(role) ? undefined : 'quais números este usuário pode usar'}
+      />
+      <WhatsAppNumbersPicker orgId={orgId} role={role} value={value} onChange={onChange} disabled={disabled} />
+    </>
+  );
+}
 
 // ===== Confirm dialog =====
 function ConfirmDialog({ open, title, message, confirmLabel = 'Confirmar', color = 'error', loading, onClose, onConfirm }) {
@@ -303,6 +338,12 @@ function ClientFormDialog({ open, loading, error, onClose, onSubmit }) {
                 {SETTINGS_WARNING}
               </Alert>
             ) : null}
+            {hasWhatsApp(form.modules) && !roleSeesAllNumbers(form.role) ? (
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                A conta nova ainda não tem número do WhatsApp — o usuário terá acesso a todos os que forem conectados. Para restringir, use
+                a ação <strong>Acesso</strong> depois.
+              </Typography>
+            ) : null}
             <PlanFields
               priceCents={form.price_cents}
               periodDays={form.period_days}
@@ -341,16 +382,27 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
         name: initial?.name || '',
         role: initial?.role || 'MEMBER',
         active: initial?.active !== false,
-        modules: normalizeModules(initial?.modules || [])
+        modules: normalizeModules(initial?.modules || []),
+        whatsapp_sessions: normalizeWaSessions(initial?.whatsapp_sessions)
       });
     } else {
-      setForm({ organization_id: '', name: '', email: '', password: '', role: 'ADMIN', modules: [...ALL_MODULE_KEYS] });
+      setForm({
+        organization_id: '',
+        name: '',
+        email: '',
+        password: '',
+        role: 'ADMIN',
+        modules: [...ALL_MODULE_KEYS],
+        whatsapp_sessions: null
+      });
     }
   }, [open, mode, initial]);
 
   const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
   const selectedOrg = mode === 'create' ? orgs.find((o) => o.id === form.organization_id) : null;
   const noSettings = Array.isArray(form.modules) && !form.modules.includes('settings');
+  const waOrgId = mode === 'edit' ? initial?.organization_id || initial?.organizations?.id : form.organization_id;
+  const setWaSessions = (whatsapp_sessions) => setForm((p) => ({ ...p, whatsapp_sessions }));
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="sm" fullWidth>
@@ -391,6 +443,15 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
                   <Alert severity="warning" sx={{ py: 0.5 }}>
                     {SETTINGS_WARNING}
                   </Alert>
+                ) : null}
+                {hasWhatsApp(form.modules) ? (
+                  <WaNumbersSection
+                    orgId={waOrgId}
+                    role={form.role}
+                    value={form.whatsapp_sessions}
+                    onChange={setWaSessions}
+                    disabled={loading}
+                  />
                 ) : null}
               </>
             ) : (
@@ -445,6 +506,15 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
                   <Alert severity="warning" sx={{ py: 0.5 }}>
                     {SETTINGS_WARNING}
                   </Alert>
+                ) : null}
+                {hasWhatsApp(form.modules) ? (
+                  <WaNumbersSection
+                    orgId={waOrgId}
+                    role={form.role}
+                    value={form.whatsapp_sessions}
+                    onChange={setWaSessions}
+                    disabled={loading}
+                  />
                 ) : null}
               </>
             )}
@@ -507,6 +577,8 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   const [subLoading, setSubLoading] = useState(false);
   const [subError, setSubError] = useState('');
   const [modules, setModules] = useState([]);
+  // números do WhatsApp liberados (null = todos)
+  const [waSessions, setWaSessions] = useState(null);
   // null = ainda não carregado (o PlanFields só monta com o plano fresco da conta)
   const [plan, setPlan] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -541,6 +613,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   useEffect(() => {
     if (!open) return;
     setModules(normalizeModules(user?.modules || []));
+    setWaSessions(normalizeWaSessions(user?.whatsapp_sessions));
     setSub(null);
     setSubError('');
     setPlan(null); // zera preço/período/observações do usuário anterior
@@ -552,6 +625,9 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
     const a = normalizeModules(user?.modules || []).join(',');
     return a !== modules.join(',');
   }, [user, modules]);
+  // só conta como mudança quando o campo vai no payload (módulo WhatsApp + MEMBER)
+  const waPayload = waSessionsForPayload(modules, user?.role, waSessions);
+  const waDirty = waPayload !== undefined && !sameWaSessions(user?.whatsapp_sessions, waPayload);
   const planDirty = useMemo(() => {
     if (!sub || !plan) return false;
     const a = sub.access || {};
@@ -562,7 +638,12 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   const saveAll = async () => {
     setSaving(true);
     try {
-      if (modulesDirty) await patch(`/admin/users/${user.id}`, { modules });
+      if (modulesDirty || waDirty) {
+        await patch(`/admin/users/${user.id}`, {
+          modules,
+          ...(waPayload !== undefined ? { whatsapp_sessions: waPayload } : {})
+        });
+      }
       if (planDirty) {
         const s = await patch(`/admin/billing/subscriptions/${orgId}`, {
           price_cents: plan.price_cents,
@@ -729,6 +810,9 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
                 {SETTINGS_WARNING}
               </Alert>
             ) : null}
+            {hasWhatsApp(modules) ? (
+              <WaNumbersSection orgId={orgId} role={user?.role} value={waSessions} onChange={setWaSessions} disabled={saving} />
+            ) : null}
 
             <SectionHeader icon={IconReceipt2} title="Plano da conta" hint="mudanças valem na próxima cobrança" />
             {subError ? (
@@ -781,7 +865,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
           <Button
             variant="contained"
             onClick={saveAll}
-            disabled={saving || !!busy || loading || (!modulesDirty && !planDirty) || !!plan?.period_invalid}
+            disabled={saving || !!busy || loading || (!modulesDirty && !waDirty && !planDirty) || !!plan?.period_invalid}
             startIcon={saving ? <CircularProgress size={14} color="inherit" /> : null}
           >
             Salvar alterações
@@ -931,12 +1015,16 @@ export default function AdminUsers() {
     setActionLoading(true);
     setActionError('');
     try {
+      const modules = normalizeModules(form.modules);
+      // null = todos os números · [ids] = só esses · undefined = não envia (sem módulo ou dono/admin)
+      const whatsapp_sessions = waSessionsForPayload(modules, form.role, form.whatsapp_sessions);
       if (userDialog.mode === 'edit') {
         await patch(`/admin/users/${userDialog.initial.id}`, {
           name: form.name,
           role: form.role,
           active: form.active,
-          modules: normalizeModules(form.modules)
+          modules,
+          ...(whatsapp_sessions !== undefined ? { whatsapp_sessions } : {})
         });
       } else {
         await post('/admin/users', {
@@ -945,7 +1033,8 @@ export default function AdminUsers() {
           email: form.email,
           password: form.password,
           role: form.role,
-          modules: normalizeModules(form.modules)
+          modules,
+          ...(whatsapp_sessions !== undefined ? { whatsapp_sessions } : {})
         });
       }
       setUserDialog({ open: false, mode: 'create', initial: null });
@@ -1208,7 +1297,12 @@ export default function AdminUsers() {
                             <Chip size="small" label="Tudo" color="secondary" variant="outlined" sx={{ height: 22, fontWeight: 700 }} />
                           </Tooltip>
                         ) : (
-                          <ModuleChips value={u.modules} />
+                          <Stack spacing={0.5} alignItems="flex-start">
+                            <ModuleChips value={u.modules} />
+                            {hasWhatsApp(u.modules) ? (
+                              <WhatsAppAccessChip user={u} orgId={u.organization_id || u.organizations?.id} />
+                            ) : null}
+                          </Stack>
                         )}
                       </TableCell>
                       <TableCell>

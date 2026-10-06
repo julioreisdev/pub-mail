@@ -74,7 +74,9 @@ export class WhatsAppMediaService {
   }
 
   signedUrl(id: string, ttl = SIGNED_TTL_SEC) {
-    const exp = Math.floor(Date.now() / 1000) + ttl;
+    // validade arredondada para o fim do dia (UTC): o link de uma mídia é o MESMO o dia inteiro.
+    // Se mudasse a cada leitura, o <audio>/<video> do painel recarregava e zerava no meio da reprodução.
+    const exp = Math.ceil((Math.floor(Date.now() / 1000) + ttl) / 86_400) * 86_400;
     return `${this.baseUrl()}/public/whatsapp-media/${id}?e=${exp}&s=${this.sig(id, exp)}`;
   }
 
@@ -189,13 +191,15 @@ export class WhatsAppMediaService {
   // mídia das copies de broadcast). Não vencem nem são apagadas pela limpeza de dados do número.
   async referencedIds(orgIds?: string[]): Promise<Set<string>> {
     const where = orgIds?.length ? { organization_id: { in: orgIds } } : {};
-    const [replies, flows, copies] = await Promise.all([
+    const [replies, flows, copies, team] = await Promise.all([
       this.prisma.whatsapp_quick_replies.findMany({ where: { ...where, media_id: { not: null } }, select: { media_id: true } }),
       this.prisma.whatsapp_bot_flows.findMany({ where, select: { definition: true } }),
       this.prisma.whatsapp_broadcast_copies.findMany({ where, select: { messages: true } }),
+      this.prisma.team_messages.findMany({ where: { ...where, media_id: { not: null }, deleted_at: null }, select: { media_id: true } }).catch(() => [] as { media_id: string | null }[]),
     ]);
     const ids = new Set<string>();
     for (const r of replies) if (r.media_id) ids.add(r.media_id);
+    for (const r of team) if (r.media_id) ids.add(r.media_id);
     const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     for (const json of [...flows.map((f) => f.definition), ...copies.map((c) => c.messages)]) {
       for (const m of JSON.stringify(json ?? null).match(uuid) || []) ids.add(m.toLowerCase());

@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppContactsService } from './whatsapp-contacts.service';
-import { digitsOf, isGroupJid, phoneFromJid } from './wa-jid.util';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { digitsOf, isGroupJid, jidFromPhone, phoneFromJid } from './wa-jid.util';
 import { BILLINGS, CUSTOMER_STATUSES, SUBSCRIPTION_STATUSES } from './dto/whatsapp-crm.dto';
 
 // ============================================================================
@@ -9,14 +10,19 @@ import { BILLINGS, CUSTOMER_STATUSES, SUBSCRIPTION_STATUSES } from './dto/whatsa
 // assinaturas (produto + valor + vencimento). Genérico: serve para qualquer
 // negócio (produto físico, serviço, plano, mensalidade).
 //
-//   cliente 1 ─── 1 contato (whatsapp_contacts)   → conversa = contato.wa_id
+//   cliente 1 ─── 1 contato (whatsapp_contacts)   → conversas = uma por NÚMERO (multi-número)
 //   cliente 1 ─── N assinaturas ─── 0..1 produto
 //
 // Variáveis para mensagens (respostas rápidas, agendamentos, broadcasts, bot):
 //   {{cliente.nome}} {{cliente.primeiro_nome}} {{cliente.produto}} {{cliente.produtos}}
 //   {{cliente.valor}} {{cliente.vencimento}} {{cliente.dia_vencimento}} {{cliente.status}}
 //   (+ {{nome}} {{telefone}} que já existiam) — ver `varsForChat`.
+//
+// Multi-número: o cliente é DA ORG. `byChat` recebe o uuid da conversa (API); quem já tem
+// (número, jid) — bot, broadcasts, agendamentos, cobranças — usa `byContactJid`/`varsForChat(jid)`.
 // ============================================================================
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 export const BILLING_LABEL: Record<string, string> = { once: 'Avulso', monthly: 'Mensal', quarterly: 'Trimestral', yearly: 'Anual' };
 const BILLING_MONTHS: Record<string, number> = { monthly: 1, quarterly: 3, yearly: 12 };
@@ -88,7 +94,7 @@ const normCustomFields = (raw: unknown) => {
 @Injectable()
 export class WhatsAppCrmService {
   private readonly logger = new Logger(WhatsAppCrmService.name);
-  constructor(private readonly prisma: PrismaService, private readonly contacts: WhatsAppContactsService) {}
+  constructor(private readonly prisma: PrismaService, private readonly contacts: WhatsAppContactsService, private readonly presenter: WhatsAppPresenter) {}
 
   // ---------------------------------------------------------------- configurações
   async settings(orgId: string) {
@@ -171,7 +177,7 @@ export class WhatsAppCrmService {
       last_paid_at: s.last_paid_at, canceled_at: s.canceled_at, notes: s.notes, created_at: s.created_at,
     };
   }
-  private shapeCustomer(c: any, contact: any, subs: any[], fields: any[] = []) {
+  private shapeCustomer(c: any, contact: any, subs: any[], fields: any[] = [], chats: Array<{ chat_id: string; session_id: string; jid: string; session: any }> = []) {
     const today = todayUTC();
     const shapedSubs = subs.map((s) => this.shapeSub(s, today));
     const live = shapedSubs.filter((s) => s.status === 'active' || s.status === 'overdue');
@@ -183,7 +189,11 @@ export class WhatsAppCrmService {
       id: c.id, contact_id: c.contact_id, name: c.name, doc: c.doc, email: c.email, address: c.address || null, notes: c.notes, custom,
       custom_list: fields.map((f) => ({ ...f, value: custom[f.key] ?? '' })),
       status: c.status, since: c.since ? dateOnly(new Date(c.since)) : null, created_at: c.created_at, updated_at: c.updated_at,
-      phone: contact?.phone || null, phone_label: contact?.phone ? `+${contact.phone}` : '', chat_id: contact?.wa_id || null, push_name: contact?.push_name || null,
+      phone: contact?.phone || null, phone_label: contact?.phone ? `+${contact.phone}` : '', push_name: contact?.push_name || null,
+      // conversas da pessoa (uma por número, a mais recente primeiro); `chat_id` = uuid da primeira (compat)
+      jid: contact?.wa_id || null,
+      chats,
+      chat_id: chats[0]?.chat_id || null,
       contact_tags: Array.isArray(contact?.tags) ? contact.tags : [],
       subscriptions: shapedSubs,
       billing_status: c.status !== 'active' ? 'inactive' : overdue ? 'overdue' : live.length ? 'ok' : 'none',
@@ -191,6 +201,33 @@ export class WhatsAppCrmService {
       monthly_cents: Math.round(monthly), monthly_label: formatBRL(Math.round(monthly)),
       products: live.map((s) => s.product_name),
     };
+  }
+
+  /** jids pelos quais a pessoa pode aparecer numa conversa (telefone, @lid, wa_id). */
+  private contactJids(contact: any): string[] {
+    if (!contact) return [];
+    return [...new Set([contact.wa_id, contact.lid, contact.phone ? jidFromPhone(contact.phone) : null].filter(Boolean))] as string[];
+  }
+
+  /** Conversas (uma por número) de cada contato, no formato público, mais recentes primeiro. */
+  private async chatsOfContacts(orgId: string, contacts: any[]) {
+    const out = new Map<string, Array<{ chat_id: string; session_id: string; jid: string; session: any; last_message_at: Date | null }>>();
+    const all = [...new Set(contacts.flatMap((c) => this.contactJids(c)))];
+    if (!all.length) return out;
+    const [rows, smap] = await Promise.all([
+      this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, kind: 'individual', chat_id: { in: all } }, select: { id: true, session_id: true, chat_id: true, last_message_at: true }, orderBy: { last_message_at: 'desc' } }),
+      this.presenter.sessionMap(orgId),
+    ]);
+    const byJid = new Map<string, typeof rows>();
+    for (const r of rows) byJid.set(r.chat_id, [...(byJid.get(r.chat_id) || []), r]);
+    for (const c of contacts) {
+      const seen = new Set<string>();
+      const list: Array<{ chat_id: string; session_id: string; jid: string; session: any; last_message_at: Date | null }> = [];
+      for (const jid of this.contactJids(c)) for (const r of byJid.get(jid) || []) if (!seen.has(r.id)) { seen.add(r.id); list.push({ chat_id: r.id, session_id: r.session_id, jid: r.chat_id, session: smap.get(r.session_id) || null, last_message_at: r.last_message_at }); }
+      list.sort((a, b) => (b.last_message_at?.getTime() || 0) - (a.last_message_at?.getTime() || 0));
+      out.set(c.id, list);
+    }
+    return out;
   }
 
   private async hydrate(orgId: string, rows: any[]) {
@@ -201,9 +238,10 @@ export class WhatsAppCrmService {
       this.settings(orgId),
     ]);
     const byContact = new Map(contacts.map((c) => [c.id, c]));
+    const chats = await this.chatsOfContacts(orgId, contacts);
     const byCustomer = new Map<string, any[]>();
     for (const s of subs) byCustomer.set(s.customer_id, [...(byCustomer.get(s.customer_id) || []), s]);
-    return rows.map((r) => this.shapeCustomer(r, byContact.get(r.contact_id), byCustomer.get(r.id) || [], cfg.custom_fields));
+    return rows.map((r) => this.shapeCustomer(r, byContact.get(r.contact_id), byCustomer.get(r.id) || [], cfg.custom_fields, (chats.get(r.contact_id) || []).map(({ last_message_at: _l, ...x }) => x)));
   }
 
   async listCustomers(orgId: string, q: any = {}) {
@@ -215,6 +253,17 @@ export class WhatsAppCrmService {
       const s = String(q.q).trim(), d = digitsOf(s);
       const byPhone = d.length >= 4 ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, phone: { contains: d } }, select: { id: true }, take: 500 }) : [];
       where.OR = [{ name: { contains: s } }, { email: { contains: s } }, ...(d ? [{ doc: { contains: d } }] : []), ...(byPhone.length ? [{ contact_id: { in: byPhone.map((c) => c.id) } }] : [])];
+    }
+    if (q.session_id) {
+      // só clientes cujo contato tem conversa individual naquele NÚMERO (casa por wa_id, lid ou telefone@c.us)
+      const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: String(q.session_id), kind: 'individual' }, select: { chat_id: true }, take: 20000 });
+      const jids = chats.map((c) => c.chat_id);
+      const phones = jids.map((j) => j.split('@')[0]).filter((d) => /^\d{8,15}$/.test(d));
+      const contacts = jids.length
+        ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ wa_id: { in: jids } }, { lid: { in: jids } }, ...(phones.length ? [{ phone: { in: phones } }] : [])] }, select: { id: true }, take: 20000 })
+        : [];
+      const ids = contacts.map((c) => c.id);
+      where.contact_id = ids.length ? { in: ids } : { in: ['__none__'] };
     }
     if (q.product_id) {
       const subs = await this.prisma.whatsapp_subscriptions.findMany({ where: { organization_id: orgId, product_id: String(q.product_id), status: { in: ['active', 'overdue', 'paused'] } }, select: { customer_id: true } });
@@ -244,14 +293,22 @@ export class WhatsAppCrmService {
     return (await this.hydrate(orgId, [c]))[0];
   }
 
-  /** Cliente da conversa (null se o contato ainda não foi promovido). Inclui o contato para o painel. */
-  async byChat(orgId: string, chatId: string) {
-    if (!chatId || isGroupJid(chatId)) return { customer: null, contact: null };
-    const canonical = await this.contacts.canonicalChatId(orgId, chatId).catch(() => chatId);
-    const ids = [...new Set([canonical, chatId])];
-    let contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, wa_id: { in: ids } }, orderBy: { saved: 'desc' } });
+  /** Cliente da conversa pelo uuid (API). null se o contato ainda não foi promovido. Inclui o contato e a conversa. */
+  async byChat(orgId: string, chatUuid: string) {
+    const row = await this.prisma.whatsapp_chats.findFirst({ where: { id: String(chatUuid || ''), organization_id: orgId }, select: { id: true, session_id: true, chat_id: true } });
+    if (!row) return { customer: null, contact: null, chat: null };
+    const r = await this.byContactJid(orgId, row.session_id, row.chat_id);
+    return { ...r, chat: { chat_id: row.id, session_id: row.session_id, jid: row.chat_id } };
+  }
+
+  /** Cliente de (número, jid) — para quem já tem o jid (bot, broadcasts, agendamentos, cobranças). `session` = id da sessão ou null. */
+  async byContactJid(orgId: string, session: string | null | undefined, jid: string) {
+    if (!jid || isGroupJid(jid)) return { customer: null, contact: null };
+    const canonical = await this.contacts.canonicalChatId(orgId, session || null, jid).catch(() => jid);
+    const ids = [...new Set([canonical, jid])];
+    let contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ wa_id: { in: ids } }, { lid: { in: ids } }] }, orderBy: { saved: 'desc' } });
     if (!contact) {
-      const phone = phoneFromJid(chatId);
+      const phone = phoneFromJid(canonical) || phoneFromJid(jid);
       if (phone) contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, phone } });
     }
     if (!contact) return { customer: null, contact: null };
@@ -454,11 +511,15 @@ export class WhatsAppCrmService {
   }
 
   // ---------------------------------------------------------------- variáveis para mensagens
-  /** Variáveis `{{cliente.*}}` da conversa (vazias quando o contato não é cliente). Barato: 2 consultas. */
-  async varsForChat(orgId: string, chatId: string): Promise<Record<string, string>> {
+  /**
+   * Variáveis `{{cliente.*}}` da conversa (vazias quando o contato não é cliente). Barato: 2–3 consultas.
+   * `ref` = jid (quem já tem o jid: bot, broadcasts, agendamentos — `sessionId` opcional ajuda a resolver @lid)
+   * OU uuid da conversa (rotas da API).
+   */
+  async varsForChat(orgId: string, ref: string, sessionId?: string | null): Promise<Record<string, string>> {
     const empty = { 'cliente.nome': '', 'cliente.primeiro_nome': '', 'cliente.produto': '', 'cliente.produtos': '', 'cliente.valor': '', 'cliente.vencimento': '', 'cliente.dia_vencimento': '', 'cliente.status': '', 'cliente.email': '', 'cliente.documento': '' };
     try {
-      const { customer } = await this.byChat(orgId, chatId);
+      const { customer } = UUID_RE.test(String(ref || '')) && !String(ref).includes('@') ? await this.byChat(orgId, ref) : await this.byContactJid(orgId, sessionId || null, ref);
       if (!customer) return empty;
       const live = customer.subscriptions.filter((s: any) => s.status === 'active' || s.status === 'overdue');
       const next = live.filter((s: any) => s.next_due_at).sort((a: any, b: any) => String(a.next_due_at).localeCompare(String(b.next_due_at)))[0] || live[0] || null;
@@ -472,7 +533,7 @@ export class WhatsAppCrmService {
       for (const f of customer.custom_list || []) vars[`cliente.${f.key}`] = String(f.value ?? '');
       return vars;
     } catch (e: any) {
-      this.logger.debug(`vars ${chatId}: ${e?.message || e}`);
+      this.logger.debug(`vars ${ref}: ${e?.message || e}`);
       return empty;
     }
   }

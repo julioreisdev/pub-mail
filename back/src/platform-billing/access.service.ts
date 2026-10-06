@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Prisma } from 'generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ALL_MODULES, ModuleKey, normalizeModules } from './modules.const';
 
@@ -6,6 +7,8 @@ import { ALL_MODULES, ModuleKey, normalizeModules } from './modules.const';
 //  - plano/pagamento vive em `organization_access` (1 por org);
 //  - módulos vivem em `users.modules` (por usuário — na mesma conta um pode ter
 //    Configurações e outro não);
+//  - números do WhatsApp liberados vivem em `users.whatsapp_sessions` (ids; null = todos;
+//    OWNER/ADMIN/SUPER_ADMIN sempre todos — a checagem por rota é do WaAccessService);
 //  - SUPER_ADMIN nunca é cobrado nem filtrado (bypass por role, tratado nos consumidores).
 // Tudo cacheado 60 s em memória (mesmo padrão do JwtStrategy) e invalidado nos writes.
 
@@ -33,11 +36,23 @@ export type OrgState = {
 
 type Cached<T> = { value: T; expiresAt: number };
 
+/** `users.whatsapp_sessions` cru → `string[]` (ids únicos, sem vazios) ou `null` (= todos). */
+export function normalizeWhatsAppSessions(raw: unknown): string[] | null {
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw)) return null; // valor inesperado no JSON = sem restrição (mesma regra do WaAccessService)
+  const out: string[] = [];
+  for (const v of raw) {
+    const id = String(v ?? '').trim();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 @Injectable()
 export class AccessService {
   private readonly logger = new Logger(AccessService.name);
   private readonly orgCache = new Map<string, Cached<any>>();
-  private readonly userCache = new Map<string, Cached<{ modules: ModuleKey[]; welcomed: boolean }>>();
+  private readonly userCache = new Map<string, Cached<{ modules: ModuleKey[]; welcomed: boolean; whatsapp_sessions: string[] | null }>>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -122,12 +137,14 @@ export class AccessService {
     const now = Date.now();
     const c = this.userCache.get(userId);
     if (c && c.expiresAt > now) return c.value;
-    let value = { modules: [] as ModuleKey[], welcomed: false };
+    let value = { modules: [] as ModuleKey[], welcomed: false, whatsapp_sessions: null as string[] | null };
     try {
-      const u = await this.prisma.users.findUnique({ where: { id: userId }, select: { modules: true, welcomed_at: true, role: true } });
+      const u = await this.prisma.users.findUnique({ where: { id: userId }, select: { modules: true, welcomed_at: true, role: true, whatsapp_sessions: true } });
       value = {
         modules: u?.role === 'SUPER_ADMIN' ? ALL_MODULES : normalizeModules(u?.modules),
         welcomed: !!u?.welcomed_at,
+        // dono/admin = todos (null), mesmo que a coluna tenha algo gravado
+        whatsapp_sessions: AccessService.seesAllWhatsApp(u?.role) ? null : normalizeWhatsAppSessions(u?.whatsapp_sessions),
       };
     } catch (e: any) {
       this.logger.warn(`users.modules read falhou user=${userId}: ${e?.message || e}`);
@@ -147,6 +164,8 @@ export class AccessService {
     return {
       is_super: isSuper,
       modules,
+      // números do WhatsApp que o usuário vê (null = todos os da org)
+      whatsapp_sessions: AccessService.seesAllWhatsApp(role) ? null : u.whatsapp_sessions,
       status: st.status,
       needs_payment: isSuper ? false : st.needs_payment,
       // Boas-vindas: 1ª vez, conta gratuita (quem paga já tem a tela de sucesso do PIX).
@@ -209,6 +228,21 @@ export class AccessService {
     await db.users.update({ where: { id: userId }, data: { modules: mods } });
     this.invalidateUser(userId);
     return mods;
+  }
+
+  // Números do WhatsApp liberados p/ o usuário. `null` = todos. NÃO valida se os ids são da
+  // org do usuário (quem chama — admin — normaliza antes); só grava e invalida o cache daqui.
+  // O chamador ainda precisa invalidar o WaAccessService e re-inscrever o socket (RealtimeService).
+  async setUserWhatsAppSessions(userId: string, ids: string[] | null | undefined, tx?: any) {
+    const db = tx || this.prisma;
+    const value = normalizeWhatsAppSessions(ids);
+    await db.users.update({ where: { id: userId }, data: { whatsapp_sessions: value === null ? Prisma.DbNull : value } });
+    this.invalidateUser(userId);
+    return value;
+  }
+
+  static seesAllWhatsApp(role?: string | null) {
+    return role === 'OWNER' || role === 'ADMIN' || role === 'SUPER_ADMIN';
   }
 
   async markWelcomed(userId: string) {

@@ -17,18 +17,25 @@ import { IconBarcode, IconCash, IconQrcode, IconSend } from '@tabler/icons-react
 
 import { get, post } from 'api/api';
 import { TgModal } from 'views/pages/telegram/ui';
+import { WaNumberChip, WaNumberSelect, useWaSessions } from '../waKit';
 import { errMsg, fmtPhone } from '../waShared';
 import { MoneyField, billingShort, formatBRL, todayIso, waPrimaryBtn } from './crmKit';
 
 // ============================================================================
 // Nova cobrança (PIX e/ou boleto) — usada na tela Cobranças e no botão "Cobrar"
 // da conversa. Com `customer` fixo não mostra a busca de cliente.
+// Multi-número: `chatId` (uuid da conversa) → a cobrança sai pelo número dessa conversa
+// (POST com `chat_id`, sem seletor). Sem conversa (por cliente) e com > 1 número conectado,
+// mostra "Enviar pelo número" (`session_id`; padrão = número da conversa mais recente do cliente).
 // ============================================================================
 
 const hasBoletoData = (c) =>
   Boolean(c?.doc && c?.email && c?.address?.zip && c?.address?.street && c?.address?.number && c?.address?.city && c?.address?.state);
 
-export default function ChargeDialog({ open, onClose, customer: fixedCustomer, products = [], onCreated }) {
+export default function ChargeDialog({ open, onClose, customer: fixedCustomer, chatId, chat, products = [], onCreated }) {
+  const { sessions, byId: sessionsById } = useWaSessions(open ? 30000 : 0);
+  const connectedSessions = useMemo(() => sessions.filter((s) => s.connected || s.status === 'ready'), [sessions]);
+  const [sessionId, setSessionId] = useState('');
   const [settings, setSettings] = useState(null);
   const [customer, setCustomer] = useState(fixedCustomer || null);
   const [options, setOptions] = useState([]);
@@ -78,11 +85,20 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, p
     return () => window.clearTimeout(t);
   }, [q, open, fixedCustomer]);
 
-  // ao escolher cliente com 1 assinatura ativa, já pré-seleciona
+  // ao escolher cliente com 1 assinatura ativa, já pré-seleciona; o número padrão é o da
+  // conversa mais recente do cliente (se estiver conectado)
   useEffect(() => {
-    if (!customer) return;
+    if (!customer) {
+      setSessionId('');
+      return;
+    }
     const live = (customer.subscriptions || []).filter((s) => s.status === 'active' || s.status === 'overdue');
     if (live.length === 1) pickSub(live[0].id, customer);
+    const recent = (customer.chats || []).find((c) => {
+      const sess = sessionsById.get(c.session_id);
+      return sess && (sess.connected || sess.status === 'ready');
+    });
+    setSessionId(recent?.session_id || '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customer?.id]);
 
@@ -111,6 +127,9 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, p
   const boletoOk = Boolean(settings?.boleto_available);
   const boletoData = hasBoletoData(customer);
   const wantsBoleto = f.kind === 'boleto' || f.kind === 'both';
+  // número pelo qual a cobrança sai: o da conversa (quando aberta de dentro do chat) ou o escolhido
+  const chatSession = chat?.session || (chat?.session_id ? sessionsById.get(chat.session_id) : null) || null;
+  const askNumber = !chatId && connectedSessions.length > 1;
 
   const submit = async () => {
     if (!customer) return toast.error('Escolha o cliente.');
@@ -121,6 +140,7 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, p
     try {
       const r = await post('/whatsapp/charges', {
         customer_id: customer.id,
+        ...(chatId ? { chat_id: chatId } : askNumber && sessionId ? { session_id: sessionId } : {}),
         subscription_id: f.subscription_id || undefined,
         product_id: f.product_id || undefined,
         amount_cents: f.amount_cents,
@@ -145,7 +165,18 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, p
       open={open}
       onClose={() => !busy && onClose?.()}
       title="Nova cobrança"
-      subtitle={customer ? `${customer.name} · ${fmtPhone(customer.phone)}` : 'PIX e/ou boleto enviados direto na conversa do WhatsApp'}
+      subtitle={
+        customer ? (
+          <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex' }}>
+            <span>
+              {customer.name} · {fmtPhone(customer.phone)}
+            </span>
+            {chatId && chatSession && sessions.length > 1 ? <WaNumberChip session={chatSession} /> : null}
+          </Stack>
+        ) : (
+          'PIX e/ou boleto enviados direto na conversa do WhatsApp'
+        )
+      }
       maxWidth="sm"
       disableClose={busy}
       footer={
@@ -307,6 +338,18 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, p
             </Typography>
           ) : null}
         </Stack>
+        {askNumber ? (
+          <WaNumberSelect
+            sessions={sessions}
+            value={sessionId}
+            onChange={setSessionId}
+            onlyConnected
+            allowAll
+            allLabel="Automático (conversa mais recente do cliente)"
+            label="Enviar pelo número"
+            helperText="A cobrança, os lembretes e o recibo saem por este número."
+          />
+        ) : null}
         <FormControlLabel
           control={<Switch size="small" checked={f.send} onChange={(e) => set('send', e.target.checked)} />}
           label={<Typography variant="body2">Enviar agora na conversa do WhatsApp</Typography>}

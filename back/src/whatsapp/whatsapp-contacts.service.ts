@@ -1,16 +1,20 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { promises as fsp } from 'fs';
+import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { OpenWaClient, OpenWaError } from './openwa.client';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 
-// Contatos do WhatsApp da organização.
+// Contatos do WhatsApp da organização — SÃO DA ORGANIZAÇÃO (agenda compartilhada entre os números).
 // - `source='session'`: veio do celular (sync) ou apareceu numa conversa;
 // - `saved=true`: guardado NA ORGANIZAÇÃO — sobrevive à troca de número (D6);
 // - `wa_id` = jid (`<digitos>@c.us` ou `<id>@lid`); `phone` = só dígitos quando conhecido.
+// O que depende do NÚMERO (motor, telefone próprio, mapeamento @lid do gateway) recebe a
+// sessão (linha de whatsapp_sessions) como parâmetro.
 
 export { digitsOf, jidFromPhone, phoneFromJid, isGroupJid, isLidJid, normJid, hasDeviceSuffix } from './wa-jid.util';
-import { digitsOf, jidFromPhone, phoneFromJid, isGroupJid, isLidJid, normJid, hasDeviceSuffix } from './wa-jid.util';
+import { digitsOf, jidFromPhone, phoneFromJid, isGroupJid, isLidJid, normJid, hasDeviceSuffix, isIdLikeName } from './wa-jid.util';
 
 function normTags(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -22,13 +26,17 @@ function normTags(raw: unknown): string[] {
   return out.slice(0, 30);
 }
 
+type SessionLike = { id: string; engine?: string | null; openwa_session_id?: string | null; phone?: string | null; status?: string | null; organization_id?: string } | string | null | undefined;
+
 @Injectable()
 export class WhatsAppContactsService {
   private readonly logger = new Logger(WhatsAppContactsService.name);
 
   constructor(private readonly prisma: PrismaService, private readonly openwa: OpenWaClient, private readonly sessions: WhatsAppSessionsService, private readonly media: WhatsAppMediaService) {}
 
-  private shape(c: any, chatIds?: Map<string, string>) {
+  private shape(c: any, chats?: Map<string, Array<{ id: string; session_id: string }>>, smap?: Map<string, any>) {
+    // cada conversa com `chat_id` (uuid) + `session` (brief), além de `id` (compat)
+    const list = (chats?.get(c.wa_id) || []).map((x) => ({ ...x, chat_id: x.id, session: smap?.get(x.session_id) || null }));
     return {
       id: c.id,
       wa_id: c.wa_id,
@@ -47,26 +55,45 @@ export class WhatsAppContactsService {
       source: c.source,
       last_message_at: c.last_message_at,
       synced_at: c.synced_at,
-      chat_id: chatIds ? chatIds.get(c.wa_id) || null : null,
+      // conversas existentes desta pessoa (uma por número); `chat_id` = a primeira (compat)
+      chats: list,
+      chat_id: list[0]?.id || null,
       created_at: c.created_at,
     };
   }
 
+  // ---------------------------------------------------------------- sessão (número)
+  /** Normaliza "sessão ou id de sessão" para a linha. */
+  private async sessionOf(orgId: string, s: SessionLike) {
+    if (!s) return null;
+    if (typeof s === 'string') return this.sessions.rowById(orgId, s);
+    return s;
+  }
+
+  private sessionInfo(s: any) {
+    return { id: s?.id || null, engine: String(s?.engine || 'wwjs'), sid: s?.openwa_session_id || null, phone: s?.phone ? digitsOf(s.phone) : null };
+  }
+
   // Upsert leve usado pelo pipeline de entrada (nunca sobrescreve nome salvo manualmente).
-  async touch(orgId: string, waId: string, info: { phone?: string; pushName?: string; name?: string; lid?: string; at?: Date }) {
+  async touch(orgId: string, session: SessionLike, waId: string, info: { phone?: string; pushName?: string; name?: string; lid?: string; at?: Date }) {
     if (!waId || isGroupJid(waId)) return null;
+    const sess = await this.sessionOf(orgId, session);
+    if (isLidJid(waId) && !info.lid && sess) {
+      const canon = await this.canonicalChatId(orgId, sess, waId).catch(() => waId);
+      if (canon !== waId) return this.touch(orgId, sess, canon, { ...info, phone: phoneFromJid(canon), lid: normJid(waId) });
+    }
     const phone = info.phone ? digitsOf(info.phone) : phoneFromJid(waId);
     const data: any = { last_message_at: info.at || new Date() };
     if (phone) data.phone = phone.slice(0, 32);
     if (info.lid) data.lid = String(info.lid).slice(0, 64);
-    if (info.pushName) data.push_name = String(info.pushName).slice(0, 255);
+    if (info.pushName && !isIdLikeName(info.pushName)) data.push_name = String(info.pushName).slice(0, 255);
     try {
       const c = await this.prisma.whatsapp_contacts.upsert({
         where: { organization_id_wa_id: { organization_id: orgId, wa_id: waId } },
-        create: { organization_id: orgId, wa_id: waId, source: 'session', name: info.name ? String(info.name).slice(0, 255) : null, ...(isLidJid(waId) ? { lid: waId } : {}), ...data },
+        create: { organization_id: orgId, wa_id: waId, source: 'session', name: info.name && !isIdLikeName(info.name) ? String(info.name).slice(0, 255) : null, ...(isLidJid(waId) ? { lid: waId } : {}), ...data },
         update: { ...data, ...(isLidJid(waId) ? { lid: waId } : {}) },
       });
-      if (c.lid && c.phone) await this.mergeChats(orgId, c.phone, c.lid).catch(() => undefined);
+      if (c.lid && c.phone && sess) await this.mergeChats(orgId, sess, c.phone, c.lid).catch(() => undefined);
       return c;
     } catch (e: any) {
       this.logger.warn(`touch contact falhou ${waId}: ${e?.message || e}`);
@@ -74,49 +101,296 @@ export class WhatsAppContactsService {
     }
   }
 
-  // O WhatsApp usa <lid>@lid nas conversas; quando a mesma pessoa também existe como
-  // <phone>@c.us (chat aberto por telefone / envio antigo), unifica tudo no chat @lid.
-  async mergeChats(orgId: string, phone: string, lid: string) {
-    const phoneJid = `${digitsOf(phone)}@c.us`;
-    if (!digitsOf(phone) || !isLidJid(lid) || phoneJid === lid) return;
-    const pc = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: phoneJid } } });
-    if (!pc) return;
-    const lc = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: lid } } });
-    // mensagens: move (ignora colisão de wa_message_id, que já existe no lid)
-    const msgs = await this.prisma.whatsapp_messages.findMany({ where: { organization_id: orgId, chat_id: phoneJid }, select: { id: true } });
-    for (const m of msgs) await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { chat_id: lid } }).catch(() => this.prisma.whatsapp_messages.delete({ where: { id: m.id } }).catch(() => undefined));
-    if (lc) {
-      const newer = !lc.last_message_at || (pc.last_message_at && pc.last_message_at > lc.last_message_at);
-      await this.prisma.whatsapp_chats.update({ where: { id: lc.id }, data: { name: lc.name || pc.name, unread_count: lc.unread_count + pc.unread_count, ...(newer && pc.last_message_at ? { last_message_at: pc.last_message_at, last_message_preview: pc.last_message_preview, last_message_direction: pc.last_message_direction } : {}) } });
-      await this.prisma.whatsapp_chats.delete({ where: { id: pc.id } });
-    } else {
-      await this.prisma.whatsapp_chats.update({ where: { id: pc.id }, data: { chat_id: lid } });
-    }
-    // contato duplicado (@c.us) some em favor do @lid, preservando salvo/tags/nome
-    const dupe = await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: phoneJid } } });
-    const keep = await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: lid } } });
-    if (dupe && keep && dupe.id !== keep.id) {
-      await this.prisma.whatsapp_contacts.update({ where: { id: keep.id }, data: { name: keep.name || dupe.name, saved: keep.saved || dupe.saved, tags: [...new Set([...normTags(keep.tags), ...normTags(dupe.tags)])], notes: keep.notes || dupe.notes, phone: keep.phone || dupe.phone, source: dupe.source === 'manual' || dupe.source === 'import' ? dupe.source : keep.source } });
-      await this.prisma.whatsapp_contacts.delete({ where: { id: dupe.id } });
-    }
+  // ---------------------------------------------------------------- @lid ↔ telefone
+  // A mesma pessoa pode aparecer como <lid>@lid e como <telefone>@c.us. O id canônico depende do motor do NÚMERO:
+  //  - whatsapp-web.js: as conversas chegam pelo @lid → canônico = @lid;
+  //  - Baileys: o gateway entrega pelo telefone → canônico = <telefone>@c.us. O histórico antigo
+  //    (importado pelo @lid) é unificado usando o mapa lid↔telefone que o próprio Baileys guarda
+  //    em disco (`lid-mapping-<lid>_reverse.json` no volume do gateway, por sessão).
+  private readonly lidPhoneCache = new Map<string, { at: number; phone: string | null }>();
+
+  /** Telefone de um @lid: banco primeiro; no Baileys, o arquivo de mapeamento do gateway daquela sessão. */
+  async phoneOfLid(orgId: string, session: SessionLike, lid: string): Promise<string | null> {
+    const jid = normJid(lid);
+    if (!isLidJid(jid)) return null;
+    const known = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, lid: jid, phone: { not: null } }, select: { phone: true } });
+    if (known?.phone) return digitsOf(known.phone);
+    const info = this.sessionInfo(await this.sessionOf(orgId, session));
+    if (info.engine !== 'baileys' || !info.sid) return null;
+    const key = `${info.sid}:${jid}`;
+    const hit = this.lidPhoneCache.get(key);
+    if (hit && (hit.phone || Date.now() - hit.at < 10 * 60_000)) return hit.phone;
+    let phone: string | null = null;
+    try {
+      const dir = String(process.env.OPENWA_BAILEYS_DATA_DIR || '/opt/openwa-baileys/data');
+      const user = jid.split('@')[0].replace(/[^0-9]/g, '');
+      if (user) {
+        const raw = JSON.parse(await fsp.readFile(join(dir, 'baileys', info.sid, `lid-mapping-${user}_reverse.json`), 'utf8'));
+        const d = digitsOf(String(raw || '').split(':')[0].split('@')[0]);
+        if (d.length >= 10 && d.length <= 15) phone = d;
+      }
+    } catch { /* sem mapeamento ainda */ }
+    this.lidPhoneCache.set(key, { at: Date.now(), phone });
+    return phone;
   }
 
-  async mergeAll(orgId: string) {
-    const rows = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });
-    let n = 0;
-    for (const r of rows) { await this.mergeChats(orgId, r.phone!, r.lid!).catch(() => undefined); n++; }
-    return { checked: n };
-  }
-
-  // chat_id canônico: se veio <phone>@c.us e conhecemos o lid dessa pessoa, usa o @lid
-  async canonicalChatId(orgId: string, chatId: string) {
+  // chat_id canônico (ver bloco acima): Baileys = telefone; whatsapp-web.js = @lid
+  async canonicalChatId(orgId: string, session: SessionLike, chatId: string) {
     const jid = normJid(chatId);
+    if (isGroupJid(jid)) return jid;
+    const sess = await this.sessionOf(orgId, session);
+    const info = this.sessionInfo(sess);
+    if (info.engine === 'baileys') {
+      if (!isLidJid(jid)) return jid;
+      const phone = await this.phoneOfLid(orgId, sess, jid);
+      return phone && phone !== info.phone ? `${phone}@c.us` : jid;
+    }
     if (!/@c\.us$/.test(jid)) return jid;
     const c = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, phone: phoneFromJid(jid), lid: { not: null } }, select: { lid: true } });
     return c?.lid || jid;
   }
 
-  async list(orgId: string, q: any = {}) {
+  // ---------------------------------------------------------------- quem é quem (menções, participantes, detalhes)
+  /**
+   * Nome/telefone/contato de vários jids de uma vez (telefone `@c.us` ou `@lid`).
+   * Fontes, em ordem: contatos da org (nome da agenda > nome de exibição), mapeamento lid→telefone do gateway
+   * (sessão informada) e o `sender_name` das mensagens da conversa (`chatId` + `sessionId`) — quem já falou
+   * no grupo tem nome mesmo sem contato.
+   */
+  async identify(orgId: string, jids: string[], opts: { chatId?: string; session?: SessionLike } = {}) {
+    type Info = { jid: string; phone: string | null; lid: string | null; name: string | null; contact_id: string | null; is_my_contact: boolean };
+    const out = new Map<string, Info>();
+    const uniq = [...new Set(jids.map((j) => normJid(String(j || ''))).filter((j) => j && j.includes('@') && !isGroupJid(j)))];
+    if (!uniq.length) return out;
+    const sess = await this.sessionOf(orgId, opts.session);
+    for (const jid of uniq) out.set(jid, { jid, phone: isLidJid(jid) ? null : phoneFromJid(jid) || null, lid: isLidJid(jid) ? jid : null, name: null, contact_id: null, is_my_contact: false });
+    for (const info of out.values()) if (info.lid && !info.phone) info.phone = await this.phoneOfLid(orgId, sess, info.lid);
+    const phones = [...new Set([...out.values()].map((i) => i.phone).filter(Boolean))] as string[];
+    const waIds = [...new Set([...uniq, ...phones.map(jidFromPhone)])];
+    const lids = uniq.filter(isLidJid);
+    const contacts = await this.prisma.whatsapp_contacts.findMany({
+      where: { organization_id: orgId, OR: [{ wa_id: { in: waIds } }, ...(phones.length ? [{ phone: { in: phones } }] : []), ...(lids.length ? [{ lid: { in: lids } }] : [])] },
+      select: { id: true, wa_id: true, phone: true, lid: true, name: true, push_name: true, is_my_contact: true },
+    });
+    for (const info of out.values()) {
+      const cs = contacts.filter((c) => c.wa_id === info.jid || (info.phone && (c.phone === info.phone || c.wa_id === jidFromPhone(info.phone))) || (info.lid && c.lid === info.lid));
+      if (!cs.length) continue;
+      const best = cs.find((c) => c.name) || cs.find((c) => c.push_name) || cs[0];
+      info.contact_id = best.id;
+      info.name = best.name || best.push_name || null;
+      info.is_my_contact = cs.some((c) => c.is_my_contact);
+      if (!info.phone) info.phone = cs.map((c) => c.phone).find(Boolean) || null;
+    }
+    const missing = [...out.values()].filter((i) => !i.name);
+    if (missing.length && opts.chatId) {
+      const froms = [...new Set(missing.flatMap((i) => [i.jid, i.lid, i.phone ? jidFromPhone(i.phone) : null].filter(Boolean)))] as string[];
+      const rows = await this.prisma.whatsapp_messages.groupBy({ by: ['from_jid'], where: { organization_id: orgId, ...(sess?.id ? { session_id: sess.id } : {}), chat_id: opts.chatId, from_jid: { in: froms }, sender_name: { not: null } }, _max: { sender_name: true } });
+      const byFrom = new Map(rows.map((r) => [r.from_jid, r._max.sender_name] as [string | null, string | null]));
+      for (const i of missing) i.name = byFrom.get(i.jid) || (i.lid ? byFrom.get(i.lid) : null) || (i.phone ? byFrom.get(jidFromPhone(i.phone)) : null) || null;
+    }
+    return out;
+  }
+
+  /**
+   * Menções em grupo: o corpo traz `@<lid>` (ou `@<telefone>`) e `extra.mentions` os jids por telefone.
+   * Resolve o nome de cada `@id` e grava `extra.mention_names = { id: { name, phone } }` (só quando algo resolveu —
+   * assim uma menção a quem ainda não tem nome volta a ser tentada na próxima leitura).
+   */
+  async fillMentions(orgId: string, rows: any[]) {
+    const re = /@(\d{7,16})(?!\d)/g;
+    const todo = rows.filter((r) => r?.body && re.test(String(r.body)) && !((r.extra as any) || {}).mention_names);
+    if (!todo.length) return;
+    const byChat = new Map<string, any[]>();
+    for (const r of todo) byChat.set(`${r.session_id}|${r.chat_id}`, [...(byChat.get(`${r.session_id}|${r.chat_id}`) || []), r]);
+    for (const [key, msgs] of byChat) {
+      const [sessionId, chatId] = key.split('|');
+      try {
+        const tokens = new Set<string>();
+        for (const m of msgs) for (const t of String(m.body).matchAll(re)) tokens.add(t[1]);
+        const mentionedAll = [...new Set(msgs.flatMap((m) => (Array.isArray(m.extra?.mentions) ? m.extra.mentions.map((j: any) => normJid(String(j))) : [])))];
+        const info = await this.identify(orgId, [...tokens].flatMap((t) => [`${t}@lid`, jidFromPhone(t)]).concat(mentionedAll), { chatId, session: sessionId });
+        for (const m of msgs) {
+          const mentioned: string[] = Array.isArray(m.extra?.mentions) ? m.extra.mentions.map((j: any) => normJid(String(j))) : [];
+          const mine = [...new Set([...String(m.body).matchAll(re)].map((t) => t[1]))];
+          const names: Record<string, { name: string | null; phone: string | null }> = {};
+          mine.forEach((t, idx) => {
+            const asPhone = info.get(jidFromPhone(t));
+            const asLid = info.get(`${t}@lid`);
+            let pick = mentioned.includes(jidFromPhone(t)) ? asPhone : asLid?.phone ? asLid : asPhone?.name ? asPhone : null;
+            // sem pista: a i-ésima menção do corpo é a i-ésima de extra.mentions
+            if (!pick && mentioned.length === mine.length && mentioned[idx]) pick = info.get(mentioned[idx]) || null;
+            if (pick && (pick.name || pick.phone)) names[t] = { name: pick.name, phone: pick.phone };
+          });
+          if (!Object.keys(names).length) continue;
+          const extra = { ...((m.extra as any) || {}), mention_names: names };
+          m.extra = extra;
+          await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { extra } }).catch(() => {});
+        }
+      } catch (e: any) {
+        this.logger.debug(`fillMentions ${chatId}: ${e?.message || e}`);
+      }
+    }
+  }
+
+  /** Participantes de um grupo com nome/contato (gateway só manda o telefone). */
+  async enrichParticipants(orgId: string, session: SessionLike, chatId: string, participants: any[]) {
+    if (!participants?.length) return participants || [];
+    const sess = await this.sessionOf(orgId, session);
+    const me = this.sessionInfo(sess);
+    const info = await this.identify(orgId, participants.map((p) => p.id), { chatId, session: sess }).catch(() => new Map());
+    return participants.map((p) => {
+      const i: any = info.get(normJid(String(p.id || ''))) || {};
+      const phone = p.phone || i.phone || null;
+      return { ...p, phone, name: p.name || i.name || null, contact_id: i.contact_id || null, lid: i.lid || null, is_me: Boolean(me.phone && phone && digitsOf(phone) === me.phone) };
+    });
+  }
+
+  /**
+   * Detalhes de uma pessoa (clique na foto): contato, telefone, conversas (uma por número) e cliente do CRM.
+   * `sessionId` escolhe qual conversa vem como principal (`chat`).
+   */
+  async lookup(orgId: string, jidOrPhone: string, opts: { sessionId?: string | null; chatId?: string | null; allowed?: Set<string> | null } = {}) {
+    const raw = String(jidOrPhone || '').trim();
+    const jid = raw.includes('@') ? normJid(raw) : digitsOf(raw) ? jidFromPhone(digitsOf(raw)) : '';
+    if (!jid || isGroupJid(jid)) throw new BadRequestException('Contato inválido.');
+    const sess = opts.sessionId ? await this.sessions.rowById(orgId, opts.sessionId) : null;
+    const info = (await this.identify(orgId, [jid], { chatId: opts.chatId || undefined, session: sess }))!.get(jid)!;
+    const me = this.sessionInfo(sess);
+    const baseJid = info.phone ? jidFromPhone(info.phone) : jid;
+    const jids = [...new Set([baseJid, jid, info.lid].filter(Boolean))] as string[];
+    const rows = await this.prisma.whatsapp_chats.findMany({
+      where: { organization_id: orgId, chat_id: { in: jids }, kind: 'individual', ...(opts.allowed ? { session_id: { in: [...opts.allowed] } } : {}) },
+      select: { id: true, session_id: true, chat_id: true, name: true, tags: true, service_status: true, stage_id: true, last_inbound_at: true, last_outbound_at: true, last_message_at: true },
+      orderBy: { last_message_at: 'desc' },
+    });
+    const smap = new Map((await this.sessions.rowsOf(orgId)).map((r) => [r.id, r] as [string, any]));
+    const chats = rows.map((c) => ({ chat_id: c.id, jid: c.chat_id, session_id: c.session_id, session: this.sessions.brief(smap.get(c.session_id)), name: c.name, tags: c.tags, service_status: c.service_status, stage_id: c.stage_id, last_message_at: c.last_message_at }));
+    const chat = (opts.sessionId ? chats.find((c) => c.session_id === opts.sessionId) : null) || chats[0] || null;
+    const contact = info.contact_id ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: info.contact_id } }) : null;
+    const customer = contact ? await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: contact.id }, select: { id: true, name: true, status: true } }) : null;
+    const name = info.name || (chat?.name && chat.name !== 'Contato sem nome' ? chat.name : null);
+    const photoQuery = new URLSearchParams({ jid: baseJid, ...(chat?.session_id ? { session_id: chat.session_id } : sess?.id ? { session_id: sess.id } : {}) });
+    return {
+      jid,
+      phone: info.phone,
+      lid: info.lid,
+      name,
+      is_me: Boolean(me.phone && info.phone && digitsOf(info.phone) === me.phone),
+      contact: contact ? this.shape(contact) : null,
+      chat,
+      chats,
+      customer,
+      photo_path: chat ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo` : `/whatsapp/photo?${photoQuery.toString()}`,
+    };
+  }
+
+  /** Junta as duas conversas da mesma pessoa (DENTRO de um número) no id canônico do motor; contato duplicado some. */
+  async mergeChats(orgId: string, session: SessionLike, phone: string, lid: string) {
+    const phoneJid = `${digitsOf(phone)}@c.us`;
+    if (!digitsOf(phone) || !isLidJid(lid) || phoneJid === lid) return false;
+    const sess = await this.sessionOf(orgId, session);
+    if (!sess) return false;
+    const info = this.sessionInfo(sess);
+    if (info.phone && digitsOf(phone) === info.phone) return false; // conversa "Eu": não mexe
+    const [from, to] = info.engine === 'baileys' ? [lid, phoneJid] : [phoneJid, lid];
+    const key = (jid: string) => ({ organization_id_session_id_chat_id: { organization_id: orgId, session_id: sess.id, chat_id: jid } });
+    const fc = await this.prisma.whatsapp_chats.findUnique({ where: key(from) });
+    let moved = false;
+    if (fc) {
+      const tc = await this.prisma.whatsapp_chats.findUnique({ where: key(to) });
+      // mensagens: move (colisão de wa_message_id = já existe no destino → descarta a duplicada)
+      const msgs = await this.prisma.whatsapp_messages.findMany({ where: { organization_id: orgId, session_id: sess.id, chat_id: from }, select: { id: true } });
+      for (const m of msgs) await this.prisma.whatsapp_messages.update({ where: { id: m.id }, data: { chat_id: to } }).catch(() => this.prisma.whatsapp_messages.delete({ where: { id: m.id } }).catch(() => undefined));
+      // tudo que é guardado por conversa acompanha
+      const w = { where: { organization_id: orgId, session_id: sess.id, chat_id: from }, data: { chat_id: to } };
+      await this.prisma.whatsapp_service_events.updateMany(w).catch(() => undefined);
+      await this.prisma.whatsapp_tasks.updateMany(w).catch(() => undefined);
+      await this.prisma.whatsapp_chat_notes.updateMany(w).catch(() => undefined);
+      await this.prisma.whatsapp_charges.updateMany(w).catch(() => undefined);
+      await this.prisma.whatsapp_ratings.updateMany(w).catch(() => undefined);
+      await this.prisma.whatsapp_bot_sessions.updateMany(w).catch(() => undefined);
+      if (tc) {
+        const newer = !tc.last_message_at || (fc.last_message_at && fc.last_message_at > tc.last_message_at);
+        const tags = [...new Set([...(Array.isArray(tc.tags) ? (tc.tags as string[]) : []), ...(Array.isArray(fc.tags) ? (fc.tags as string[]) : [])])];
+        await this.prisma.whatsapp_chats.update({
+          where: { id: tc.id },
+          data: {
+            name: tc.name || fc.name, unread_count: tc.unread_count + fc.unread_count, tags,
+            ...(tc.stage_id ? {} : { stage_id: fc.stage_id, deal_cents: tc.deal_cents ?? fc.deal_cents, stage_moved_at: fc.stage_moved_at }),
+            ...(tc.service_status === 'none' && fc.service_status !== 'none' ? { service_status: fc.service_status, assigned_user_id: fc.assigned_user_id, service_started_at: fc.service_started_at, service_last_human_at: fc.service_last_human_at, service_closed_at: fc.service_closed_at } : {}),
+            ...(newer && fc.last_message_at ? { last_message_at: fc.last_message_at, last_message_preview: fc.last_message_preview, last_message_direction: fc.last_message_direction } : {}),
+            ...(fc.last_inbound_at && (!tc.last_inbound_at || fc.last_inbound_at > tc.last_inbound_at) ? { last_inbound_at: fc.last_inbound_at } : {}),
+            ...(fc.last_outbound_at && (!tc.last_outbound_at || fc.last_outbound_at > tc.last_outbound_at) ? { last_outbound_at: fc.last_outbound_at } : {}),
+          },
+        });
+        await this.prisma.whatsapp_chats.delete({ where: { id: fc.id } });
+      } else {
+        await this.prisma.whatsapp_chats.update({ where: { id: fc.id }, data: { chat_id: to } });
+      }
+      moved = true;
+    }
+    // contato duplicado some em favor do canônico, preservando salvo/tags/nome/agenda e o cliente do CRM
+    const dupe = await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: from } } });
+    const keep = await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: to } } });
+    if (dupe && keep && dupe.id !== keep.id) {
+      await this.prisma.whatsapp_contacts.update({
+        where: { id: keep.id },
+        data: {
+          name: keep.name || dupe.name, push_name: keep.push_name || dupe.push_name, saved: keep.saved || dupe.saved, is_my_contact: keep.is_my_contact || dupe.is_my_contact,
+          tags: [...new Set([...normTags(keep.tags), ...normTags(dupe.tags)])], notes: keep.notes || dupe.notes, phone: keep.phone || digitsOf(phone), lid,
+          opted_out_at: keep.opted_out_at || dupe.opted_out_at,
+          ...(dupe.source !== 'session' && keep.source === 'session' ? { source: dupe.source } : {}),
+        },
+      });
+      const keepHasCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: keep.id }, select: { id: true } });
+      if (!keepHasCustomer) await this.prisma.whatsapp_customers.updateMany({ where: { organization_id: orgId, contact_id: dupe.id }, data: { contact_id: keep.id } }).catch(() => undefined);
+      const stillCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: dupe.id }, select: { id: true } });
+      if (!stillCustomer) await this.prisma.whatsapp_contacts.delete({ where: { id: dupe.id } }).catch(() => undefined); // FK do cliente é CASCADE: só apaga sem cliente
+      moved = true;
+    } else if (dupe && !keep) {
+      // só existia o contato do id antigo → vira o canônico
+      await this.prisma.whatsapp_contacts.update({ where: { id: dupe.id }, data: { wa_id: to, phone: digitsOf(phone), lid } }).catch(() => undefined);
+      moved = true;
+    } else if (keep && (!keep.lid || !keep.phone)) {
+      await this.prisma.whatsapp_contacts.update({ where: { id: keep.id }, data: { lid, phone: keep.phone || digitsOf(phone) } }).catch(() => undefined);
+    }
+    return moved;
+  }
+
+  /** Baileys: descobre o telefone dos @lid ainda soltos (conversas do número e contatos) e unifica. */
+  async resolveLids(orgId: string, session: SessionLike) {
+    const sess = await this.sessionOf(orgId, session);
+    const info = this.sessionInfo(sess);
+    if (!sess || info.engine !== 'baileys' || !info.sid) return { merged: 0, pending: 0 };
+    const [chats, contacts] = await Promise.all([
+      this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: sess.id, kind: 'individual', chat_id: { endsWith: '@lid' } }, select: { chat_id: true } }),
+      this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { endsWith: '@lid' } }, select: { wa_id: true } }),
+    ]);
+    const lids = [...new Set([...chats.map((c) => c.chat_id), ...contacts.map((c) => c.wa_id)])];
+    let merged = 0, pending = 0;
+    for (const lid of lids) {
+      const phone = await this.phoneOfLid(orgId, sess, lid);
+      if (!phone) { pending++; continue; }
+      const ok = await this.mergeChats(orgId, sess, phone, lid).catch((e) => { this.logger.warn(`merge ${lid}: ${e?.message || e}`); return false; });
+      if (ok) merged++;
+    }
+    if (merged) this.logger.log(`@lid unificados org=${orgId} número=${sess.id}: ${merged} (sem telefone conhecido: ${pending})`);
+    return { merged, pending };
+  }
+
+  async mergeAll(orgId: string, session: SessionLike) {
+    const sess = await this.sessionOf(orgId, session);
+    if (!sess) return { checked: 0, merged: 0, pending: 0 };
+    const rows = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });
+    let n = 0;
+    for (const r of rows) { await this.mergeChats(orgId, sess, r.phone!, r.lid!).catch(() => undefined); n++; }
+    const extra = await this.resolveLids(orgId, sess).catch(() => ({ merged: 0, pending: 0 }));
+    return { checked: n, ...extra };
+  }
+
+  // ---------------------------------------------------------------- listagem / CRUD
+  /** `q.session_id` = só quem tem conversa naquele número; `allowed` restringe os números do usuário. */
+  async list(orgId: string, q: any = {}, allowed: Set<string> | null = null) {
     const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
     const size = Math.min(500, Math.max(5, parseInt(String(q.page_size || 25), 10) || 25));
     const where: any = { organization_id: orgId };
@@ -126,10 +400,18 @@ export class WhatsAppContactsService {
     if (q.agenda === '1' || q.agenda === 'true') where.is_my_contact = true;
     if (q.optout === '1' || q.optout === 'true') where.opted_out_at = { not: null };
     if (q.optout === '0' || q.optout === 'false') where.opted_out_at = null;
+    if (q.session_id) {
+      const sid = String(q.session_id);
+      if (allowed && !allowed.has(sid)) return { items: [], total: 0, page, page_size: size, pages: 1, tags: [], counts: { total: 0, saved: 0, session: 0, agenda: 0 } };
+      const jids = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: sid, kind: 'individual' }, select: { chat_id: true } });
+      const lids = jids.map((c) => c.chat_id).filter(isLidJid);
+      where.OR = [{ wa_id: { in: jids.map((c) => c.chat_id) } }, ...(lids.length ? [{ lid: { in: lids } }] : [])];
+    }
     if (q.q) {
       const s = String(q.q).trim();
       const d = digitsOf(s);
-      where.OR = [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d ? [{ phone: { contains: d } }] : [])];
+      const cond = { OR: [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d ? [{ phone: { contains: d } }] : [])] };
+      where.AND = [...(where.AND || []), cond];
     }
     const [total, rows, counts, allTags] = await Promise.all([
       this.prisma.whatsapp_contacts.count({ where }),
@@ -137,12 +419,17 @@ export class WhatsAppContactsService {
       this.prisma.whatsapp_contacts.groupBy({ by: ['saved'], where: { organization_id: orgId }, _count: { _all: true } }),
       this.tags(orgId),
     ]);
-    const chats = rows.length ? await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, chat_id: { in: rows.map((r) => r.wa_id) } }, select: { chat_id: true } }) : [];
-    const chatIds = new Map(chats.map((c) => [c.chat_id, c.chat_id] as [string, string]));
+    const chatRows = rows.length
+      ? await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, chat_id: { in: rows.flatMap((r) => [r.wa_id, r.lid].filter(Boolean) as string[]) }, ...(allowed ? { session_id: { in: [...allowed] } } : {}) }, select: { id: true, chat_id: true, session_id: true }, orderBy: { last_message_at: 'desc' } })
+      : [];
+    const chats = new Map<string, Array<{ id: string; session_id: string }>>();
+    for (const c of chatRows) chats.set(c.chat_id, [...(chats.get(c.chat_id) || []), { id: c.id, session_id: c.session_id }]);
+    for (const r of rows) if (r.lid && chats.get(r.lid) && !chats.get(r.wa_id)) chats.set(r.wa_id, chats.get(r.lid)!);
     const saved = counts.find((c) => c.saved)?._count._all || 0;
     const session = counts.find((c) => !c.saved)?._count._all || 0;
     const agenda = await this.prisma.whatsapp_contacts.count({ where: { organization_id: orgId, is_my_contact: true } });
-    return { items: rows.map((r) => this.shape(r, chatIds)), total, page, page_size: size, pages: Math.max(1, Math.ceil(total / size)), tags: allTags, counts: { total: saved + session, saved, session, agenda } };
+    const smap = new Map((await this.sessions.rowsOf(orgId)).map((r) => [r.id, this.sessions.brief(r)] as [string, any]));
+    return { items: rows.map((r) => this.shape(r, chats, smap)), total, page, page_size: size, pages: Math.max(1, Math.ceil(total / size)), tags: allTags, counts: { total: saved + session, saved, session, agenda } };
   }
 
   async tags(orgId: string): Promise<string[]> {
@@ -212,7 +499,6 @@ export class WhatsAppContactsService {
     return { ok: true };
   }
 
-  // CSV: phone,name,tags (tags separadas por | ). Aceita ; ou , e BOM.
   async importCsv(orgId: string, buf: Buffer) {
     const text = buf.toString('utf8').replace(/^﻿/, '');
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -242,9 +528,9 @@ export class WhatsAppContactsService {
     return '﻿' + lines.join('\n');
   }
 
-  // Puxa a agenda do celular pelo gateway. Nunca sobrescreve `name` salvo manualmente.
-  async sync(orgId: string) {
-    const row = await this.sessions.row(orgId);
+  // Puxa a agenda de UM número pelo gateway. Nunca sobrescreve `name` salvo manualmente.
+  async sync(orgId: string, session: SessionLike) {
+    const row = await this.sessionOf(orgId, session);
     if (!row?.openwa_session_id || row.status !== 'ready') throw new BadRequestException('Conecte o WhatsApp primeiro.');
     let list: any[] = [];
     try {
@@ -280,16 +566,18 @@ export class WhatsAppContactsService {
       const agendaName = String(c?.name || c?.shortName || '').trim().slice(0, 255);
       const existing = await this.prisma.whatsapp_contacts.findUnique({ where: { organization_id_wa_id: { organization_id: orgId, wa_id: waId } } });
       if (existing) {
-        await this.prisma.whatsapp_contacts.update({ where: { id: existing.id }, data: { ...data, ...(agendaName && !existing.name ? { name: agendaName } : {}) } });
+        // agenda é compartilhada: um número NÃO desmarca "na agenda" que outro número marcou
+        const d = { ...data, is_my_contact: existing.is_my_contact || data.is_my_contact };
+        await this.prisma.whatsapp_contacts.update({ where: { id: existing.id }, data: { ...d, ...(agendaName && !existing.name ? { name: agendaName } : {}) } });
         updated++;
-        if (isLidJid(waId) && phone) await this.mergeChats(orgId, phone, waId).catch(() => undefined);
+        if (isLidJid(waId) && phone) await this.mergeChats(orgId, row, phone, waId).catch(() => undefined);
       } else {
         await this.prisma.whatsapp_contacts.create({ data: { organization_id: orgId, wa_id: waId, source: 'session', name: agendaName || null, ...data } });
         imported++;
-        if (isLidJid(waId) && phone) await this.mergeChats(orgId, phone, waId).catch(() => undefined);
+        if (isLidJid(waId) && phone) await this.mergeChats(orgId, row, phone, waId).catch(() => undefined);
       }
     }
-    return { imported, updated, total: list.length };
+    return { imported, updated, total: list.length, session_id: row.id };
   }
 
   // Buscas de foto no gateway: no máximo 3 ao mesmo tempo (a lista e os status pedem
@@ -309,22 +597,37 @@ export class WhatsAppContactsService {
     }
   }
 
-  // Foto de perfil (contato ou grupo) com cache de 7 dias na pasta protegida.
-  // Devolve o caminho absoluto + mime, ou null (sem foto / gateway fora).
-  async photo(orgId: string, target: { contactId?: string; chatId?: string }) {
-    const row = await this.sessions.row(orgId);
-    let waId = target.chatId ? normJid(target.chatId) : '';
+  /**
+   * Foto de perfil (contato ou grupo) com cache de 7 dias na pasta protegida.
+   * Alvo: contato (id), conversa (uuid) ou jid solto (+ número preferido). O gateway usado é o do
+   * número da conversa; para jid solto, o número informado ou qualquer um conectado.
+   * Devolve o caminho absoluto + mime, ou null (sem foto / gateway fora).
+   */
+  async photo(orgId: string, target: { contactId?: string; chatUuid?: string; jid?: string; sessionId?: string | null }) {
+    let waId = target.jid ? normJid(target.jid) : '';
+    let sessionId = target.sessionId || null;
     let contact: any = null;
+    let chat: any = null;
+    if (target.chatUuid) {
+      chat = await this.prisma.whatsapp_chats.findFirst({ where: { id: target.chatUuid, organization_id: orgId } });
+      if (!chat) return null;
+      waId = chat.chat_id;
+      sessionId = chat.session_id;
+    }
     if (target.contactId) { contact = await this.getOrFail(orgId, target.contactId); waId = contact.wa_id; }
     if (!waId) return null;
     const group = isGroupJid(waId);
-    const chat = group ? await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: waId } } }) : null;
+    if (group && !chat && sessionId) chat = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_session_id_chat_id: { organization_id: orgId, session_id: sessionId, chat_id: waId } } });
+    if (!contact && !group) {
+      contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ wa_id: waId }, { lid: waId }, ...(phoneFromJid(waId) ? [{ phone: phoneFromJid(waId) }] : [])] }, orderBy: { saved: 'desc' } });
+    }
     const cachedId = group ? (chat?.group_meta as any)?.photo_media_id : contact?.profile_pic_media_id;
     if (cachedId) {
       const m = await this.prisma.whatsapp_media.findUnique({ where: { id: cachedId } });
       if (m && (!m.expires_at || m.expires_at > new Date())) return { path: this.media.absPath(m), mime: m.mime };
     }
-    if (!row?.openwa_session_id || row.status !== 'ready') return null;
+    const row = await this.sessions.anyReady(orgId, sessionId);
+    if (!row?.openwa_session_id) return null;
     const missKey = `${orgId}|${waId}`;
     const missUntil = this.photoMiss.get(missKey);
     if (missUntil && missUntil > Date.now()) return null;
@@ -355,31 +658,32 @@ export class WhatsAppContactsService {
     await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { expires_at: new Date(Date.now() + 7 * 86_400_000) } });
     if (group && chat) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { group_meta: { ...((chat.group_meta as any) || {}), photo_media_id: m.id } } });
     else if (contact) await this.prisma.whatsapp_contacts.update({ where: { id: contact.id }, data: { profile_pic_media_id: m.id } });
-    else {
-      // chat individual sem linha de contato ainda → cria pra guardar o cache
-      const c = await this.touch(orgId, waId, {});
-      if (c) await this.prisma.whatsapp_contacts.update({ where: { id: c.id }, data: { profile_pic_media_id: m.id } });
+    else if (!group) {
+      // pessoa sem linha de contato ainda → cria pra guardar o cache
+      await this.prisma.whatsapp_contacts
+        .create({ data: { organization_id: orgId, wa_id: waId, phone: phoneFromJid(waId) || null, source: 'session', profile_pic_media_id: m.id } })
+        .catch(() => undefined);
     }
-    return { path: this.media.absPath(m), mime };
+    return { path: this.media.absPath(m), mime: m.mime };
   }
 
-  private async fetchImage(url: string): Promise<{ buf: Buffer | null; mime: string }> {
+  private async fetchImage(url: string): Promise<{ buf: Buffer; mime: string }> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 20_000);
     try {
       const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) return { buf: null, mime: '' };
-      const mime = res.headers.get('content-type') || 'image/jpeg';
-      if (!/^image\//.test(mime)) return { buf: null, mime: '' };
-      const buf = Buffer.from(await res.arrayBuffer());
-      return { buf: buf.length > 5 * 1024 * 1024 ? null : buf, mime };
-    } finally { clearTimeout(t); }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return { buf: Buffer.from(await res.arrayBuffer()), mime: res.headers.get('content-type') || 'image/jpeg' };
+    } finally {
+      clearTimeout(t);
+    }
   }
 
-  async check(orgId: string, id: string) {
+  /** O número existe no WhatsApp? (pelo número informado ou qualquer um conectado) */
+  async check(orgId: string, id: string, sessionId?: string | null) {
     const c = await this.getOrFail(orgId, id);
-    const row = await this.sessions.row(orgId);
-    if (!row?.openwa_session_id || row.status !== 'ready') throw new BadRequestException('Conecte o WhatsApp primeiro.');
+    const row = await this.sessions.anyReady(orgId, sessionId);
+    if (!row?.openwa_session_id) throw new BadRequestException('Conecte o WhatsApp primeiro.');
     const phone = c.phone || phoneFromJid(c.wa_id);
     if (!phone) return { exists: null, wa_id: c.wa_id };
     try {

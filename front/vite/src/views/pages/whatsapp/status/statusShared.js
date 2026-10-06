@@ -1,7 +1,10 @@
 // =============================================================================
 // WhatsApp → Status: constantes visuais + normalização dos status dos contatos.
 // Puro (sem React) — usado pela página, pela faixa de contatos e pelo viewer.
-// Contrato: GET /whatsapp/contact-statuses → { contacts: [...], synced_at }.
+// Contrato (multi-número): GET /whatsapp/contact-statuses →
+//   { sessions: [ { session: {id,label,color,phone,connected}, contacts: [...] } ], synced_at }
+// O mesmo contato pode aparecer em 2 números e `chat_id` (uuid da conversa) pode ser null →
+// a chave única de um contato é `key = "<session_id>:<jid>"`.
 // =============================================================================
 
 // paleta de fundos no estilo dos status de texto do WhatsApp (composer)
@@ -102,18 +105,28 @@ export const phoneFromJid = (jid) => {
   return m ? m[1] : '';
 };
 
-export function normContact(c = {}) {
+// chave única do contato dentro da página (número + jid)
+export const contactKey = (sessionId, jid, chatId) => `${sessionId || ''}:${jid || chatId || ''}`;
+
+export function normContact(c = {}, session = null) {
   const statuses = (Array.isArray(c.statuses) ? c.statuses : [])
     .map(normStatus)
     .filter((s) => s.id)
     .sort((a, b) => ts(a.posted_at) - ts(b.posted_at)); // mais antigo primeiro (ordem do WhatsApp)
   const lastPosted = statuses.length ? statuses[statuses.length - 1].posted_at : null;
   const last_at = ts(c.last_at) >= ts(lastPosted) ? c.last_at || lastPosted : lastPosted;
+  const sessionId = String(c.session_id || session?.id || '');
+  const jid = String(c.jid || '');
+  const chat_id = c.chat_id ? String(c.chat_id) : null; // uuid da conversa (null = ainda não existe conversa nesse número)
   return {
     ...c,
-    chat_id: String(c.chat_id || ''),
+    key: contactKey(sessionId, jid, chat_id),
+    session_id: sessionId,
+    session: c.session || session || null,
+    jid,
+    chat_id,
     name: c.name || c.push_name || '',
-    phone: c.phone || phoneFromJid(c.chat_id),
+    phone: c.phone || phoneFromJid(jid),
     photo_path: c.photo_path || null,
     last_at,
     statuses,
@@ -121,7 +134,14 @@ export function normContact(c = {}) {
   };
 }
 
-export const normList = (list) => (Array.isArray(list) ? list.map(normContact).filter((c) => c.chat_id) : []);
+export const normList = (list, session = null) =>
+  Array.isArray(list) ? list.map((c) => normContact(c, session)).filter((c) => c.jid || c.chat_id) : [];
+
+// resposta agrupada por número → [{ session, contacts }] (um bloco por número, mesmo vazio)
+export const normBlocks = (sessions) =>
+  Array.isArray(sessions)
+    ? sessions.filter((b) => b && b.session && b.session.id).map((b) => ({ session: b.session, contacts: normList(b.contacts, b.session) }))
+    : [];
 
 // não vistos primeiro; dentro de cada grupo, atualização mais recente primeiro
 export const sortContacts = (list) =>
@@ -149,31 +169,38 @@ export const firstUnviewedIndex = (c) => {
   return i >= 0 ? i : 0;
 };
 
-// marca um status como visto (imutável)
-export function applyViewed(list, statusId, chatId) {
+// marca um status como visto (imutável); `key` limita a um contato
+export function applyViewed(list, statusId, key) {
   return list.map((c) => {
-    if (chatId && c.chat_id !== chatId) return c;
+    if (key && c.key !== key) return c;
     if (!c.statuses.some((s) => s.id === statusId && !s.viewed)) return c;
     const statuses = c.statuses.map((s) => (s.id === statusId ? { ...s, viewed: true } : s));
     return { ...c, statuses, all_viewed: statuses.every((s) => s.viewed) };
   });
 }
 
-// evento em tempo real `wa:status` { contact_chat_id, status, contact? } → sobe o contato pro topo
-export function mergeIncoming(list, payload) {
-  const chatId = String(payload?.contact_chat_id || payload?.chat_id || '');
+// evento em tempo real `wa:status` { session_id, contact_chat_id, contact_jid, status, contact? }
+// aplicado à lista de contatos do NÚMERO do evento → sobe o contato pro topo
+export const payloadKey = (payload) => contactKey(payload?.session_id, payload?.contact_jid, payload?.contact_chat_id || payload?.chat_id);
+
+export function mergeIncoming(list, payload, session = null) {
+  const key = payloadKey(payload);
   const raw = payload?.status;
-  if (!chatId || !raw || raw.id === undefined || raw.id === null) return { list, stub: false };
+  if (!payload?.session_id || key.endsWith(':') || !raw || raw.id === undefined || raw.id === null) return { list, stub: false };
   const s = normStatus({ ...raw, posted_at: raw.posted_at || new Date().toISOString() });
-  const idx = list.findIndex((c) => c.chat_id === chatId);
+  const idx = list.findIndex((c) => c.key === key);
   const extra = payload?.contact && typeof payload.contact === 'object' ? payload.contact : {};
+  const jid = String(payload.contact_jid || '');
   const base =
     idx >= 0
       ? list[idx]
       : {
-          chat_id: chatId,
+          session_id: String(payload.session_id),
+          session,
+          jid,
+          chat_id: payload.contact_chat_id ? String(payload.contact_chat_id) : null,
           name: extra.name || raw.contact_name || '',
-          phone: extra.phone || phoneFromJid(chatId),
+          phone: extra.phone || phoneFromJid(jid),
           photo_path: null,
           statuses: []
         };
@@ -181,12 +208,16 @@ export function mergeIncoming(list, payload) {
   const statuses = exists
     ? base.statuses.map((x) => (x.id === s.id ? { ...x, ...s, viewed: x.viewed || s.viewed } : x))
     : [...base.statuses, s];
-  const next = normContact({
-    ...base,
-    ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== null && v !== undefined && v !== '')),
-    last_at: null,
-    statuses
-  });
+  const next = normContact(
+    {
+      ...base,
+      ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== null && v !== undefined && v !== '')),
+      chat_id: base.chat_id || (payload.contact_chat_id ? String(payload.contact_chat_id) : null),
+      last_at: null,
+      statuses
+    },
+    base.session || session
+  );
   const rest = idx >= 0 ? list.filter((_, i) => i !== idx) : list;
   return { list: [next, ...rest], stub: idx < 0 && !extra.name };
 }

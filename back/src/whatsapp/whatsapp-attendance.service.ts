@@ -18,9 +18,13 @@ import { WhatsAppHooks } from './whatsapp-hooks.service';
 // Regra do "zera em 24 h": atendimento humano (ou fila) sem interação humana por
 // `reset_hours` (padrão 24) é encerrado sozinho; a próxima mensagem volta ao bot.
 // Tudo que muda aqui vira evento na linha do tempo (whatsapp_service_events) e em tempo real.
+//
+// Multi-número: a configuração de atendimento é DA ORGANIZAÇÃO (whatsapp_crm_settings.service);
+// a conversa é identificada por (número, jid) internamente e pelo uuid da linha na API.
 
 export const SERVICE_STATUSES = ['none', 'bot', 'waiting', 'human', 'closed'] as const;
 export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
+export type ChatKey = { session_id: string; chat_id: string };
 
 export type ServiceSettings = {
   reset_hours: number; // encerra atendimento parado há X horas (1–168)
@@ -50,11 +54,19 @@ export class WhatsAppAttendanceService {
   constructor(private readonly prisma: PrismaService, private readonly presenter: WhatsAppPresenter, private readonly realtime: RealtimeService, private readonly hooks: WhatsAppHooks) {}
   private readonly rrLast = new Map<string, string>(); // round-robin: último atendente por org
 
-  // ---------------------------------------------------------------- configurações
+  private key(orgId: string, k: ChatKey) {
+    return { organization_id_session_id_chat_id: { organization_id: orgId, session_id: k.session_id, chat_id: k.chat_id } };
+  }
+
+  // ---------------------------------------------------------------- configurações (da organização)
+  private readonly settingsCache = new Map<string, { at: number; value: ServiceSettings }>();
+
   async settings(orgId: string): Promise<ServiceSettings> {
-    const row = await this.prisma.whatsapp_sessions.findUnique({ where: { organization_id: orgId }, select: { settings: true } });
-    const s: any = ((row?.settings as any) || {}).service || {};
-    return {
+    const c = this.settingsCache.get(orgId);
+    if (c && Date.now() - c.at < 30_000) return c.value;
+    const row = await this.prisma.whatsapp_crm_settings.findUnique({ where: { organization_id: orgId }, select: { service: true } });
+    const s: any = (row?.service as any) || {};
+    const value: ServiceSettings = {
       reset_hours: Math.min(168, Math.max(1, Number(s.reset_hours) || DEFAULT_SETTINGS.reset_hours)),
       signature: { enabled: Boolean(s.signature?.enabled), template: String(s.signature?.template || DEFAULT_SETTINGS.signature.template).slice(0, 60) },
       auto_assign_on_reply: s.auto_assign_on_reply !== false,
@@ -72,11 +84,11 @@ export class WhatsAppAttendanceService {
         reply: String(s.optout?.reply ?? DEFAULT_SETTINGS.optout.reply).slice(0, 500),
       },
     };
+    this.settingsCache.set(orgId, { at: Date.now(), value });
+    return value;
   }
 
   async updateSettings(orgId: string, dto: any) {
-    const row = await this.prisma.whatsapp_sessions.findUnique({ where: { organization_id: orgId } });
-    if (!row) throw new BadRequestException('Conecte o WhatsApp primeiro.');
     const cur = await this.settings(orgId);
     const next: ServiceSettings = {
       reset_hours: dto?.reset_hours !== undefined ? Math.min(168, Math.max(1, parseInt(String(dto.reset_hours), 10) || 24)) : cur.reset_hours,
@@ -100,7 +112,8 @@ export class WhatsAppAttendanceService {
       },
     };
     if (next.optout.enabled && !next.optout.keywords.length) throw new BadRequestException('Informe pelo menos uma palavra de descadastro.');
-    await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { settings: { ...((row.settings as any) || {}), service: next } } });
+    await this.prisma.whatsapp_crm_settings.upsert({ where: { organization_id: orgId }, create: { organization_id: orgId, service: next as any }, update: { service: next as any } });
+    this.settingsCache.delete(orgId);
     return next;
   }
 
@@ -127,15 +140,17 @@ export class WhatsAppAttendanceService {
     return name;
   }
 
-  async attendants(orgId: string) {
+  /** Atendentes da org (com o módulo WhatsApp). `sessionId` filtra quem pode atender aquele número. */
+  async attendants(orgId: string, sessionId?: string | null) {
     const users = await this.prisma.users.findMany({
       where: { organization_id: orgId, active: true },
-      select: { id: true, name: true, email: true, role: true, modules: true },
+      select: { id: true, name: true, email: true, role: true, modules: true, whatsapp_sessions: true },
       orderBy: { name: 'asc' },
     });
     return users
       .filter((u) => u.role === 'SUPER_ADMIN' || (Array.isArray(u.modules) && (u.modules as any[]).includes('whatsapp')))
-      .map((u) => ({ id: u.id, name: u.name || u.email, email: u.email, role: u.role }));
+      .filter((u) => !sessionId || ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(String(u.role)) || !Array.isArray(u.whatsapp_sessions) || (u.whatsapp_sessions as any[]).map(String).includes(sessionId))
+      .map((u) => ({ id: u.id, name: u.name || u.email, email: u.email, role: u.role, whatsapp_sessions: Array.isArray(u.whatsapp_sessions) ? (u.whatsapp_sessions as any[]).map(String) : null }));
   }
 
   // ---------------------------------------------------------------- etiquetas
@@ -192,30 +207,31 @@ export class WhatsAppAttendanceService {
   async removeTag(orgId: string, id: string) {
     const t = await this.prisma.whatsapp_tags.findFirst({ where: { id, organization_id: orgId } });
     if (!t) throw new NotFoundException('Etiqueta não encontrada.');
-    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, tags: { array_contains: id } }, select: { id: true, chat_id: true, tags: true } });
+    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, tags: { array_contains: id } }, select: { id: true, session_id: true, chat_id: true, tags: true } });
     for (const c of chats) {
       const next = (Array.isArray(c.tags) ? (c.tags as string[]) : []).filter((x) => x !== id);
       await this.prisma.whatsapp_chats.update({ where: { id: c.id }, data: { tags: next } });
-      this.presenter.chat(orgId, c.chat_id);
+      this.presenter.chat(orgId, c.session_id, c.chat_id);
     }
     await this.prisma.whatsapp_tags.delete({ where: { id } });
     this.presenter.invalidateTags(orgId);
     return { ok: true, removed_from: chats.length };
   }
 
-  async setChatTags(orgId: string, chatId: string, tagIds: unknown, userId?: string | null) {
-    const chat = await this.chatRow(orgId, chatId);
+  /** Etiquetas da conversa (API: uuid da conversa). */
+  async setChatTags(orgId: string, chatUuid: string, tagIds: unknown, userId?: string | null) {
+    const chat = await this.chatRow(orgId, chatUuid);
     const valid = await this.prisma.whatsapp_tags.findMany({ where: { organization_id: orgId }, select: { id: true } });
     const allowed = new Set(valid.map((v) => v.id));
     const ids = [...new Set((Array.isArray(tagIds) ? tagIds : []).map(String).filter((x) => allowed.has(x)))].slice(0, 20);
     await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { tags: ids } });
-    await this.event(orgId, chatId, 'tags', userId || null, { tags: ids });
-    return this.shaped(orgId, chatId);
+    await this.event(orgId, chat, 'tags', userId || null, { tags: ids });
+    return this.shaped(orgId, chat.id);
   }
 
-  /** Acrescenta/remove etiquetas (usado pelo bot). */
-  async changeTags(orgId: string, chatId: string, add: string[] = [], remove: string[] = []) {
-    const chat = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+  /** Acrescenta/remove etiquetas (usado pelo bot e pelo funil). */
+  async changeTags(orgId: string, k: ChatKey, add: string[] = [], remove: string[] = []) {
+    const chat = await this.prisma.whatsapp_chats.findUnique({ where: this.key(orgId, k) });
     if (!chat) return;
     const valid = await this.prisma.whatsapp_tags.findMany({ where: { organization_id: orgId }, select: { id: true } });
     const allowed = new Set(valid.map((v) => v.id));
@@ -223,39 +239,42 @@ export class WhatsAppAttendanceService {
     for (const a of add) if (allowed.has(a)) cur.add(a);
     for (const r of remove) cur.delete(r);
     await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { tags: [...cur].slice(0, 20) } });
-    this.presenter.chat(orgId, chatId);
+    this.presenter.chat(orgId, k.session_id, k.chat_id);
   }
 
   // ---------------------------------------------------------------- estado do atendimento
-  private async chatRow(orgId: string, chatId: string) {
-    const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+  /** Linha da conversa pelo uuid público (404 se não for da org). */
+  async chatRow(orgId: string, chatUuid: string) {
+    const c = await this.prisma.whatsapp_chats.findFirst({ where: { id: String(chatUuid || ''), organization_id: orgId } });
     if (!c) throw new NotFoundException('Conversa não encontrada.');
     return c;
   }
 
-  private async shaped(orgId: string, chatId: string) {
-    const c = await this.chatRow(orgId, chatId);
+  private async shaped(orgId: string, chatUuid: string) {
+    const c = await this.chatRow(orgId, chatUuid);
     const [shaped] = await this.presenter.shapeChats(orgId, [c]);
-    this.presenter.chat(orgId, chatId);
+    this.presenter.chat(orgId, c.session_id, c.chat_id);
     return shaped;
   }
 
-  async event(orgId: string, chatId: string, event: string, userId: string | null, meta?: any) {
+  /** Linha do tempo do atendimento (por número + jid). */
+  async event(orgId: string, k: ChatKey, event: string, userId: string | null, meta?: any) {
     await this.prisma.whatsapp_service_events
-      .create({ data: { organization_id: orgId, chat_id: chatId, event: event.slice(0, 32), user_id: userId, meta: meta ?? undefined } })
+      .create({ data: { organization_id: orgId, session_id: k.session_id, chat_id: k.chat_id, event: event.slice(0, 32), user_id: userId, meta: meta ?? undefined } })
       .catch(() => undefined);
   }
 
-  async events(orgId: string, chatId: string) {
-    const rows = await this.prisma.whatsapp_service_events.findMany({ where: { organization_id: orgId, chat_id: chatId }, orderBy: { created_at: 'desc' }, take: 50 });
+  async events(orgId: string, chatUuid: string) {
+    const chat = await this.chatRow(orgId, chatUuid);
+    const rows = await this.prisma.whatsapp_service_events.findMany({ where: { organization_id: orgId, session_id: chat.session_id, chat_id: chat.chat_id }, orderBy: { created_at: 'desc' }, take: 50 });
     const names = new Map<string, string>();
     for (const r of rows) if (r.user_id && !names.has(r.user_id)) names.set(r.user_id, await this.userName(r.user_id));
     return rows.map((r) => ({ id: r.id, event: r.event, user: r.user_id ? { id: r.user_id, name: names.get(r.user_id) || null } : null, meta: r.meta, created_at: r.created_at }));
   }
 
   /** Muda o estado do atendimento (uso interno: bot, runner, inbound). */
-  async setStatus(orgId: string, chatId: string, status: ServiceStatus, opts: { userId?: string | null; assign?: string | null; event?: string; meta?: any; actor?: string | null } = {}) {
-    const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+  async setStatus(orgId: string, k: ChatKey, status: ServiceStatus, opts: { userId?: string | null; assign?: string | null; event?: string; meta?: any; actor?: string | null } = {}) {
+    const c = await this.prisma.whatsapp_chats.findUnique({ where: this.key(orgId, k) });
     if (!c) return null;
     const now = new Date();
     const data: any = { service_status: status };
@@ -270,18 +289,18 @@ export class WhatsAppAttendanceService {
       if (status === 'closed') data.service_closed_at = now;
     }
     await this.prisma.whatsapp_chats.update({ where: { id: c.id }, data });
-    if (opts.event) await this.event(orgId, chatId, opts.event, opts.actor ?? opts.userId ?? null, opts.meta);
-    this.presenter.chat(orgId, chatId);
+    if (opts.event) await this.event(orgId, k, opts.event, opts.actor ?? opts.userId ?? null, opts.meta);
+    this.presenter.chat(orgId, k.session_id, k.chat_id);
     // entrou na fila sem dono → distribuição automática (se ligada), excluindo quem liberou
-    if (status === 'waiting' && !data.assigned_user_id) void this.autoAssign(orgId, chatId, opts.actor ?? null).catch((e) => this.logger.warn(`distribuição ${chatId}: ${e?.message || e}`));
+    if (status === 'waiting' && !data.assigned_user_id) void this.autoAssign(orgId, k, opts.actor ?? null).catch((e) => this.logger.warn(`distribuição ${k.chat_id}: ${e?.message || e}`));
     return { ...c, ...data };
   }
 
   // ---------------------------------------------------------------- distribuição automática
-  /** Escolhe um atendente ONLINE (conectado ao módulo pelo WebSocket) conforme a regra da org. */
-  private async pickAttendant(orgId: string, mode: ServiceSettings['distribution'], exclude: string | null) {
+  /** Escolhe um atendente ONLINE (conectado ao módulo pelo WebSocket) que possa atender o número. */
+  private async pickAttendant(orgId: string, sessionId: string, mode: ServiceSettings['distribution'], exclude: string | null) {
     const online = new Set(this.realtime.onlineUserIds(orgId, 'whatsapp'));
-    const pool = (await this.attendants(orgId)).filter((a) => online.has(a.id) && a.id !== exclude);
+    const pool = (await this.attendants(orgId, sessionId)).filter((a) => online.has(a.id) && a.id !== exclude);
     if (!pool.length) return null;
     if (mode === 'least_busy') {
       const counts = await this.prisma.whatsapp_chats.groupBy({ by: ['assigned_user_id'], where: { organization_id: orgId, service_status: 'human', assigned_user_id: { in: pool.map((a) => a.id) } }, _count: { _all: true } });
@@ -294,16 +313,16 @@ export class WhatsAppAttendanceService {
     return sorted[(idx + 1) % sorted.length];
   }
 
-  async autoAssign(orgId: string, chatId: string, exclude: string | null = null) {
+  async autoAssign(orgId: string, k: ChatKey, exclude: string | null = null) {
     const s = await this.settings(orgId);
     if (s.distribution === 'off') return null;
-    const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+    const c = await this.prisma.whatsapp_chats.findUnique({ where: this.key(orgId, k) });
     if (!c || c.service_status !== 'waiting' || c.assigned_user_id) return null;
-    const pick = await this.pickAttendant(orgId, s.distribution, exclude);
+    const pick = await this.pickAttendant(orgId, k.session_id, s.distribution, exclude);
     if (!pick) return null;
     this.rrLast.set(orgId, pick.id);
-    await this.setStatus(orgId, chatId, 'human', { assign: pick.id, event: 'auto_assigned', meta: { to: pick.id, mode: s.distribution } });
-    this.presenter.emit(orgId, 'wa:assigned', { chat_id: chatId, user_id: pick.id, mode: s.distribution });
+    await this.setStatus(orgId, k, 'human', { assign: pick.id, event: 'auto_assigned', meta: { to: pick.id, mode: s.distribution } });
+    this.presenter.emitSession(orgId, k.session_id, 'wa:assigned', { chat_id: c.id, session_id: k.session_id, user_id: pick.id, mode: s.distribution });
     return pick;
   }
 
@@ -314,10 +333,11 @@ export class WhatsAppAttendanceService {
     for (const o of orgs) {
       const s = await this.settings(o.organization_id).catch(() => null);
       if (!s || s.distribution === 'off') continue;
-      const rows = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: o.organization_id, service_status: 'waiting', assigned_user_id: null }, orderBy: { service_started_at: 'asc' }, take: 50 });
+      const rows = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: o.organization_id, service_status: 'waiting', assigned_user_id: null }, orderBy: { service_started_at: 'asc' }, take: 50, select: { session_id: true, chat_id: true } });
+      let miss = 0;
       for (const c of rows) {
-        const picked = await this.autoAssign(o.organization_id, c.chat_id).catch(() => null);
-        if (!picked) break; // ninguém online: não adianta insistir nas outras
+        const picked = await this.autoAssign(o.organization_id, c).catch(() => null);
+        if (!picked && ++miss >= 3) break; // ninguém online para esses números: não adianta insistir
       }
     }
   }
@@ -326,68 +346,70 @@ export class WhatsAppAttendanceService {
    * Ações do painel: assumir, transferir, liberar para a fila, encerrar.
    * ("Enviar para o bot" fica no serviço do bot, que precisa do fluxo.)
    */
-  async action(orgId: string, userId: string, chatId: string, action: string, targetUserId?: string | null) {
-    const c = await this.chatRow(orgId, chatId);
-    if (isGroupJid(chatId)) throw new BadRequestException('Atendimento é só para conversas individuais.');
+  async action(orgId: string, userId: string, chatUuid: string, action: string, targetUserId?: string | null) {
+    const c = await this.chatRow(orgId, chatUuid);
+    const k: ChatKey = { session_id: c.session_id, chat_id: c.chat_id };
+    if (isGroupJid(c.chat_id)) throw new BadRequestException('Atendimento é só para conversas individuais.');
     switch (action) {
       case 'assume':
-        await this.setStatus(orgId, chatId, 'human', { assign: userId, event: 'assumed', userId, actor: userId });
-        await this.stopBot(orgId, chatId);
+        await this.setStatus(orgId, k, 'human', { assign: userId, event: 'assumed', userId, actor: userId });
+        await this.stopBot(orgId, k);
         break;
       case 'transfer': {
         if (!targetUserId) throw new BadRequestException('Escolha para quem transferir.');
-        const ok = (await this.attendants(orgId)).some((a) => a.id === targetUserId);
-        if (!ok) throw new BadRequestException('Esse usuário não atende o WhatsApp desta organização.');
-        await this.setStatus(orgId, chatId, 'human', { assign: targetUserId, event: 'transferred', actor: userId, meta: { from: c.assigned_user_id, to: targetUserId } });
-        await this.stopBot(orgId, chatId);
+        const ok = (await this.attendants(orgId, c.session_id)).some((a) => a.id === targetUserId);
+        if (!ok) throw new BadRequestException('Esse usuário não atende este número do WhatsApp.');
+        await this.setStatus(orgId, k, 'human', { assign: targetUserId, event: 'transferred', actor: userId, meta: { from: c.assigned_user_id, to: targetUserId } });
+        await this.stopBot(orgId, k);
         break;
       }
       case 'release':
-        await this.setStatus(orgId, chatId, 'waiting', { assign: null, event: 'released', actor: userId });
-        await this.stopBot(orgId, chatId);
+        await this.setStatus(orgId, k, 'waiting', { assign: null, event: 'released', actor: userId });
+        await this.stopBot(orgId, k);
         break;
       case 'close':
-        await this.setStatus(orgId, chatId, 'closed', { event: 'closed', actor: userId });
-        await this.stopBot(orgId, chatId);
+        await this.setStatus(orgId, k, 'closed', { event: 'closed', actor: userId });
+        await this.stopBot(orgId, k);
         // pesquisa de satisfação (se ligada) — só quando um humano encerra pelo painel
-        if (c.service_status === 'human' || c.service_status === 'waiting') this.hooks.emitServiceClosed({ orgId, chatId, userId, assignedUserId: c.assigned_user_id || null });
+        if (c.service_status === 'human' || c.service_status === 'waiting') this.hooks.emitServiceClosed({ orgId, sessionId: c.session_id, chatId: c.chat_id, userId, assignedUserId: c.assigned_user_id || null });
         break;
       case 'reopen':
-        await this.setStatus(orgId, chatId, 'none', { event: 'reopened', actor: userId });
+        await this.setStatus(orgId, k, 'none', { event: 'reopened', actor: userId });
         break;
       default:
         throw new BadRequestException('Ação inválida.');
     }
-    return this.shaped(orgId, chatId);
+    return this.shaped(orgId, c.id);
   }
 
   /** Encerra o bot daquela conversa (quando um humano assume). */
-  async stopBot(orgId: string, chatId: string, status: 'handoff' | 'stopped' | 'done' = 'handoff') {
+  async stopBot(orgId: string, k: ChatKey, status: 'handoff' | 'stopped' | 'done' = 'handoff') {
     await this.prisma.whatsapp_bot_sessions
-      .updateMany({ where: { organization_id: orgId, chat_id: chatId, status: { in: ['active', 'waiting'] } }, data: { status, wait_until: null } })
+      .updateMany({ where: { organization_id: orgId, session_id: k.session_id, chat_id: k.chat_id, status: { in: ['active', 'waiting'] } }, data: { status, wait_until: null } })
       .catch(() => undefined);
   }
 
   // ---------------------------------------------------------------- ganchos do pipeline
   /** Atendente respondeu pelo painel. */
-  async onPanelSend(orgId: string, chatId: string, userId: string | null | undefined) {
-    if (!userId || isGroupJid(chatId)) return;
-    const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+  async onPanelSend(orgId: string, k: ChatKey, userId: string | null | undefined) {
+    if (!userId || isGroupJid(k.chat_id)) return;
+    const c = await this.prisma.whatsapp_chats.findUnique({ where: this.key(orgId, k) });
     if (!c) return;
     const cfg = await this.settings(orgId);
     const assign = cfg.auto_assign_on_reply && !c.assigned_user_id ? userId : undefined;
     const wasHuman = c.service_status === 'human';
-    await this.setStatus(orgId, chatId, 'human', { assign, event: wasHuman ? undefined : 'assumed', actor: userId, userId });
-    if (c.service_status === 'bot') await this.stopBot(orgId, chatId);
+    await this.setStatus(orgId, k, 'human', { assign, event: wasHuman ? undefined : 'assumed', actor: userId, userId });
+    if (c.service_status === 'bot') await this.stopBot(orgId, k);
   }
 
   /** Alguém respondeu pelo celular (eco que não saiu do Pub Mail). */
-  async onPhoneSend(orgId: string, chatId: string) {
-    if (isGroupJid(chatId)) return;
-    const c = await this.prisma.whatsapp_chats.findUnique({ where: { organization_id_chat_id: { organization_id: orgId, chat_id: chatId } } });
+  async onPhoneSend(orgId: string, sessionId: string, jid: string) {
+    if (isGroupJid(jid)) return;
+    const k: ChatKey = { session_id: sessionId, chat_id: jid };
+    const c = await this.prisma.whatsapp_chats.findUnique({ where: this.key(orgId, k) });
     if (!c) return;
-    await this.setStatus(orgId, chatId, 'human', { event: c.service_status === 'human' ? undefined : 'phone_reply' });
-    if (c.service_status === 'bot') await this.stopBot(orgId, chatId);
+    await this.setStatus(orgId, k, 'human', { event: c.service_status === 'human' ? undefined : 'phone_reply' });
+    if (c.service_status === 'bot') await this.stopBot(orgId, k);
   }
 
   // ---------------------------------------------------------------- "zera em 24 h"
@@ -412,10 +434,10 @@ export class WhatsAppAttendanceService {
           service_status: { in: ['human', 'waiting'] },
           OR: [{ service_last_human_at: { lt: limit } }, { service_last_human_at: null, service_started_at: { lt: limit } }],
         },
-        select: { chat_id: true },
+        select: { session_id: true, chat_id: true },
         take: 500,
       });
-      for (const s of stale) await this.setStatus(orgId, s.chat_id, 'closed', { event: 'auto_closed', meta: { reset_hours: cfg.reset_hours } });
+      for (const s of stale) await this.setStatus(orgId, s, 'closed', { event: 'auto_closed', meta: { reset_hours: cfg.reset_hours } });
       if (stale.length) this.logger.log(`atendimentos encerrados por inatividade org=${orgId}: ${stale.length}`);
     }
   }

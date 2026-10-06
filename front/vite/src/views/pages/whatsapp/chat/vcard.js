@@ -67,6 +67,8 @@ export function contactsOfMessage(msg) {
       });
     }
   }
-  if (!out.length) out.push(...parseVCards(msg?.body));
-  return out;
+  // `extra.contact` às vezes é só o remetente ({ pushName }) → sem nome/telefone não é cartão: usa o vCard do texto
+  const useful = out.filter((c) => c.name || c.phones.length);
+  if (useful.length) return useful;
+  return parseVCards(msg?.body);
 }

@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppHooks, InboundEvent } from './whatsapp-hooks.service';
-import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { ChatKey, WhatsAppAttendanceService } from './whatsapp-attendance.service';
 import { WhatsAppSystemSender } from './whatsapp-system-send.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { isGroupJid, phoneFromJid } from './wa-jid.util';
@@ -11,6 +11,9 @@ import { isGroupJid, phoneFromJid } from './wa-jid.util';
 // ("PARE", "SAIR"… configurável) → `whatsapp_contacts.opted_out_at`, confirmação
 // automática, sai dos broadcasts. A mensagem é consumida (o bot não responde).
 // Reverter: PATCH /whatsapp/contacts/:id { opted_out: false } (tela Contatos).
+//
+// Multi-número: o contato é DA ORG (descadastrou = fora dos envios de todos os números);
+// a confirmação sai pelo número em que a pessoa escreveu.
 // ============================================================================
 
 const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim().toUpperCase();
@@ -41,28 +44,30 @@ export class WhatsAppOptoutService implements OnModuleInit {
   invalidate(orgId: string) { this.cache.delete(orgId); this.cfg(orgId); }
 
   private filter(e: InboundEvent): boolean {
-    if (isGroupJid(e.chatId)) return false;
+    if (isGroupJid(e.chatId) || !e.sessionId) return false;
     const c = this.cfg(e.orgId);
     if (!c?.enabled || !c.words.size) return false;
     if (e.message?.type && e.message.type !== 'text') return false;
     const body = norm(e.message?.body || '');
     if (!body || body.length > 40 || !c.words.has(body)) return false;
-    void this.optOut(e.orgId, e.chatId, body, c.reply);
+    void this.optOut(e.orgId, { session_id: e.sessionId, chat_id: e.chatId }, body, c.reply);
     return true;
   }
 
-  private async optOut(orgId: string, chatId: string, word: string, reply: string) {
+  private async optOut(orgId: string, k: ChatKey, word: string, reply: string) {
+    const jid = k.chat_id;
     try {
-      const phone = phoneFromJid(chatId);
-      let contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ wa_id: chatId }, { lid: chatId }, ...(phone ? [{ phone }] : [])] } });
-      if (!contact) contact = await this.prisma.whatsapp_contacts.create({ data: { organization_id: orgId, wa_id: chatId, phone: phone || null, source: 'session' } });
+      const phone = phoneFromJid(jid);
+      let contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ wa_id: jid }, { lid: jid }, ...(phone ? [{ phone }] : [])] } });
+      if (!contact) contact = await this.prisma.whatsapp_contacts.create({ data: { organization_id: orgId, wa_id: jid, phone: phone || null, source: 'session' } });
       if (!contact.opted_out_at) await this.prisma.whatsapp_contacts.update({ where: { id: contact.id }, data: { opted_out_at: new Date() } });
-      await this.attendance.event(orgId, chatId, 'opted_out', null, { word });
-      if (reply) await this.sender.text(orgId, chatId, reply, { optout: true });
-      this.presenter.chat(orgId, chatId);
-      this.presenter.emit(orgId, 'wa:contact', { action: 'opted_out', contact_id: contact.id, chat_id: chatId });
+      await this.attendance.event(orgId, k, 'opted_out', null, { word });
+      if (reply) await this.sender.text(orgId, k.session_id, jid, reply, { optout: true });
+      this.presenter.chat(orgId, k.session_id, jid);
+      const chatUuid = await this.presenter.chatUuid(orgId, k.session_id, jid);
+      this.presenter.emit(orgId, 'wa:contact', { action: 'opted_out', contact_id: contact.id, chat_id: chatUuid, session_id: k.session_id, jid });
     } catch (err: any) {
-      this.logger.warn(`descadastro ${chatId}: ${err?.message || err}`);
+      this.logger.warn(`descadastro ${jid}: ${err?.message || err}`);
     }
   }
 }

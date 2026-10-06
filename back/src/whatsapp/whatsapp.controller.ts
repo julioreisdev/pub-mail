@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -8,9 +8,18 @@ import { Roles } from '../auth/roles.decorator';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppBootstrapService } from './whatsapp-bootstrap.service';
 import { WhatsAppDataService } from './whatsapp-data.service';
-import { PacingDto, PairingCodeDto, PurgeDataDto, SwitchEngineDto, TestMessageDto, UpdateProfileDto } from './dto/whatsapp.dto';
+import { WaAccessService } from './wa-access.service';
+import { CreateSessionDto, PacingDto, PairingCodeDto, PurgeDataDto, ReorderSessionsDto, SwitchEngineDto, TestMessageDto, UpdateProfileDto, UpdateSessionDto } from './dto/whatsapp.dto';
 
-// WhatsApp → Configurações (sessão da org: conectar/QR/pareamento, perfil, teste, desconectar).
+// WhatsApp → Configurações: NÚMEROS da organização (N por org). Cada número = uma sessão do gateway.
+//   GET    /whatsapp/sessions                 lista (só os números que o usuário pode ver)
+//   POST   /whatsapp/sessions                 "Novo número" (dono/admin)
+//   PUT    /whatsapp/sessions/reorder         ordem das abas
+//   GET    /whatsapp/sessions/:id             estado de um número (espelho + ao vivo)
+//   PATCH  /whatsapp/sessions/:id             nome interno / cor / fluxo do bot
+//   DELETE /whatsapp/sessions/:id             apaga o número e tudo dele
+//   …/sessions/:id/{qr,start,stop,pairing-code,switch-engine,logout,test,pacing,bootstrap,events,
+//                    diagnostics,data-summary,purge,profile,profile/picture}
 @ApiTags('WhatsApp')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -20,80 +29,125 @@ export class WhatsAppController {
     private readonly sessions: WhatsAppSessionsService,
     private readonly bootstrap: WhatsAppBootstrapService,
     private readonly data: WhatsAppDataService,
+    private readonly access: WaAccessService,
   ) {}
 
-  @Get('session') get(@Req() req: any) { return this.sessions.get(req.user.organizationId); }
-  @Get('session/qr') qr(@Req() req: any) { return this.sessions.qr(req.user.organizationId); }
-  @Get('session/diagnostics') diagnostics(@Req() req: any) { return this.sessions.diagnostics(req.user.organizationId); }
-  @Get('session/events') events(@Req() req: any, @Query('limit') limit?: string) { return this.sessions.events(req.user.organizationId, parseInt(String(limit || 50), 10) || 50); }
+  private async allow(req: any, sessionId: string) {
+    await this.access.assertSession(req.user, sessionId);
+  }
 
-  @Post('session/start')
+  // ---------------------------------------------------------------- números
+  @Get('sessions')
+  async list(@Req() req: any) {
+    return this.sessions.list(req.user.organizationId, await this.access.allowedIds(req.user));
+  }
+
+  @Post('sessions')
+  @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  create(@Req() req: any, @Body() dto: CreateSessionDto) { return this.sessions.create(req.user.organizationId, dto || {}); }
+
+  @Put('sessions/reorder')
+  @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
+  reorder(@Req() req: any, @Body() dto: ReorderSessionsDto) { return this.sessions.reorder(req.user.organizationId, dto.ids || []); }
+
+  // Dados guardados (contagens p/ o card "Dados" e o aviso da limpeza) — de tudo ou de um número
+  @Get('sessions/data-summary') dataSummaryAll(@Req() req: any) { return this.data.summary(req.user.organizationId, null); }
+
+  // Limpar TUDO da org (todos os números). Irreversível.
+  @Post('sessions/purge')
+  @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  purgeAll(@Req() req: any, @Body() dto: PurgeDataDto) { return this.data.purge(req.user.organizationId, { sessionId: null, keepContacts: dto.keep_contacts === true }); }
+
+  @Get('sessions/:id')
+  async get(@Req() req: any, @Param('id') id: string) { await this.allow(req, id); return this.sessions.get(req.user.organizationId, id); }
+
+  @Put('sessions/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
+  update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateSessionDto) { return this.sessions.update(req.user.organizationId, id, dto || {}); }
+
+  @Delete('sessions/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
+  remove(@Req() req: any, @Param('id') id: string) { return this.sessions.remove(req.user.organizationId, id); }
+
+  @Get('sessions/:id/qr')
+  async qr(@Req() req: any, @Param('id') id: string) { await this.allow(req, id); return this.sessions.qr(req.user.organizationId, id); }
+
+  @Get('sessions/:id/diagnostics')
+  async diagnostics(@Req() req: any, @Param('id') id: string) { await this.allow(req, id); return this.sessions.diagnostics(req.user.organizationId, id); }
+
+  @Get('sessions/:id/events')
+  async events(@Req() req: any, @Param('id') id: string, @Query('limit') limit?: string) { await this.allow(req, id); return this.sessions.events(req.user.organizationId, id, parseInt(String(limit || 50), 10) || 50); }
+
+  @Post('sessions/:id/start')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Throttle({ default: { limit: 6, ttl: 60_000 } })
-  start(@Req() req: any) { return this.sessions.start(req.user.organizationId); }
+  start(@Req() req: any, @Param('id') id: string) { return this.sessions.start(req.user.organizationId, id); }
 
-  @Post('session/stop')
+  @Post('sessions/:id/stop')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  stop(@Req() req: any) { return this.sessions.stop(req.user.organizationId); }
+  stop(@Req() req: any, @Param('id') id: string) { return this.sessions.stop(req.user.organizationId, id); }
 
-  @Post('session/pairing-code')
+  @Post('sessions/:id/pairing-code')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
-  pairing(@Req() req: any, @Body() dto: PairingCodeDto) { return this.sessions.pairingCode(req.user.organizationId, dto.phone); }
+  pairing(@Req() req: any, @Param('id') id: string, @Body() dto: PairingCodeDto) { return this.sessions.pairingCode(req.user.organizationId, id, dto.phone); }
 
   // Trocar o motor do gateway (whatsapp-web.js ↔ Baileys): encerra a conexão atual e mostra um QR novo.
-  @Post('session/switch-engine')
+  @Post('sessions/:id/switch-engine')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
-  switchEngine(@Req() req: any, @Body() dto: SwitchEngineDto) { return this.sessions.switchEngine(req.user.organizationId, dto.engine); }
+  switchEngine(@Req() req: any, @Param('id') id: string, @Body() dto: SwitchEngineDto) { return this.sessions.switchEngine(req.user.organizationId, id, dto.engine); }
 
-  // Desconectar / trocar de número
-  @Post('session/logout')
+  // Desconectar / trocar de número (a linha continua)
+  @Post('sessions/:id/logout')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  logout(@Req() req: any) { return this.sessions.logout(req.user.organizationId); }
+  logout(@Req() req: any, @Param('id') id: string) { return this.sessions.logout(req.user.organizationId, id); }
 
-  // Dados guardados do número (contagens p/ o card "Dados do número" e o aviso da limpeza)
-  @Get('session/data-summary') dataSummary(@Req() req: any) { return this.data.summary(req.user.organizationId); }
+  @Get('sessions/:id/data-summary')
+  async dataSummary(@Req() req: any, @Param('id') id: string) { await this.allow(req, id); return this.data.summary(req.user.organizationId, id); }
 
-  // Limpar todos os dados do número (desconecta se ainda houver sessão). Irreversível.
-  @Post('session/purge')
+  // Limpar os dados DESTE número (desconecta se ainda houver sessão). Irreversível.
+  @Post('sessions/:id/purge')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
-  purge(@Req() req: any, @Body() dto: PurgeDataDto) { return this.data.purge(req.user.organizationId, { keepContacts: dto.keep_contacts === true }); }
+  purge(@Req() req: any, @Param('id') id: string, @Body() dto: PurgeDataDto) { void dto; return this.data.purge(req.user.organizationId, { sessionId: id }); }
 
   // Importar do celular de novo (conversas, contatos, histórico recente)
-  @Post('session/bootstrap')
+  @Post('sessions/:id/bootstrap')
   @Throttle({ default: { limit: 2, ttl: 60_000 } })
-  runBootstrap(@Req() req: any, @Body() dto: any) {
+  async runBootstrap(@Req() req: any, @Param('id') id: string, @Body() dto: any) {
+    await this.allow(req, id);
     // opções: chats (10–200, padrão 60) e per_chat (10–100, padrão 40); roda em background
-    const orgId = req.user.organizationId;
     const opts = { chats: parseInt(String(dto?.chats || ''), 10) || undefined, perChat: parseInt(String(dto?.per_chat || ''), 10) || undefined };
-    this.bootstrap.run(orgId, true, opts).catch(() => undefined);
+    this.bootstrap.run(req.user.organizationId, id, true, opts).catch(() => undefined);
     return { started: true };
   }
 
-  @Post('session/test')
+  @Post('sessions/:id/test')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  test(@Req() req: any, @Body() dto: TestMessageDto) { return this.sessions.sendTest(req.user.organizationId, dto?.text); }
+  async test(@Req() req: any, @Param('id') id: string, @Body() dto: TestMessageDto) { await this.allow(req, id); return this.sessions.sendTest(req.user.organizationId, id, dto?.text); }
 
-  @Put('session/pacing')
+  @Put('sessions/:id/pacing')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  pacing(@Req() req: any, @Body() dto: PacingDto) { return this.sessions.setPacing(req.user.organizationId, dto.enabled); }
+  pacing(@Req() req: any, @Param('id') id: string, @Body() dto: PacingDto) { return this.sessions.setPacing(req.user.organizationId, id, dto.enabled); }
 
-  @Get('profile') profile(@Req() req: any) { return this.sessions.getProfile(req.user.organizationId); }
+  @Get('sessions/:id/profile')
+  async profile(@Req() req: any, @Param('id') id: string) { await this.allow(req, id); return this.sessions.getProfile(req.user.organizationId, id); }
 
-  @Put('profile')
+  @Put('sessions/:id/profile')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  updateProfile(@Req() req: any, @Body() dto: UpdateProfileDto) { return this.sessions.updateProfile(req.user.organizationId, dto); }
+  updateProfile(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateProfileDto) { return this.sessions.updateProfile(req.user.organizationId, id, dto); }
 
-  @Put('profile/picture')
+  @Put('sessions/:id/profile/picture')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-  picture(@Req() req: any, @UploadedFile() file: any) {
-    return this.sessions.setProfilePicture(req.user.organizationId, { buffer: file?.buffer, mimetype: String(file?.mimetype || ''), size: Number(file?.size || 0) });
+  picture(@Req() req: any, @Param('id') id: string, @UploadedFile() file: any) {
+    return this.sessions.setProfilePicture(req.user.organizationId, id, { buffer: file?.buffer, mimetype: String(file?.mimetype || ''), size: Number(file?.size || 0) });
   }
 
-  @Delete('profile/picture')
+  @Delete('sessions/:id/profile/picture')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  deletePicture(@Req() req: any) { return this.sessions.deleteProfilePicture(req.user.organizationId); }
+  deletePicture(@Req() req: any, @Param('id') id: string) { return this.sessions.deleteProfilePicture(req.user.organizationId, id); }
 }

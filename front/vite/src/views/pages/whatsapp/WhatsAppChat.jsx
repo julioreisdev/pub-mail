@@ -56,6 +56,7 @@ import {
   IconHeadset,
   IconMailOpened,
   IconMapPin,
+  IconMessagePlus,
   IconMessages,
   IconMicrophone,
   IconMoodSmile,
@@ -77,6 +78,7 @@ import {
   IconTrash,
   IconUser,
   IconUsersGroup,
+  IconUsers,
   IconUserDollar,
   IconReceipt2,
   IconVideo,
@@ -94,6 +96,9 @@ import { useAuth } from 'contexts/AuthContext';
 import ScrollChipsRow from './chat/ScrollChipsRow';
 import AudioPlayer from './chat/AudioPlayer';
 import { contactsOfMessage } from './chat/vcard';
+import ContactInfoDrawer from './chat/ContactInfo';
+import { PreviewText } from './chat/mediaIcons';
+import { useTeam, TeamList, TeamThread, NewGroupDialog } from './chat/TeamChat';
 import {
   ADV_DEFAULT,
   ActiveAdvChips,
@@ -127,11 +132,16 @@ import {
   QUICK_REACTIONS,
   EmojiPicker,
   WaNotConnected,
-  useWaSession,
+  useWaSessions,
+  WaNumberChip,
+  WaNumberDot,
+  WaNumberSelect,
+  sessionLabel,
   tint,
   dual,
   errMsg,
   fmtPhone,
+  onlyDigits,
   fmtTime,
   fmtListTime,
   fmtBytes,
@@ -181,17 +191,18 @@ const filterFromParams = (sp) => {
   return tab && BUILTIN_FILTER_IDS.has(tab) ? tab : 'all';
 };
 
+// sem emoji: o ícone do tipo entra pelo <PreviewText type=…> (chat/mediaIcons.jsx)
 const TYPE_LABEL = {
-  image: '📷 Foto',
-  video: '🎬 Vídeo',
-  audio: '🎵 Áudio',
-  voice: '🎤 Mensagem de voz',
-  document: '📄 Documento',
-  sticker: '🖼️ Figurinha',
-  location: '📍 Localização',
-  contact: '👤 Contato',
-  poll: '📊 Enquete',
-  revoked: '🚫 Mensagem apagada',
+  image: 'Foto',
+  video: 'Vídeo',
+  audio: 'Áudio',
+  voice: 'Mensagem de voz',
+  document: 'Documento',
+  sticker: 'Figurinha',
+  location: 'Localização',
+  contact: 'Contato',
+  poll: 'Enquete',
+  revoked: 'Mensagem apagada',
   unknown: 'Mensagem não suportada'
 };
 
@@ -232,11 +243,23 @@ const replaceTmp = (prev, tmpId, real) => {
 // foto do chat (indivíduo ou grupo) via proxy autenticado; AuthImage cacheia por path (chat_id)
 const chatPhoto = (c) => (c?.chat_id ? `/whatsapp/chats/${enc(c.chat_id)}/photo` : undefined);
 // chats por privacy-id sem contato conhecido vêm como "Contato sem nome" → mostra o telefone se houver
+// nome vazio/placeholder ou só dígitos (o back devolve `+55…` quando não há nome) → telefone formatado
 const chatLabel = (c) =>
-  (c?.kind === 'individual' && c?.name === 'Contato sem nome' && c?.phone ? fmtPhone(c.phone) : c?.name) ||
+  (c?.kind === 'individual' && (c?.name === 'Contato sem nome' || /^\+?\d{8,}$/.test(String(c?.name || ''))) && c?.phone
+    ? fmtPhone(c.phone)
+    : c?.name) ||
   fmtPhone(c?.phone) ||
-  c?.chat_id;
+  (c?.jid ? String(c.jid).split('@')[0] : '') ||
+  'Conversa';
 const kindOfChat = (c) => (c?.kind === 'group' ? 'group' : c?.kind === 'channel' || c?.kind === 'broadcast' ? 'channel' : 'contact');
+// participantes: você → admins → com nome (A→Z) → só telefone
+const sortParticipants = (list) =>
+  [...list].sort((a, b) => {
+    const rank = (p) => (p.is_me ? 0 : p.is_admin ? 1 : p.name ? 2 : 3);
+    const d = rank(a) - rank(b);
+    if (d) return d;
+    return String(a.name || a.phone || a.id || '').localeCompare(String(b.name || b.phone || b.id || ''), 'pt-BR');
+  });
 const senderKey = (m) => (m.direction === 'OUT' ? 'me' : m.from_jid || m.sender_name || 'in');
 
 // cor estável por remetente (nome no grupo)
@@ -262,8 +285,9 @@ const summarizeReactions = (reactions) => {
 // ----------------------------------------------------------------------------
 // Texto com formatação do WhatsApp (*negrito* _itálico_ ~tachado~ ```mono```) + links
 // ----------------------------------------------------------------------------
-const FMT_RE = /(```[\s\S]+?```|\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|https?:\/\/[^\s<]+|www\.[^\s<]+)/g;
-function WaText({ text, tail = 0, sx }) {
+const FMT_RE = /(```[\s\S]+?```|\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|https?:\/\/[^\s<]+|www\.[^\s<]+|@\d{7,16}(?!\d))/g;
+// `mentions` = extra.mention_names do back ({ '<id>': { name, phone } }); `onPerson` abre os dados da pessoa
+function WaText({ text, tail = 0, sx, mentions, onPerson }) {
   const parts = useMemo(() => String(text || '').split(FMT_RE), [text]);
   return (
     <Typography component="div" variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.45, ...sx }}>
@@ -275,6 +299,32 @@ function WaText({ text, tail = 0, sx }) {
               {p.slice(3, -3)}
             </Box>
           );
+        if (/^@\d{7,16}$/.test(p)) {
+          const key = p.slice(1);
+          const m = mentions?.[key];
+          const label = m?.name ? `@${m.name}` : m?.phone ? `@${fmtPhone(m.phone)}` : p;
+          const clickable = Boolean(m && (m.phone || m.name) && onPerson);
+          return (
+            <Box
+              key={i}
+              component="span"
+              onClick={
+                clickable
+                  ? (e) => {
+                      e.stopPropagation();
+                      onPerson({ jid: m.phone ? `${m.phone}@c.us` : `${key}@lid`, name: m.name || null, session_id: msg?.session_id });
+                    }
+                  : undefined
+              }
+              sx={[
+                dual({ color: '#027eb5' }, { color: '#53bdeb' }),
+                { fontWeight: 700, cursor: clickable ? 'pointer' : 'default', '&:hover': clickable ? { textDecoration: 'underline' } : {} }
+              ]}
+            >
+              {label}
+            </Box>
+          );
+        }
         if (/^\*[^*\n]+\*$/.test(p)) return <strong key={i}>{p.slice(1, -1)}</strong>;
         if (/^_[^_\n]+_$/.test(p)) return <em key={i}>{p.slice(1, -1)}</em>;
         if (/^~[^~\n]+~$/.test(p)) return <s key={i}>{p.slice(1, -1)}</s>;
@@ -315,7 +365,7 @@ function AckTicks({ ack, error, pending }) {
 // ----------------------------------------------------------------------------
 // Item da lista de conversas
 // ----------------------------------------------------------------------------
-const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now }) {
+const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now, session }) {
   const kind = kindOfChat(chat);
   const isGroup = chat.kind === 'group';
   const preview = chat.last_message_preview || (isGroup ? `${chat.group_meta?.participants_count ?? '—'} participantes` : 'Sem mensagens');
@@ -351,9 +401,12 @@ const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now }) {
       </Box>
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-          <Typography sx={{ fontWeight: unread ? 800 : 700, fontSize: 14.5 }} noWrap>
-            {chatLabel(chat)}
-          </Typography>
+          <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+            <Typography sx={{ fontWeight: unread ? 800 : 700, fontSize: 14.5, minWidth: 0 }} noWrap>
+              {chatLabel(chat)}
+            </Typography>
+            {session ? <WaNumberChip session={session} sx={{ flexShrink: 0, maxWidth: 110 }} /> : null}
+          </Stack>
           <Typography
             variant="caption"
             sx={{ color: unread ? WA_DARK : 'text.secondary', fontWeight: unread ? 700 : 500, flexShrink: 0, fontSize: 11 }}
@@ -372,7 +425,7 @@ const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now }) {
                 Você:{' '}
               </Box>
             ) : null}
-            {preview}
+            {chat.last_message_preview ? <PreviewText preview={preview} /> : preview}
           </Typography>
           {waiting ? (
             <Tooltip title={`Aguardando resposta há ${fmtWait(waitMs)}`} disableInteractive>
@@ -465,7 +518,14 @@ function MediaOmitted({ msg, label = 'Mídia' }) {
     setBusy(true);
     try {
       const r = await post(`/whatsapp/messages/${enc(msg.id)}/media/retry`);
-      if (r && r.ok === false) toast('O WhatsApp ainda não entregou esse arquivo.', { icon: '⏳' });
+      if (r && r.ok === false) {
+        if (r.media_info?.final)
+          toast('Esse arquivo não foi baixado quando chegou e o WhatsApp não deixa baixar depois. Peça para reenviar.', {
+            icon: '⚠️',
+            id: 'wa-media-gone'
+          });
+        else toast('O WhatsApp ainda não entregou esse arquivo.', { icon: '⏳', id: 'wa-media-wait' });
+      }
     } catch (err) {
       toast.error(errMsg(err, 'Não foi possível baixar.'));
     } finally {
@@ -477,7 +537,9 @@ function MediaOmitted({ msg, label = 'Mídia' }) {
     ? `Baixando ${label.toLowerCase()}…`
     : reason === 'history'
       ? `${label} de antes da conexão — veja no celular`
-      : `${label} não pôde ser baixado do WhatsApp`;
+      : info.final
+        ? `${label} não foi baixado quando chegou — peça para reenviar ou veja no celular`
+        : `${label} não pôde ser baixado do WhatsApp`;
   return (
     <Stack
       direction="row"
@@ -503,7 +565,7 @@ function MediaOmitted({ msg, label = 'Mídia' }) {
           </Typography>
         ) : null}
       </Box>
-      {!downloading && reason !== 'history' ? (
+      {!downloading && reason !== 'history' && !info.final ? (
         <Tooltip title="Tentar de novo">
           <IconButton size="small" onClick={retry} sx={{ color: 'inherit' }}>
             <IconRefresh size={16} />
@@ -523,8 +585,6 @@ function MediaDownload({ url }) {
         size="small"
         component="a"
         href={dlUrl(url)}
-        target="_blank"
-        rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
         className="wa-media-dl"
         sx={{
@@ -680,7 +740,7 @@ function DocumentBody({ msg }) {
       </Box>
       {m?.url ? (
         <Tooltip title="Baixar">
-          <IconButton size="small" component="a" href={dlUrl(m.url)} target="_blank" rel="noopener noreferrer" sx={{ color: 'inherit' }}>
+          <IconButton size="small" component="a" href={dlUrl(m.url)} sx={{ color: 'inherit' }}>
             <IconDownload size={18} />
           </IconButton>
         </Tooltip>
@@ -791,7 +851,8 @@ function ContactBody({ msg }) {
   const openPhone = async (digits) => {
     setOpening(digits);
     try {
-      const chat = await post('/whatsapp/chats/open', { phone: digits });
+      // abre no mesmo número em que a mensagem chegou
+      const chat = await post('/whatsapp/chats/open', { phone: digits, session_id: msg.session_id });
       if (chat?.chat_id)
         setSearchParams((prev) => {
           const n = new URLSearchParams(prev);
@@ -875,7 +936,19 @@ function StickerBody({ msg }) {
 // ----------------------------------------------------------------------------
 // Balão de mensagem
 // ----------------------------------------------------------------------------
-const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, flash, onMenu, onImage, onRetry, onReact, onQuote }) {
+const MessageBubble = memo(function MessageBubble({
+  msg,
+  isGroup,
+  first,
+  last,
+  flash,
+  onMenu,
+  onImage,
+  onRetry,
+  onReact,
+  onQuote,
+  onPerson
+}) {
   const out = msg.direction === 'OUT';
   const revoked = msg.revoked || msg.type === 'revoked';
   const sticker = msg.type === 'sticker' && !revoked;
@@ -1019,7 +1092,22 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, f
           {isGroup && !out && first && (msg.sender_name || msg.from_jid) ? (
             <Typography
               variant="caption"
-              sx={{ fontWeight: 700, display: 'block', mb: 0.25, color: senderColor(msg.from_jid || msg.sender_name) }}
+              onClick={
+                onPerson && msg.from_jid
+                  ? (e) => {
+                      e.stopPropagation();
+                      onPerson({ jid: msg.from_jid, name: msg.sender_name || null, chat_id: msg.chat_id, session_id: msg.session_id });
+                    }
+                  : undefined
+              }
+              sx={{
+                fontWeight: 700,
+                display: 'block',
+                mb: 0.25,
+                color: senderColor(msg.from_jid || msg.sender_name),
+                cursor: onPerson && msg.from_jid ? 'pointer' : 'default',
+                '&:hover': onPerson && msg.from_jid ? { textDecoration: 'underline' } : {}
+              }}
             >
               {msg.sender_name || fmtPhone(String(msg.from_jid || '').split('@')[0])}
             </Typography>
@@ -1079,14 +1167,16 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, f
               ]}
             >
               <Typography variant="caption" sx={{ display: 'block', opacity: 0.8, fontSize: 12 }} noWrap>
-                {msg.quoted.preview || 'Mensagem'}
+                <PreviewText preview={msg.quoted.preview || 'Mensagem'} />
               </Typography>
             </Box>
           ) : null}
 
           {body}
-          {showText ? <WaText text={msg.body} tail={metaTail} /> : null}
-          {showCaption ? <WaText text={msg.body} tail={metaTail} sx={{ mt: 0.25 }} /> : null}
+          {showText ? <WaText text={msg.body} tail={metaTail} mentions={msg.extra?.mention_names} onPerson={onPerson} /> : null}
+          {showCaption ? (
+            <WaText text={msg.body} tail={metaTail} sx={{ mt: 0.25 }} mentions={msg.extra?.mention_names} onPerson={onPerson} />
+          ) : null}
 
           {msg.error ? (
             <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5, color: '#f15c6d' }}>
@@ -1176,6 +1266,146 @@ const MessageBubble = memo(function MessageBubble({ msg, isGroup, first, last, f
   );
 });
 
+// Só busca a foto quando a linha aparece na tela (lista de participantes pode ter centenas)
+function LazyAvatar({ name, photoPath, size = 38, kind = 'contact' }) {
+  const ref = useRef(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || seen) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setSeen(true);
+      return undefined;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setSeen(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin: '240px' }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [seen]);
+  return (
+    <Box ref={ref} sx={{ display: 'flex', flexShrink: 0 }}>
+      <TgAvatar name={name} photoPath={seen ? photoPath : undefined} size={size} kind={kind} />
+    </Box>
+  );
+}
+
+// Iniciar conversa com um número que não está na agenda (sem precisar salvar no celular).
+// Digita DDI+DDD+número (só dígitos; sem DDI assume 55) + nome opcional → POST /whatsapp/chats/open.
+const normalizePhoneInput = (v) => {
+  const d = onlyDigits(v);
+  if (!d) return '';
+  return d.length === 10 || d.length === 11 ? `55${d}` : d;
+};
+function NewChatDialog({ open, initialPhone = '', sessions = [], initialSession = '', onClose, onOpened }) {
+  const [phone, setPhone] = useState('');
+  const [name, setName] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const connectedSessions = useMemo(() => sessions.filter((x) => x.connected || x.status === 'ready'), [sessions]);
+  useEffect(() => {
+    if (open) {
+      setPhone(initialPhone ? onlyDigits(initialPhone) : '');
+      setName('');
+      setBusy(false);
+      // número pré-selecionado: o filtrado na lista; senão o único conectado; senão o primeiro
+      const pre =
+        initialSession && connectedSessions.some((x) => x.id === initialSession) ? initialSession : connectedSessions[0]?.id || '';
+      setSessionId(pre);
+    }
+  }, [open, initialPhone, initialSession, connectedSessions]);
+  const digits = normalizePhoneInput(phone);
+  const valid = digits.length >= 10 && digits.length <= 15 && Boolean(sessionId);
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    try {
+      const chat = await post('/whatsapp/chats/open', {
+        phone: digits,
+        session_id: sessionId,
+        ...(name.trim() ? { name: name.trim() } : {})
+      });
+      if (!chat?.chat_id) throw new Error('sem conversa');
+      onOpened?.(chat);
+      onClose?.();
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível iniciar a conversa.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <TgModal open={open} onClose={busy ? undefined : onClose} title="Nova conversa" maxWidth="xs">
+      <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+        <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+          Converse com um número sem precisar salvar na agenda do celular.
+        </Typography>
+        {!connectedSessions.length ? (
+          <Typography variant="body2" sx={{ color: 'warning.main', fontWeight: 600 }}>
+            Nenhum número conectado. Conecte um número em Configurações.
+          </Typography>
+        ) : connectedSessions.length > 1 ? (
+          <WaNumberSelect
+            sessions={connectedSessions}
+            value={sessionId}
+            onChange={setSessionId}
+            label="Conversar pelo número"
+            size="small"
+          />
+        ) : null}
+        <TextField
+          autoFocus
+          label="Número"
+          placeholder="55 11 99999-9999"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          helperText={
+            digits
+              ? valid
+                ? `Vai abrir a conversa com ${fmtPhone(digits)}`
+                : 'Use DDI + DDD + número (10 a 15 dígitos)'
+              : 'DDI + DDD + número. Sem DDI, assume Brasil (55).'
+          }
+          inputProps={{ inputMode: 'tel' }}
+          fullWidth
+          size="small"
+        />
+        <TextField
+          label="Nome (opcional)"
+          placeholder="Como esse contato vai aparecer no Pub Mail"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          fullWidth
+          size="small"
+        />
+        <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <Button onClick={onClose} disabled={busy} sx={{ textTransform: 'none' }}>
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            disableElevation
+            onClick={submit}
+            disabled={!valid || busy}
+            startIcon={busy ? <CircularProgress size={14} color="inherit" /> : <IconMessagePlus size={16} />}
+            sx={{ bgcolor: WA_DARK, fontWeight: 700, textTransform: 'none', '&:hover': { bgcolor: WA_DARK } }}
+          >
+            Iniciar conversa
+          </Button>
+        </Stack>
+      </Stack>
+    </TgModal>
+  );
+}
+
 function MessagesSkeleton() {
   const rows = [
     { out: false, w: '48%', h: 34 },
@@ -1212,7 +1442,7 @@ const WALLPAPER = {
 // Modal de filtro personalizado ("pasta"): nome + seleção de conversas.
 // POST /whatsapp/chat-filters { name, chat_ids } | PUT /whatsapp/chat-filters/:id
 // ----------------------------------------------------------------------------
-function ChatFilterModal({ open, initial, connected, onClose, onSaved }) {
+function ChatFilterModal({ open, initial, connected, sessions, initialSessionId, onClose, onSaved }) {
   const [name, setName] = useState('');
   const [targets, setTargets] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -1290,7 +1520,14 @@ function ChatFilterModal({ open, initial, connected, onClose, onSaved }) {
           <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', display: 'block', mb: 0.75 }}>
             Conversas do filtro
           </Typography>
-          <WaChatPicker value={targets} onChange={setTargets} connected={connected} listHeight={280} />
+          <WaChatPicker
+            value={targets}
+            onChange={setTargets}
+            connected={connected}
+            listHeight={280}
+            sessions={sessions}
+            initialSessionId={initialSessionId}
+          />
         </Box>
       </Stack>
     </TgModal>
@@ -1300,12 +1537,55 @@ function ChatFilterModal({ open, initial, connected, onClose, onSaved }) {
 // ============================================================================
 export default function WhatsAppChat() {
   const isNarrow = useMediaQuery('(max-width:860px)');
+  const narrowRef = useRef(isNarrow);
+  narrowRef.current = isNarrow;
   const [searchParams, setSearchParams] = useSearchParams();
+  // chat interno da EQUIPE: `?team=1` (lista) ou `?team=<id da conversa>`; sai com qualquer chip de número
+  const teamParam = searchParams.get('team') || '';
+  const teamMode = Boolean(teamParam);
+  const team = useTeam();
+  const [newGroup, setNewGroup] = useState(false);
+  const setTeam = useCallback(
+    (v) =>
+      setSearchParams(
+        (prev) => {
+          const n = new URLSearchParams(prev);
+          if (v) n.set('team', v);
+          else n.delete('team');
+          return n;
+        },
+        { replace: true }
+      ),
+    [setSearchParams]
+  );
+  const teamChat = useMemo(
+    () => (teamParam && teamParam !== '1' ? team.chats.find((c) => c.id === teamParam) || null : null),
+    [team.chats, teamParam]
+  );
   // identidade do setter muda a cada troca de URL; via ref, openChat fica estável (linhas memoizadas)
   const setSearchParamsRef = useRef(setSearchParams);
   setSearchParamsRef.current = setSearchParams;
-  const { session, loading: sessionLoading, connected } = useWaSession(15000);
+  const { sessions, byId: sessionsById, loading: sessionLoading, connected } = useWaSessions(15000);
   const navigate = useNavigate();
+  // número filtrado na lista ('' = todos). Persistido na URL (?session=) p/ links de outras telas.
+  const sessionFilter = searchParams.get('session') || '';
+  // `byId` do hook é um Map (não objeto)
+  const sessionFilterValid = sessionFilter && sessionsById?.get?.(sessionFilter) ? sessionFilter : '';
+  // sempre sai do modo equipe: dois setSearchParams seguidos não se encadeiam (o 2º lê os
+  // parâmetros antigos e devolvia o `team`), então `team` e `session` mudam numa atualização só
+  const setSessionFilter = (id) =>
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev);
+      n.delete('team');
+      if (id) n.set('session', id);
+      else n.delete('session');
+      return n;
+    });
+  const manyNumbers = sessions.length > 1;
+  const sessionOf = useCallback(
+    (c) => (c?.session_id ? sessionsById?.get?.(c.session_id) || c.session || null : c?.session || null),
+    [sessionsById]
+  );
   const { user } = useAuth();
   const myId = user?.user?.id || null;
   const myIdRef = useRef(myId);
@@ -1333,12 +1613,12 @@ export default function WhatsAppChat() {
   const countsTimer = useRef(null);
   const loadCounts = useCallback(async () => {
     try {
-      const r = await get('/whatsapp/chats/counts');
+      const r = await get('/whatsapp/chats/counts', { params: sessionFilterValid ? { session_id: sessionFilterValid } : {} });
       if (r && typeof r === 'object') setCounts(r);
     } catch {
       /* contagens são cosméticas */
     }
-  }, []);
+  }, [sessionFilterValid]);
   // agrupa rajadas de eventos (1 busca a cada ~1,5 s no máximo)
   const scheduleCounts = useCallback(() => {
     if (countsTimer.current) return;
@@ -1504,6 +1784,13 @@ export default function WhatsAppChat() {
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const sinceRef = useRef(null);
+  // Cache das conversas já abertas nesta sessão (chat_id → {items, hasOlder, since, at}): voltar a uma conversa
+  // mostra na hora o que já tinha e só busca o que mudou (`since`), sem skeleton. Até 40 conversas (LRU).
+  const threadCacheRef = useRef(new Map());
+  const hasOlderRef = useRef(false);
+  const THREAD_CACHE_MAX = 40;
+  const THREAD_CACHE_FULL_MS = 6 * 3600_000; // cache mais velho que isso recarrega inteiro (o `since` devolve no máx. 300)
+  hasOlderRef.current = hasOlder;
   const msgSeq = useRef(0);
   const threadRef = useRef(null);
   // "grudado no fim": true enquanto o usuário não rolar para cima. Mídia que carrega
@@ -1555,6 +1842,20 @@ export default function WhatsAppChat() {
   const [pollDlg, setPollDlg] = useState(null); // {name, options:[], multiple, loading}
   const [locDlg, setLocDlg] = useState(null); // {lat,lng,description,loading}
   const [groupDrawer, setGroupDrawer] = useState(null); // {loading, info}
+  const [person, setPerson] = useState(null); // { jid, name?, chat_id? } → ContactInfoDrawer
+  const [newChat, setNewChat] = useState(null); // { phone } → NewChatDialog (null = fechado)
+  const openNewChat = useCallback(
+    (chat) => {
+      setQ('');
+      setSearchParams((prev) => {
+        const n = new URLSearchParams(prev);
+        n.set('chat', chat.chat_id);
+        return n;
+      });
+    },
+    [setSearchParams]
+  );
+  const openPerson = useCallback((t) => setPerson(t), []);
   const [customerOpen, setCustomerOpen] = useState(false); // painel "Cliente" (CRM)
   const [charge, setCharge] = useState(null); // {customer, products} → diálogo "Cobrar"
   const [chargeBusy, setChargeBusy] = useState(false);
@@ -1591,7 +1892,13 @@ export default function WhatsAppChat() {
       try {
         const custom = isCustomFilter(filter);
         // filtros avançados + chip ativo (o chip vence em caso de conflito, ex.: "Meus atendimentos")
-        const params = { ...advToParams(adv), q: q.trim() || undefined, page, page_size: PAGE };
+        const params = {
+          ...advToParams(adv),
+          q: q.trim() || undefined,
+          page,
+          page_size: PAGE,
+          session_id: sessionFilterValid || undefined
+        };
         const chip = custom
           ? { filter }
           : {
@@ -1621,7 +1928,7 @@ export default function WhatsAppChat() {
         if (seq === listSeq.current) setListLoading(false);
       }
     },
-    [q, filter, adv]
+    [q, filter, adv, sessionFilterValid]
   );
   listReloadRef.current = loadList;
 
@@ -1807,11 +2114,23 @@ export default function WhatsAppChat() {
     async (chat) => {
       if (!chat?.chat_id) return;
       const prev = activeRef.current;
-      if (prev) draftsRef.current.set(prev.chat_id, { text: textRef.current, reply: replyRef.current });
+      if (prev) {
+        draftsRef.current.set(prev.chat_id, { text: textRef.current, reply: replyRef.current });
+        // guarda a conversa que está saindo (sem bolhas provisórias) pra reabrir sem recarregar
+        if (sinceRef.current && messagesRef.current.length) {
+          const cache = threadCacheRef.current;
+          cache.delete(prev.chat_id);
+          cache.set(prev.chat_id, {
+            items: messagesRef.current.filter((m) => !m.pending),
+            hasOlder: hasOlderRef.current,
+            since: sinceRef.current,
+            at: Date.now()
+          });
+          while (cache.size > THREAD_CACHE_MAX) cache.delete(cache.keys().next().value);
+        }
+      }
       stopTyping();
       setActive(chat);
-      setMessages([]);
-      setHasOlder(false);
       setEditing(null);
       setAttachment(null);
       setQrMedia(null);
@@ -1821,7 +2140,6 @@ export default function WhatsAppChat() {
       setFlashId(null);
       pinnedRef.current = true;
       lastTopRef.current = 0;
-      sinceRef.current = null;
       const d = draftsRef.current.get(chat.chat_id);
       setText(d?.text || '');
       setReply(d?.reply || null);
@@ -1834,8 +2152,33 @@ export default function WhatsAppChat() {
         { replace: true }
       );
       const seq = ++msgSeq.current;
-      setMsgLoading(true);
+      const cached = threadCacheRef.current.get(chat.chat_id);
+      const fresh = cached && Date.now() - cached.at < THREAD_CACHE_FULL_MS;
+      if (cached) {
+        // mostra o que já tinha na hora; o que mudou chega logo abaixo (sem skeleton)
+        setMessages(cached.items);
+        setHasOlder(cached.hasOlder);
+        sinceRef.current = cached.since;
+        setMsgLoading(false);
+        scrollToEnd(false);
+      } else {
+        setMessages([]);
+        setHasOlder(false);
+        sinceRef.current = null;
+        setMsgLoading(true);
+      }
+      if (Number(chat.unread_count) > 0 && autoRead()) markRead(chat.chat_id);
       try {
+        if (fresh) {
+          const r = await get(`/whatsapp/chats/${enc(chat.chat_id)}/messages`, { params: { since: cached.since } });
+          if (seq !== msgSeq.current) return;
+          if (r.server_time) sinceRef.current = r.server_time;
+          if (r.items?.length) {
+            setMessages((p) => upsertMsgs(p, r.items));
+            scrollToEnd(false);
+          }
+          return;
+        }
         const r = await get(`/whatsapp/chats/${enc(chat.chat_id)}/messages`, { params: { limit: PAGE } });
         if (seq !== msgSeq.current) return;
         const items = sortMsgs(r.items || []);
@@ -1843,15 +2186,36 @@ export default function WhatsAppChat() {
         setHasOlder(items.length >= PAGE);
         sinceRef.current = r.server_time || new Date().toISOString();
         scrollToEnd(false);
-        if (Number(chat.unread_count) > 0 && autoRead()) markRead(chat.chat_id);
       } catch (e) {
-        if (seq === msgSeq.current) toast.error(errMsg(e, 'Falha ao abrir a conversa.'));
+        if (seq === msgSeq.current && !cached) toast.error(errMsg(e, 'Falha ao abrir a conversa.'));
       } finally {
         if (seq === msgSeq.current) setMsgLoading(false);
       }
     },
     [markRead, scrollToEnd, stopTyping]
   );
+
+  // Foco no campo de mensagem ao abrir uma conversa (só desktop: no celular o teclado cobriria as mensagens).
+  // Efeito (depois do commit) + nova tentativa quando as mensagens terminam de carregar; nunca rouba o foco
+  // de outro campo em que o usuário já esteja digitando.
+  const focusComposer = useCallback(() => {
+    if (narrowRef.current) return;
+    const el = inputRef.current;
+    if (!el) return;
+    const cur = document.activeElement;
+    if (cur && cur !== el && /^(INPUT|TEXTAREA)$/.test(cur.tagName)) return;
+    el.focus();
+  }, []);
+  useEffect(() => {
+    if (!active?.chat_id) return undefined;
+    const t = setTimeout(focusComposer, 30);
+    return () => clearTimeout(t);
+  }, [active?.chat_id, focusComposer]);
+  useEffect(() => {
+    if (msgLoading || !active?.chat_id) return undefined;
+    const t = setTimeout(focusComposer, 0);
+    return () => clearTimeout(t);
+  }, [msgLoading, active?.chat_id, focusComposer]);
 
   // ?chat=<chat_id> (vindo de Contatos ou refresh)
   const wantedChat = searchParams.get('chat');
@@ -1959,6 +2323,7 @@ export default function WhatsAppChat() {
 
   useRealtimeEvent('wa:chat', ({ chat } = {}) => {
     if (!chat?.chat_id) return;
+    if (sessionFilterValid && chat.session_id && chat.session_id !== sessionFilterValid) return;
     const searching = Boolean(q.trim());
     const isOpen = activeRef.current?.chat_id === chat.chat_id;
     scheduleCounts();
@@ -2742,11 +3107,133 @@ export default function WhatsAppChat() {
           onRetry={retrySend}
           onReact={react}
           onQuote={jumpToQuoted}
+          onPerson={openPerson}
         />
       );
     });
     return out;
-  }, [messages, isGroup, flashId, openBubbleMenu, openImage, react, jumpToQuoted]);
+  }, [messages, isGroup, flashId, openBubbleMenu, openImage, react, jumpToQuoted, openPerson]);
+
+  // chips de modo: números do WhatsApp (quando há mais de um) + "Equipe" (chat interno); ficam na URL (?session= / ?team=)
+  const modeChips = (
+    <ScrollChipsRow sx={{ mt: 1 }}>
+      <Tooltip title="Chat interno da equipe (não vai para clientes)">
+        <Chip
+          size="small"
+          onClick={() => (teamMode ? setTeam('') : setTeam(teamChat?.id || '1'))}
+          icon={<IconUsers size={14} />}
+          label={
+            <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.6 }}>
+              Equipe
+              {team.unreadTotal ? (
+                <Box
+                  component="span"
+                  sx={{
+                    minWidth: 17,
+                    height: 17,
+                    px: 0.5,
+                    borderRadius: 9,
+                    fontSize: 10.5,
+                    fontWeight: 800,
+                    display: 'inline-grid',
+                    placeItems: 'center',
+                    bgcolor: teamMode ? 'rgba(255,255,255,.3)' : '#377EF0',
+                    color: '#fff'
+                  }}
+                >
+                  {fmtCount(team.unreadTotal)}
+                </Box>
+              ) : null}
+            </Box>
+          }
+          sx={{
+            fontWeight: 700,
+            borderRadius: 4,
+            flexShrink: 0,
+            bgcolor: teamMode ? '#377EF0' : 'background.paper',
+            color: teamMode ? '#fff' : 'text.primary',
+            border: '1px solid',
+            borderColor: teamMode ? '#377EF0' : 'rgba(55,126,240,.4)',
+            '& .MuiChip-icon': { color: 'inherit', ml: 0.75, mr: -0.25 },
+            '&:hover': { bgcolor: teamMode ? '#1e5dc8' : 'rgba(55,126,240,.12)' }
+          }}
+        />
+      </Tooltip>
+      {manyNumbers ? <Box sx={{ width: '1px', alignSelf: 'stretch', bgcolor: 'divider', mx: 0.5, flexShrink: 0 }} /> : null}
+      {manyNumbers ? (
+        <>
+          <Chip
+            size="small"
+            onClick={() => setSessionFilter('')}
+            label="Todos os números"
+            sx={{
+              fontWeight: 700,
+              borderRadius: 4,
+              flexShrink: 0,
+              bgcolor: !sessionFilterValid && !teamMode ? WA_DARK : 'background.paper',
+              color: !sessionFilterValid && !teamMode ? '#fff' : 'text.secondary',
+              border: '1px solid',
+              borderColor: !sessionFilterValid && !teamMode ? WA_DARK : 'divider',
+              '&:hover': { bgcolor: !sessionFilterValid && !teamMode ? WA_DARK : 'action.hover' }
+            }}
+          />
+          {sessions.map((sx) => {
+            const on = !teamMode && sessionFilterValid === sx.id;
+            const color = sx.color || WA_GREEN;
+            const n = Number(counts?.by_session?.[sx.id]) || 0;
+            return (
+              <Tooltip
+                key={sx.id}
+                title={`${sessionLabel(sx)}${sx.phone ? ` · ${fmtPhone(sx.phone)}` : ''}${sx.connected ? '' : ' · não conectado'}`}
+              >
+                <Chip
+                  size="small"
+                  onClick={() => setSessionFilter(on ? '' : sx.id)}
+                  icon={<WaNumberDot session={sx} size={8} sx={{ ml: 0.75 }} />}
+                  label={
+                    <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.6 }}>
+                      {sessionLabel(sx)}
+                      {n ? (
+                        <Box
+                          component="span"
+                          sx={{
+                            minWidth: 17,
+                            height: 17,
+                            px: 0.5,
+                            borderRadius: 9,
+                            fontSize: 10.5,
+                            fontWeight: 800,
+                            display: 'inline-grid',
+                            placeItems: 'center',
+                            bgcolor: on ? 'rgba(255,255,255,.3)' : color,
+                            color: '#fff'
+                          }}
+                        >
+                          {fmtCount(n)}
+                        </Box>
+                      ) : null}
+                    </Box>
+                  }
+                  sx={{
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    flexShrink: 0,
+                    opacity: sx.connected ? 1 : 0.7,
+                    bgcolor: on ? color : 'background.paper',
+                    color: on ? '#fff' : 'text.primary',
+                    border: '1px solid',
+                    borderColor: on ? color : `${color}66`,
+                    '& .MuiChip-icon': { ml: 0.5, mr: -0.25 },
+                    '&:hover': { bgcolor: on ? color : `${color}1F` }
+                  }}
+                />
+              </Tooltip>
+            );
+          })}
+        </>
+      ) : null}
+    </ScrollChipsRow>
+  );
 
   const headerSubtitle = !active
     ? ''
@@ -2758,13 +3245,18 @@ export default function WhatsAppChat() {
         ? 'Canal'
         : active.kind === 'broadcast'
           ? 'Lista de transmissão'
-          : fmtPhone(active.phone) || active.chat_id;
+          : fmtPhone(active.phone) || (active.jid ? String(active.jid).split('@')[0] : '');
 
   const emptyState = (() => {
     if (q)
       return {
         title: 'Nenhuma conversa encontrada',
-        description: advCount ? 'A busca também respeita os filtros avançados ativos.' : undefined
+        description:
+          onlyDigits(q).length >= 8
+            ? 'Esse número ainda não tem conversa aqui.'
+            : advCount
+              ? 'A busca também respeita os filtros avançados ativos.'
+              : undefined
       };
     if (advCount)
       return { title: 'Nenhuma conversa com esses filtros', description: 'Ajuste ou limpe os filtros avançados para ver mais conversas.' };
@@ -2781,7 +3273,7 @@ export default function WhatsAppChat() {
       return { title: 'Filtro vazio', description: 'Use o menu ⋮ do chip para editar o filtro e adicionar conversas.' };
     return {
       title: 'Nenhuma conversa ainda',
-      description: 'As conversas do número conectado aparecem aqui. Para começar uma, abra um contato em Contatos.'
+      description: 'As conversas do número conectado aparecem aqui. Para começar uma, use o botão + ao lado da busca.'
     };
   })();
 
@@ -2874,7 +3366,7 @@ export default function WhatsAppChat() {
   const fmtRec = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
   // ============================================================ render
-  if (sessionLoading && !session) {
+  if (sessionLoading && !sessions.length) {
     return (
       <Box>
         <WaPageHeader icon={IconMessages} title="Chat" subtitle="Converse com pessoas e grupos do seu WhatsApp." sx={{ mb: 2 }} />
@@ -2894,9 +3386,11 @@ export default function WhatsAppChat() {
         icon={IconMessages}
         title="Chat"
         subtitle={
-          connected && session?.push_name
-            ? `${session.push_name} · ${fmtPhone(session.phone)}`
-            : (connected && fmtPhone(session?.phone)) || 'Converse com pessoas e grupos do seu WhatsApp.'
+          manyNumbers
+            ? `${sessions.length} números · ${sessions.filter((x) => x.connected).length} conectado${sessions.filter((x) => x.connected).length === 1 ? '' : 's'}`
+            : connected && sessions[0]?.push_name
+              ? `${sessions[0].push_name} · ${fmtPhone(sessions[0].phone)}`
+              : (connected && fmtPhone(sessions[0]?.phone)) || 'Converse com pessoas e grupos do seu WhatsApp.'
         }
         sx={{ mb: 2 }}
         action={
@@ -2909,7 +3403,12 @@ export default function WhatsAppChat() {
       />
 
       {/* sessão fora: aviso slim; lista/histórico continuam legíveis */}
-      <WaSessionBanner session={session} loading={sessionLoading} connected={connected} what="enviar e responder mensagens" />
+      <WaSessionBanner
+        session={{ status: sessions[0]?.status || 'none', sessions }}
+        loading={sessionLoading}
+        connected={connected}
+        what="enviar e responder mensagens"
+      />
 
       <Box
         sx={{
@@ -2923,8 +3422,42 @@ export default function WhatsAppChat() {
           bgcolor: 'background.paper'
         }}
       >
+        {/* ---------------- modo EQUIPE (chat interno) ---------------- */}
+        {teamMode && (!isNarrow || !teamChat) ? (
+          <Box
+            sx={{
+              width: { xs: '100%', md: 360 },
+              flexShrink: 0,
+              borderRight: { md: '1px solid' },
+              borderColor: { md: 'divider' },
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0
+            }}
+          >
+            <TeamList
+              team={team}
+              activeId={teamChat?.id}
+              onOpen={(c) => setTeam(c.id)}
+              onNewGroup={() => setNewGroup(true)}
+              headerChips={modeChips}
+            />
+          </Box>
+        ) : null}
+        {teamMode && (!isNarrow || teamChat) ? (
+          <TeamThread
+            chat={teamChat}
+            me={{ id: myId, name: user?.user?.name, role: user?.user?.role }}
+            team={team}
+            isNarrow={isNarrow}
+            onBack={() => setTeam('1')}
+            onChatChanged={() => team.reload()}
+            onLeft={() => setTeam('1')}
+          />
+        ) : null}
+
         {/* ---------------- coluna esquerda ---------------- */}
-        {showList ? (
+        {!teamMode && showList ? (
           <Box
             sx={{
               display: 'flex',
@@ -3007,7 +3540,26 @@ export default function WhatsAppChat() {
                     </Badge>
                   </IconButton>
                 </Tooltip>
+                <Tooltip title="Nova conversa com um número">
+                  <IconButton
+                    onClick={() => setNewChat({ phone: onlyDigits(q).length >= 8 ? onlyDigits(q) : '' })}
+                    aria-label="Nova conversa"
+                    sx={{
+                      width: 40,
+                      height: 40,
+                      flexShrink: 0,
+                      borderRadius: 2.5,
+                      color: '#fff',
+                      bgcolor: WA_GREEN,
+                      '&:hover': { bgcolor: WA_DARK }
+                    }}
+                  >
+                    <IconMessagePlus size={18} />
+                  </IconButton>
+                </Tooltip>
               </Stack>
+
+              {modeChips}
 
               <ActiveAdvChips value={adv} onChange={setAdv} tags={orgTags} attendants={attendants} myId={myId} sx={{ mt: 1 }} />
 
@@ -3149,7 +3701,18 @@ export default function WhatsAppChat() {
                   title={emptyState.title}
                   description={emptyState.description}
                   action={
-                    advCount ? (
+                    q && onlyDigits(q).length >= 8 ? (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        disableElevation
+                        startIcon={<IconMessagePlus size={15} />}
+                        onClick={() => setNewChat({ phone: onlyDigits(q) })}
+                        sx={{ fontWeight: 700, textTransform: 'none', bgcolor: WA_DARK, '&:hover': { bgcolor: WA_DARK } }}
+                      >
+                        Iniciar conversa com {fmtPhone(normalizePhoneInput(q))}
+                      </Button>
+                    ) : advCount ? (
                       <Button
                         size="small"
                         onClick={() => setAdv({ ...ADV_DEFAULT, tags: [] })}
@@ -3170,6 +3733,7 @@ export default function WhatsAppChat() {
                       active={activeId === c.chat_id}
                       onOpen={openChat}
                       now={c.waiting_reply ? nowTick : 0}
+                      session={manyNumbers && !sessionFilterValid ? sessionOf(c) : null}
                     />
                   ))}
                   {list.page < list.pages ? (
@@ -3190,7 +3754,7 @@ export default function WhatsAppChat() {
         ) : null}
 
         {/* ---------------- coluna direita ---------------- */}
-        {showChat ? (
+        {!teamMode && showChat ? (
           <Box
             sx={[
               THREAD_BG,
@@ -3199,7 +3763,7 @@ export default function WhatsAppChat() {
           >
             {!active && offline && !listLoading && list.items.length === 0 ? (
               <Box sx={{ flex: 1, display: 'grid', placeItems: 'center', p: 3, position: 'relative', zIndex: 1, overflowY: 'auto' }}>
-                <WaNotConnected session={session} title="Conecte o WhatsApp para conversar" sx={{ py: 0, width: '100%' }} />
+                <WaNotConnected session={sessions[0]} title="Conecte o WhatsApp para conversar" sx={{ py: 0, width: '100%' }} />
               </Box>
             ) : !active ? (
               <Box sx={{ flex: 1, display: 'grid', placeItems: 'center', p: 3, position: 'relative', zIndex: 1 }}>
@@ -3250,15 +3814,27 @@ export default function WhatsAppChat() {
                     direction="row"
                     spacing={1.25}
                     alignItems="center"
-                    onClick={isGroup ? openGroupInfo : undefined}
+                    onClick={
+                      isGroup
+                        ? openGroupInfo
+                        : isIndividual
+                          ? () =>
+                              setPerson({
+                                jid: active.jid,
+                                name: chatLabel(active),
+                                chat_id: active.chat_id,
+                                session_id: active.session_id
+                              })
+                          : undefined
+                    }
                     sx={{
                       flex: 1,
                       minWidth: 0,
-                      cursor: isGroup ? 'pointer' : 'default',
+                      cursor: isGroup || isIndividual ? 'pointer' : 'default',
                       borderRadius: 2,
                       px: 0.5,
                       py: 0.25,
-                      '&:hover': isGroup ? { bgcolor: 'action.hover' } : {}
+                      '&:hover': isGroup || isIndividual ? { bgcolor: 'action.hover' } : {}
                     }}
                   >
                     <TgAvatar
@@ -3273,6 +3849,7 @@ export default function WhatsAppChat() {
                         <Typography sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                           {chatLabel(active)}
                         </Typography>
+                        {manyNumbers ? <WaNumberChip session={sessionOf(active)} showPhone={!isNarrow} sx={{ flexShrink: 0 }} /> : null}
                         {activeSvc && !isNarrow ? <ServiceTag info={activeSvc} sx={{ maxWidth: 240 }} /> : null}
                         {active.muted ? <IconVolumeOff size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
                         {active.pinned ? <IconPinned size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
@@ -3556,7 +4133,14 @@ export default function WhatsAppChat() {
                         </Typography>
                       </Stack>
                       <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
-                        {previewOf(editing || reply)}
+                        <PreviewText
+                          preview={previewOf(editing || reply)}
+                          type={
+                            (editing || reply)?.type && (editing || reply).type !== 'text' && !(editing || reply).revoked
+                              ? (editing || reply).type
+                              : undefined
+                          }
+                        />
                       </Typography>
                     </Box>
                     <IconButton
@@ -4174,8 +4758,6 @@ export default function WhatsAppChat() {
             <IconButton
               component="a"
               href={dlUrl(lightbox.url)}
-              target="_blank"
-              rel="noopener noreferrer"
               sx={{
                 position: 'absolute',
                 top: 8,
@@ -4342,6 +4924,8 @@ export default function WhatsAppChat() {
         open={Boolean(filterModal)}
         initial={filterModal?.initial || null}
         connected={connected}
+        sessions={sessions}
+        initialSessionId={sessionFilterValid || undefined}
         onClose={() => setFilterModal(null)}
         onSaved={onFilterSaved}
       />
@@ -4604,21 +5188,34 @@ export default function WhatsAppChat() {
             </Stack>
             <Divider />
             <Stack spacing={0} sx={{ p: 1 }}>
-              {(groupDrawer.info.group_meta?.participants || []).map((p) => (
+              {sortParticipants(groupDrawer.info.group_meta?.participants || []).map((p) => (
                 <Stack
                   key={p.id || p.phone}
                   direction="row"
                   spacing={1.25}
                   alignItems="center"
-                  sx={{ px: 1, py: 0.75, borderRadius: 2, '&:hover': { bgcolor: 'action.hover' } }}
+                  onClick={() =>
+                    setPerson({
+                      jid: p.phone ? `${p.phone}@c.us` : p.id,
+                      name: p.is_me ? null : p.name || null,
+                      chat_id: groupDrawer.info.chat_id,
+                      session_id: groupDrawer.info.session_id
+                    })
+                  }
+                  sx={{ px: 1, py: 0.75, borderRadius: 2, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
                 >
-                  <TgAvatar name={p.name || p.phone} size={38} kind="contact" />
+                  <LazyAvatar
+                    name={p.name || p.phone}
+                    photoPath={`/whatsapp/photo?jid=${enc(p.phone ? `${p.phone}@c.us` : p.id)}&session_id=${enc(groupDrawer.info.session_id || '')}`}
+                    size={38}
+                    kind="contact"
+                  />
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                      {p.name || fmtPhone(p.phone) || p.id}
+                      {p.is_me ? 'Você' : p.name || fmtPhone(p.phone) || p.id}
                     </Typography>
-                    <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                      {fmtPhone(p.phone) || p.id}
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+                      {p.is_me || p.name ? fmtPhone(p.phone) || p.id : 'Sem nome salvo'}
                     </Typography>
                   </Box>
                   {p.is_admin ? (
@@ -4640,6 +5237,38 @@ export default function WhatsAppChat() {
           </Box>
         ) : null}
       </Drawer>
+
+      <NewGroupDialog
+        open={newGroup}
+        users={team.users}
+        onClose={() => setNewGroup(false)}
+        onCreated={(c) => {
+          team.reload();
+          setTeam(c.id);
+        }}
+      />
+      <NewChatDialog
+        open={Boolean(newChat)}
+        initialPhone={newChat?.phone || ''}
+        sessions={sessions}
+        initialSession={sessionFilterValid || active?.session_id || ''}
+        onClose={() => setNewChat(null)}
+        onOpened={openNewChat}
+      />
+
+      <ContactInfoDrawer
+        target={person}
+        onClose={() => setPerson(null)}
+        onOpenChat={(chat) => {
+          setGroupDrawer(null);
+          setSearchParams((prev) => {
+            const n = new URLSearchParams(prev);
+            n.set('chat', chat.chat_id);
+            return n;
+          });
+        }}
+        onOpenCustomer={() => navigate('/whatsapp/customers')}
+      />
     </Box>
   );
 }

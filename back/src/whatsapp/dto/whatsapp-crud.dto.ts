@@ -23,7 +23,12 @@ export class CreateContactDto {
 
 // ---- chats / mensagens
 export class OpenChatDto {
+  @IsOptional() @IsString() session_id?: string; // por qual NÚMERO da organização abrir a conversa (vazio = o 1º conectado que o usuário pode usar)
   @IsString() phone: string;
+  @IsOptional() @IsString() name?: string; // salva o contato com esse nome (conversa nova com número que não está na agenda)
+}
+export class SyncChatsDto {
+  @IsString() session_id: string;
 }
 export class ChatFlagDto {
   @IsOptional() @IsBoolean() archived?: boolean;
@@ -61,6 +66,8 @@ export class EditMessageDto {
 
 // ---- status
 export class CreateStatusDto {
+  // números que vão publicar (uma linha por número, mesmo lote)
+  @IsArray() @ArrayMaxSize(50) session_ids: string[];
   @IsIn(['text', 'image', 'video', 'voice']) type: string;
   @IsOptional() @IsString() @MaxLength(700) body?: string;
   @IsOptional() @IsString() @MaxLength(16) bg_color?: string;
@@ -78,6 +85,10 @@ export class PatchStatusDto {
 // ---- broadcasts
 export class BroadcastDto {
   @IsString() @MinLength(1) @MaxLength(255) name: string;
+  // números que disparam (1..N). Audiência "salvos/todos" é DISTRIBUÍDA entre eles; conversas/grupos escolhidos saem pelo número de cada um.
+  @IsOptional() @IsArray() @ArrayMaxSize(50) session_ids?: string[];
+  // ritmo: { preset: 'fast'|'normal'|'safe'|'very_safe'|'custom', interval_ms, jitter_pct, daily_limit, pause_every, pause_minutes, window: { start, end } }
+  @IsOptional() pacing?: any;
   @IsOptional() targets?: any;
   @IsOptional() @IsArray() @ArrayMaxSize(48) times?: number[];
   @IsOptional() @IsIn(['sequential', 'random']) mode?: string;
@@ -91,6 +102,7 @@ export class CopiesDto {
 }
 export class AudienceDto {
   @IsOptional() targets?: any;
+  @IsOptional() @IsArray() session_ids?: string[];
 }
 export class RunsQueryDto {
   @IsOptional() @Type(() => Number) page?: number;

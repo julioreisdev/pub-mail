@@ -3,10 +3,11 @@
 // sessão, fuso de Brasília, mídia). Dark-mode via theme.vars/tokens.
 // (arquivo próprio destas páginas; `waShared.jsx` pertence ao Chat/Contatos)
 // =============================================================================
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Button, Stack, Typography } from '@mui/material';
+import { Box, Button, Chip, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { IconBrandWhatsapp, IconPlugConnectedX, IconSettings } from '@tabler/icons-react';
+import { useAuth } from 'contexts/AuthContext';
 
 import { get } from 'api/api';
 import { TgCard } from 'views/pages/telegram/ui';
@@ -191,31 +192,62 @@ export const waButtonSx = {
 };
 
 // ----------------------------------------------------------------------------
-// Sessão: GET /whatsapp/session (polling leve). `connected` = status 'ready'.
+// NÚMEROS da organização: GET /whatsapp/sessions (só os que o usuário pode ver).
+// `useWaSessions()` é a fonte única para todas as telas (polling leve + tempo real).
 // ----------------------------------------------------------------------------
 const SESSION_LABEL = {
-  none: 'O WhatsApp da organização ainda não foi conectado.',
+  none: 'Nenhum número do WhatsApp foi conectado ainda.',
   created: 'A sessão está sendo preparada.',
   initializing: 'A sessão está iniciando.',
   qr_ready: 'Há um QR Code aguardando leitura nas Configurações.',
   authenticating: 'A sessão está autenticando.',
-  disconnected: 'A sessão caiu. Reconecte nas Configurações.',
+  disconnected: 'A conexão caiu. Reconecte nas Configurações.',
   action_required: 'O WhatsApp pediu uma ação no celular.',
   failed: 'A última tentativa de conexão falhou.'
 };
 
-export function useWaSession(pollMs = 20000) {
-  const [session, setSession] = useState(null);
+export const SESSION_STATUS_UI = {
+  none: { pill: 'inactive', label: 'Não conectado' },
+  created: { pill: 'pending', label: 'Preparando…' },
+  initializing: { pill: 'pending', label: 'Iniciando…' },
+  qr_ready: { pill: 'pending', label: 'Aguardando QR' },
+  authenticating: { pill: 'pending', label: 'Autenticando…' },
+  ready: { pill: 'active', label: 'Conectado' },
+  disconnected: { pill: 'error', label: 'Desconectado' },
+  action_required: { pill: 'flood', label: 'Ação necessária' },
+  failed: { pill: 'error', label: 'Falhou' }
+};
+
+export const fmtPhoneBR = (p) => {
+  const d = String(p || '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) {
+    const ddd = d.slice(2, 4);
+    const rest = d.slice(4);
+    return `+55 (${ddd}) ${rest.length === 9 ? `${rest.slice(0, 5)}-${rest.slice(5)}` : `${rest.slice(0, 4)}-${rest.slice(4)}`}`;
+  }
+  return `+${d}`;
+};
+export const sessionLabel = (s) => s?.display_label || s?.label || fmtPhoneBR(s?.phone) || 'Número';
+
+/**
+ * Lista de números (sessões) da organização visíveis ao usuário.
+ * Devolve: sessions (array), byId (Map), connected (algum pronto), loading, reload, canManage (dono/admin).
+ */
+export function useWaSessions(pollMs = 20000) {
+  const { user } = useAuth();
+  const role = user?.user?.role;
+  const canManage = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(role);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const seq = useRef(0);
   const reload = useCallback(async () => {
     const s = ++seq.current;
     try {
-      const r = await get('/whatsapp/session');
-      if (s === seq.current) setSession(r);
+      const r = await get('/whatsapp/sessions');
+      if (s === seq.current) setData(r || { items: [] });
     } catch (e) {
-      if (s === seq.current)
-        setSession((p) => p || { status: 'none', connected: false, gateway_error: errMsg(e, 'Falha ao consultar a sessão.') });
+      if (s === seq.current) setData((p) => p || { items: [], gateway_error: errMsg(e, 'Falha ao consultar os números.') });
     } finally {
       if (s === seq.current) setLoading(false);
     }
@@ -228,10 +260,217 @@ export function useWaSession(pollMs = 20000) {
     }, pollMs);
     return () => clearInterval(id);
   }, [reload, pollMs]);
-  // conexão mudou (conectou, caiu, QR novo) → atualiza na hora
+  // conexão de um número mudou / número criado ou removido → atualiza na hora
   useRealtimeEvent('wa:session', () => reload());
-  const connected = Boolean(session?.connected ?? session?.status === 'ready');
-  return { session, loading, connected, reload };
+  useRealtimeEvent('wa:sessions', () => reload());
+  const sessions = useMemo(() => (Array.isArray(data?.items) ? data.items : []), [data]);
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const connected = sessions.some((s) => s.connected || s.status === 'ready');
+  return {
+    sessions,
+    byId,
+    connected,
+    loading,
+    reload,
+    canManage,
+    max: data?.max || 20,
+    configured: data?.configured !== false,
+    gateway_error: data?.gateway_error || null
+  };
+}
+
+/**
+ * Compat: "a sessão" agregada da org (telas antigas). `session.status` = ready se algum número está
+ * conectado, senão o pior status; `session.sessions` traz todos. Prefira `useWaSessions`.
+ */
+export function useWaSession(pollMs = 20000) {
+  const all = useWaSessions(pollMs);
+  const session = useMemo(() => {
+    const list = all.sessions;
+    const ready = list.find((s) => s.connected || s.status === 'ready');
+    const first = ready || list[0] || null;
+    return {
+      ...(first || { status: 'none', connected: false }),
+      status: ready ? 'ready' : first?.status || 'none',
+      connected: Boolean(ready),
+      sessions: list,
+      gateway_error: all.gateway_error || first?.gateway_error || null
+    };
+  }, [all.sessions, all.gateway_error]);
+  return { session, loading: all.loading, connected: all.connected, reload: all.reload, sessions: all.sessions };
+}
+
+// ----------------------------------------------------------------------------
+// Identidade visual do número: bolinha/chip com a cor e o nome interno
+// ----------------------------------------------------------------------------
+export function WaNumberDot({ session, size = 10, sx }) {
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-block',
+        width: size,
+        height: size,
+        borderRadius: '50%',
+        flexShrink: 0,
+        bgcolor: session?.color || WA_GREEN,
+        boxShadow: session?.connected ? `0 0 0 2px rgba(255,255,255,.9), 0 0 0 3px ${session?.color || WA_GREEN}55` : 'none',
+        opacity: session?.connected || session?.status === 'ready' ? 1 : 0.55,
+        ...sx
+      }}
+    />
+  );
+}
+
+/** Chip pequeno do número (cor + nome interno). `session` pode ser o brief {id,label,color,phone,status,connected}. */
+export function WaNumberChip({ session, size = 'small', showPhone = false, onClick, sx, variant = 'soft' }) {
+  if (!session) return null;
+  const label = sessionLabel(session);
+  const color = session.color || WA_GREEN;
+  const title = `${label}${session.phone ? ` · ${fmtPhoneBR(session.phone)}` : ''}${session.connected || session.status === 'ready' ? '' : ' · não conectado'}`;
+  return (
+    <Tooltip title={title}>
+      <Chip
+        size={size}
+        onClick={onClick}
+        icon={<WaNumberDot session={session} size={8} sx={{ ml: 0.75 }} />}
+        label={showPhone && session.phone ? `${label} · ${fmtPhoneBR(session.phone)}` : label}
+        sx={{
+          height: size === 'small' ? 20 : 26,
+          maxWidth: 180,
+          fontWeight: 700,
+          fontSize: size === 'small' ? 11 : 12.5,
+          color: variant === 'solid' ? '#fff' : 'text.primary',
+          bgcolor: variant === 'solid' ? color : `${color}1F`,
+          border: '1px solid',
+          borderColor: `${color}66`,
+          '& .MuiChip-label': { px: 0.75 },
+          '& .MuiChip-icon': { ml: 0.5, mr: -0.25 },
+          ...sx
+        }}
+      />
+    </Tooltip>
+  );
+}
+
+/** Select de número (um). `allowAll` acrescenta a opção "Todos os números" (valor ''). */
+export function WaNumberSelect({
+  sessions = [],
+  value,
+  onChange,
+  allowAll = false,
+  allLabel = 'Todos os números',
+  label = 'Número',
+  size = 'small',
+  disabled,
+  onlyConnected = false,
+  sx,
+  fullWidth = true,
+  helperText
+}) {
+  const list = onlyConnected ? sessions.filter((s) => s.connected || s.status === 'ready') : sessions;
+  return (
+    <TextField
+      select
+      size={size}
+      label={label}
+      value={value ?? ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      disabled={disabled}
+      fullWidth={fullWidth}
+      helperText={helperText}
+      sx={sx}
+    >
+      {allowAll ? (
+        <MenuItem value="">
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Box sx={{ display: 'inline-flex', gap: '2px' }}>
+              {sessions.slice(0, 3).map((s) => (
+                <WaNumberDot key={s.id} session={s} size={8} />
+              ))}
+            </Box>
+            <span>{allLabel}</span>
+          </Stack>
+        </MenuItem>
+      ) : null}
+      {list.map((s) => (
+        <MenuItem key={s.id} value={s.id}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+            <WaNumberDot session={s} />
+            <Typography variant="body2" noWrap sx={{ fontWeight: 600 }}>
+              {sessionLabel(s)}
+            </Typography>
+            {s.phone ? (
+              <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                {fmtPhoneBR(s.phone)}
+              </Typography>
+            ) : null}
+            {!(s.connected || s.status === 'ready') ? (
+              <Typography variant="caption" sx={{ color: 'warning.main' }}>
+                · {SESSION_STATUS_UI[s.status]?.label || 'não conectado'}
+              </Typography>
+            ) : null}
+          </Stack>
+        </MenuItem>
+      ))}
+      {!list.length ? (
+        <MenuItem value="__none" disabled>
+          {onlyConnected ? 'Nenhum número conectado' : 'Nenhum número cadastrado'}
+        </MenuItem>
+      ) : null}
+    </TextField>
+  );
+}
+
+/** Seleção de VÁRIOS números (chips clicáveis). `value` = array de ids. */
+export function WaNumberMultiSelect({ sessions = [], value = [], onChange, onlyConnected = false, size = 'medium', sx }) {
+  const list = onlyConnected ? sessions.filter((s) => s.connected || s.status === 'ready') : sessions;
+  const set = new Set(value);
+  const toggle = (id) => {
+    const next = new Set(set);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange?.(list.filter((s) => next.has(s.id)).map((s) => s.id));
+  };
+  if (!list.length)
+    return (
+      <Typography variant="body2" sx={{ color: 'text.secondary', ...sx }}>
+        {onlyConnected ? 'Nenhum número conectado.' : 'Nenhum número cadastrado.'}
+      </Typography>
+    );
+  return (
+    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={sx}>
+      {list.map((s) => {
+        const on = set.has(s.id);
+        return (
+          <Chip
+            key={s.id}
+            size={size === 'small' ? 'small' : 'medium'}
+            clickable
+            onClick={() => toggle(s.id)}
+            icon={<WaNumberDot session={s} size={9} sx={{ ml: 1 }} />}
+            label={sessionLabel(s)}
+            variant={on ? 'filled' : 'outlined'}
+            sx={{
+              fontWeight: 700,
+              borderColor: on ? s.color || WA_GREEN : 'divider',
+              bgcolor: on ? `${s.color || WA_GREEN}26` : 'transparent',
+              '&:hover': { bgcolor: `${s.color || WA_GREEN}33` }
+            }}
+          />
+        );
+      })}
+      {list.length > 1 ? (
+        <Button
+          size="small"
+          onClick={() => onChange?.(set.size === list.length ? [] : list.map((s) => s.id))}
+          sx={{ textTransform: 'none', fontWeight: 700 }}
+        >
+          {set.size === list.length ? 'Limpar' : 'Todos'}
+        </Button>
+      ) : null}
+    </Stack>
+  );
 }
 
 // Faixa amigável quando não há sessão conectada (a página continua utilizável).
@@ -239,6 +478,7 @@ export function WaSessionBanner({ session, loading, connected, what = 'usar este
   const navigate = useNavigate();
   if (loading || connected) return null;
   const st = session?.status || 'none';
+  const many = Array.isArray(session?.sessions) && session.sessions.length > 1;
   return (
     <TgCard
       hover={false}
@@ -265,7 +505,7 @@ export function WaSessionBanner({ session, loading, connected, what = 'usar este
           <IconPlugConnectedX size={26} stroke={1.8} />
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography sx={{ fontWeight: 800, fontSize: 16 }}>WhatsApp não conectado</Typography>
+          <Typography sx={{ fontWeight: 800, fontSize: 16 }}>{many ? 'Nenhum número conectado' : 'WhatsApp não conectado'}</Typography>
           <Typography variant="body2" sx={{ color: 'text.secondary' }}>
             {SESSION_LABEL[st] || SESSION_LABEL.none} Conecte o número para {what}. Você ainda pode ver e organizar o que está agendado.
           </Typography>

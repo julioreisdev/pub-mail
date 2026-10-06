@@ -1,14 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 // Barramento simples de eventos internos do WhatsApp. O pipeline de entrada avisa
-// "chegou mensagem do cliente" e quem se interessa (o bot) assina — sem que o
-// pipeline dependa do bot (evita dependência circular entre serviços).
+// "chegou mensagem do cliente" e quem se interessa (o bot, o funil…) assina — sem que o
+// pipeline dependa deles (evita dependência circular entre serviços).
 //
 // Filtros de entrada (`onInboundFilter`) rodam ANTES dos assinantes, de forma síncrona:
 // se algum devolve true a mensagem foi "consumida" (ex.: resposta de avaliação,
 // palavra de descadastro) e o bot não a vê.
-export type InboundEvent = { orgId: string; session: any; chatId: string; message: any };
-export type ServiceClosedEvent = { orgId: string; chatId: string; userId: string | null; assignedUserId: string | null };
+//
+// Multi-número: todo evento carrega a sessão (linha de whatsapp_sessions) e `sessionId`;
+// `chatId` é o jid (id do WhatsApp) da conversa DENTRO daquele número.
+export type InboundEvent = { orgId: string; session: any; sessionId: string; chatId: string; message: any };
+export type ServiceClosedEvent = { orgId: string; sessionId: string; chatId: string; userId: string | null; assignedUserId: string | null };
 
 @Injectable()
 export class WhatsAppHooks {

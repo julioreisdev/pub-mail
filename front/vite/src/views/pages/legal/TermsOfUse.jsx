@@ -1,160 +1,196 @@
-import { Box, Card, CardContent, Chip, Container, Link, Stack, Typography } from '@mui/material';
-import { Link as RouterLink } from 'react-router-dom';
+import { useEffect } from 'react';
+import Link from '@mui/material/Link';
+import Typography from '@mui/material/Typography';
+import LegalLayout, { LEGAL, Section } from './LegalLayout';
+
+const P = ({ children }) => <Typography component="p">{children}</Typography>;
 
 export default function TermsOfUse() {
-    return (
-        <Box
-            sx={{
-                minHeight: '100vh',
-                py: { xs: 4, md: 6 },
-                background:
-                    'radial-gradient(900px 480px at 0% -10%, rgba(103,58,183,0.15), transparent 62%), radial-gradient(900px 480px at 100% -5%, rgba(60,99,255,0.14), transparent 62%), #f4f6ff'
-            }}
-        >
-            <Container maxWidth="md">
-                <Box
-                    sx={{
-                        borderRadius: 4,
-                        p: { xs: 3, md: 4 },
-                        boxShadow: '0 22px 46px rgba(34, 48, 122, 0.14)'
-                    }}
-                >
-                    <Stack spacing={1.25}>
-                        <Chip
-                            label="Pub Mail"
-                            sx={{
-                                width: 'fit-content',
-                                fontWeight: 800,
-                                bgcolor: 'rgba(255,255,255,0.18)',
-                                borderRadius: 999
-                            }}
-                        />
-                        <Typography variant="h2" sx={{ fontSize: { xs: 30, md: 38 }, fontWeight: 900, lineHeight: 1.2 }}>
-                            Termos de Uso
-                        </Typography>
-                        <Typography>Condições aplicáveis à utilização da plataforma Pub Mail.</Typography>
-                        <Link component={RouterLink} to="/" underline="hover" sx={{ width: 'fit-content', fontWeight: 700 }}>
-                            Voltar para o Pub Mail
-                        </Link>
-                    </Stack>
-                </Box>
+  useEffect(() => {
+    document.title = 'Termos de Uso — Pub Mail';
+  }, []);
+  return (
+    <LegalLayout
+      kicker="Termos"
+      title="Termos de Uso"
+      subtitle="Condições para contratar e usar a plataforma Pub Mail: WhatsApp, e-mail marketing, webchat com IA, Telegram, quizzes e plugin WordPress."
+    >
+      <Section title="1. Quem somos e o que é o Pub Mail">
+        <P>
+          O Pub Mail é uma plataforma on-line (software como serviço) para captação de leads, atendimento e vendas, oferecida no endereço{' '}
+          {LEGAL.site} e nos domínios de cliente provisionados por ela. Ela é composta por módulos contratados separadamente ou em conjunto:
+          WhatsApp (chat, bot, CRM, cobranças, broadcasts, status e agendamentos), e-mail marketing, webchat com IA, Telegram, quizzes e o
+          plugin WordPress “Tradutor Invisível”.
+        </P>
+        <P>
+          Ao criar uma conta, acessar o painel ou usar qualquer módulo, você (pessoa física ou jurídica, chamada aqui de “cliente” ou
+          “você”) concorda com estes Termos e com a nossa Política de Privacidade. Se não concordar, não use a plataforma.
+        </P>
+      </Section>
 
-                <Card
-                    variant="outlined"
-                    sx={{
-                        mt: 2.5,
-                        borderRadius: 4,
-                        borderColor: '#e6e9fb',
-                        boxShadow: '0 18px 34px rgba(34, 48, 122, 0.08)'
-                    }}
-                >
-                    <CardContent sx={{ p: { xs: 3, md: 4 } }}>
-                        <Stack spacing={2}>
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                1. Termos
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                Ao acessar o site{' '}
-                                <Link href="/" target="_blank" rel="noopener noreferrer">
-                                    Pub Mail
-                                </Link>
-                                , você concorda em cumprir estes termos de serviço, todas as leis e regulamentos aplicáveis e concorda que é responsável
-                                pelo cumprimento de todas as leis locais aplicáveis. Se você não concordar com algum desses termos, está proibido de usar ou
-                                acessar este site.
-                            </Typography>
+      <Section title="2. Conta, organização e usuários">
+        <ul>
+          <li>
+            O acesso é por organização (conta da empresa). O dono da organização pode criar usuários, definir quais módulos cada um acessa
+            e, no WhatsApp, quais números cada usuário pode ver.
+          </li>
+          <li>
+            Você é responsável por manter suas credenciais em sigilo e por tudo o que for feito com a sua conta. Avise-nos imediatamente em
+            caso de uso não autorizado.
+          </li>
+          <li>As informações de cadastro devem ser verdadeiras e atualizadas. Contas criadas com dados falsos podem ser suspensas.</li>
+          <li>O uso é permitido apenas a maiores de 18 anos ou a pessoas jurídicas representadas por quem tenha poderes para contratar.</li>
+        </ul>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                2. Uso de licença
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                É concedida permissão para baixar temporariamente uma cópia dos materiais (informações ou software) no site Pub Mail, apenas
-                                para visualização transitória pessoal e não comercial. Esta é a concessão de uma licença, não uma transferência de título e,
-                                sob esta licença, você não pode:
-                            </Typography>
-                            <Box component="ol" sx={{ m: 0, pl: 3, color: '#1f2552' }}>
-                                <Box component="li" sx={{ mb: 1 }}>
-                                    Modificar ou copiar os materiais.
-                                </Box>
-                                <Box component="li" sx={{ mb: 1 }}>
-                                    Usar os materiais para qualquer finalidade comercial ou para exibição pública (comercial ou não comercial).
-                                </Box>
-                                <Box component="li" sx={{ mb: 1 }}>
-                                    Tentar descompilar ou fazer engenharia reversa de qualquer software contido no site Pub Mail.
-                                </Box>
-                                <Box component="li" sx={{ mb: 1 }}>
-                                    Remover quaisquer direitos autorais ou outras notações de propriedade dos materiais.
-                                </Box>
-                                <Box component="li">Transferir os materiais para outra pessoa ou espelhar os materiais em qualquer outro servidor.</Box>
-                            </Box>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                Esta licença será automaticamente rescindida se você violar alguma dessas restrições e poderá ser rescindida por Pub Mail a
-                                qualquer momento. Ao encerrar a visualização desses materiais ou após o término desta licença, você deve apagar todos os
-                                materiais baixados em sua posse.
-                            </Typography>
+      <Section title="3. Planos, pagamento e renovação">
+        <ul>
+          <li>
+            Os módulos são contratados por período (mensal ou anual) e pagos por PIX, com os preços publicados na página inicial no momento
+            da contratação. Valores podem ser alterados para períodos futuros, sempre com aviso prévio no painel ou por e-mail.
+          </li>
+          <li>
+            O período de acesso conta a partir da confirmação do pagamento. Não há renovação automática: ao fim do período, a plataforma
+            avisa com antecedência e gera uma nova cobrança; sem pagamento, o acesso fica suspenso até a regularização.
+          </li>
+          <li>
+            Enquanto a conta estiver suspensa, envios automáticos (broadcasts, agendamentos, bots, fluxos de e-mail) e páginas públicas
+            (webchats e quizzes) ficam parados. Os dados são preservados pelo prazo descrito na Política de Privacidade.
+          </li>
+          <li>
+            Não há reembolso proporcional por desistência no meio do período, salvo falha comprovada da plataforma que impeça o uso do
+            módulo contratado por período relevante, caso em que o tempo é compensado.
+          </li>
+          <li>A compra do código-fonte é um contrato separado, com condições próprias acertadas por escrito.</li>
+        </ul>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                3. Isenção de responsabilidade
-                            </Typography>
-                            <Box component="ol" sx={{ m: 0, pl: 3, color: '#1f2552' }}>
-                                <Box component="li" sx={{ mb: 1 }}>
-                                    Os materiais no site da Pub Mail são fornecidos "como estão". Pub Mail não oferece garantias, expressas ou implícitas, e
-                                    isenta todas as outras garantias, incluindo garantias implícitas de comercialização, adequação a um fim específico ou não
-                                    violação de propriedade intelectual.
-                                </Box>
-                                <Box component="li">
-                                    O Pub Mail não garante a precisão, os resultados prováveis ou a confiabilidade do uso dos materiais no site ou em sites
-                                    vinculados.
-                                </Box>
-                            </Box>
+      <Section title="4. Uso aceitável">
+        <P>
+          Você se compromete a usar a plataforma apenas para fins lícitos e de acordo com as regras dos serviços envolvidos (WhatsApp,
+          Telegram, provedores de e-mail, gateways de pagamento, Google, WordPress). É proibido:
+        </P>
+        <ul>
+          <li>
+            enviar mensagens ou e-mails sem base legal para o contato, spam, conteúdo enganoso, ofensivo, ilegal ou que viole direitos de
+            terceiros;
+          </li>
+          <li>
+            ignorar pedidos de descadastro (LGPD/opt-out) — a plataforma remove automaticamente dos envios em massa quem pede para sair, e
+            você não deve contorná-la;
+          </li>
+          <li>usar a plataforma para golpes, phishing, venda de produtos proibidos ou coleta de dados sem consentimento;</li>
+          <li>
+            tentar burlar limites de envio, aquecimento de número, autenticação, isolamento entre organizações ou qualquer medida de
+            segurança;
+          </li>
+          <li>
+            revender, sublicenciar ou dar acesso a terceiros fora da sua organização sem contrato de código-fonte ou autorização escrita.
+          </li>
+        </ul>
+        <P>
+          Podemos suspender ou encerrar contas que violem esta seção, sem reembolso, e colaborar com autoridades quando exigido por lei.
+        </P>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                4. Limitações
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                Em nenhum caso o Pub Mail ou seus fornecedores serão responsáveis por quaisquer danos (incluindo perda de dados, lucro ou
-                                interrupção dos negócios) decorrentes do uso ou incapacidade de uso dos materiais em Pub Mail, mesmo que Pub Mail ou
-                                representante autorizado tenha sido notificado da possibilidade de tais danos.
-                            </Typography>
+      <Section title="5. WhatsApp, Telegram e serviços de terceiros">
+        <ul>
+          <li>
+            O módulo WhatsApp conecta números por meio de um cliente não oficial (sessão pareada por QR Code). O WhatsApp pode restringir ou
+            banir números que façam envios em massa ou automação. A plataforma oferece aquecimento, limites diários e ritmos de envio
+            “anti-bloqueio” para reduzir esse risco, mas <strong>a decisão é do WhatsApp e não temos como reverter</strong>. Recomendamos
+            usar um número dedicado, não o pessoal. Ao desligar o limitador de envio você assume expressamente esse risco.
+          </li>
+          <li>
+            Bots do Telegram, contas do Resend (e-mail), gateways de PIX (por exemplo, Mercado Pago), provedores de IA e o Google (tradução)
+            são serviços de terceiros, com termos próprios. As chaves e tokens que você cadastra são da sua organização e de sua
+            responsabilidade.
+          </li>
+          <li>Não somos responsáveis por indisponibilidade, mudanças de regras, tarifas ou bloqueios impostos por esses terceiros.</li>
+        </ul>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                5. Precisão dos materiais
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                Os materiais exibidos no site da Pub Mail podem incluir erros técnicos, tipográficos ou fotográficos. Pub Mail não garante
-                                que qualquer material em seu site seja preciso, completo ou atual e pode fazer alterações sem aviso prévio.
-                            </Typography>
+      <Section title="6. Seus dados e os dados dos seus contatos">
+        <ul>
+          <li>
+            Tudo o que você cadastra ou que chega pela plataforma (contatos, conversas, leads, mídias, clientes, cobranças) pertence a você.
+            Nós apenas armazenamos e processamos esses dados para prestar o serviço, conforme a Política de Privacidade.
+          </li>
+          <li>
+            Você é o controlador dos dados dos seus contatos e garante ter base legal para coletá-los e usá-los; o Pub Mail atua como
+            operador. Você deve atender aos pedidos de titulares (acesso, correção, exclusão) e pode usar as ferramentas do painel para
+            isso.
+          </li>
+          <li>
+            Você pode exportar contatos e clientes em CSV a qualquer momento e apagar os dados de um número ou de toda a organização pelo
+            painel.
+          </li>
+        </ul>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                6. Links
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                O Pub Mail não analisou todos os sites vinculados ao seu site e não é responsável pelo conteúdo de nenhum site vinculado. A
-                                inclusão de qualquer link não implica endosso por Pub Mail.
-                            </Typography>
+      <Section title="7. Propriedade intelectual">
+        <P>
+          O software, a marca Pub Mail, o layout, os textos e os componentes da plataforma são nossos ou licenciados para nós. A assinatura
+          dá a você uma licença limitada, não exclusiva e intransferível de uso durante o período contratado. O plugin WordPress “Tradutor
+          Invisível” é distribuído com licença vinculada à sua conta; alterar o código para contornar a verificação de licença não é
+          permitido. A compra do código-fonte transfere os direitos descritos no contrato específico.
+        </P>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                Modificações
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                O Pub Mail pode revisar estes termos de serviço a qualquer momento, sem aviso prévio. Ao usar este site, você concorda em
-                                ficar vinculado à versão atual desses termos.
-                            </Typography>
+      <Section title="8. Disponibilidade, suporte e mudanças">
+        <ul>
+          <li>
+            Trabalhamos para manter a plataforma disponível de forma contínua, mas podem ocorrer manutenções, atualizações e falhas de
+            terceiros. Avisamos sobre manutenções programadas quando possível.
+          </li>
+          <li>
+            Fazemos backup diário dos dados e das sessões, com retenção limitada; mesmo assim, mantenha suas próprias exportações do que for
+            crítico.
+          </li>
+          <li>
+            Podemos adicionar, alterar ou descontinuar funcionalidades. Mudanças que reduzam de forma relevante um módulo contratado serão
+            comunicadas com antecedência.
+          </li>
+          <li>
+            O suporte é feito pelo WhatsApp {LEGAL.whatsapp} e pelo e-mail {LEGAL.email}, em dias úteis e horário comercial.
+          </li>
+        </ul>
+      </Section>
 
-                            <Typography variant="h4" sx={{ fontWeight: 900, color: '#1f2552' }}>
-                                Lei aplicável
-                            </Typography>
-                            <Typography sx={{ color: '#1f2552' }}>
-                                Estes termos e condições são regidos e interpretados de acordo com as leis do Pub Mail e você se submete irrevogavelmente à
-                                jurisdição exclusiva dos tribunais naquele estado ou localidade.
-                            </Typography>
+      <Section title="9. Limitação de responsabilidade">
+        <P>
+          A plataforma é fornecida “como está”. Na máxima extensão permitida pela lei, não respondemos por lucros cessantes, perda de dados
+          causada por terceiros, bloqueio de números ou contas por parte do WhatsApp, Telegram, provedores de e-mail ou gateways, nem por
+          danos indiretos decorrentes do uso ou da impossibilidade de uso. Nossa responsabilidade total, em qualquer caso, fica limitada ao
+          valor pago por você nos 12 meses anteriores ao evento.
+        </P>
+      </Section>
 
-                            <Typography sx={{ color: '#59618a', fontSize: 14, pt: 1.5, borderTop: '1px solid #e6e9fb' }}>
-                                Última revisão: 20 de março de 2026.
-                            </Typography>
-                        </Stack>
-                    </CardContent>
-                </Card>
-            </Container>
-        </Box>
-    );
+      <Section title="10. Encerramento">
+        <P>
+          Você pode encerrar sua conta a qualquer momento pelo suporte. Nós podemos encerrar ou suspender o acesso em caso de violação
+          destes Termos, inadimplência ou exigência legal. Após o encerramento, os dados seguem o prazo de retenção da Política de
+          Privacidade e depois são apagados.
+        </P>
+      </Section>
+
+      <Section title="11. Alterações destes Termos">
+        <P>
+          Podemos atualizar estes Termos. A data da última atualização aparece no topo da página; mudanças relevantes serão avisadas no
+          painel ou por e-mail. O uso continuado após a mudança significa concordância.
+        </P>
+      </Section>
+
+      <Section title="12. Lei aplicável e contato">
+        <P>
+          Estes Termos são regidos pelas leis do Brasil. Fica eleito o foro do domicílio do consumidor, quando aplicável, ou, nos demais
+          casos, o foro da comarca do prestador. Dúvidas: {LEGAL.email} ou{' '}
+          <Link href={LEGAL.whatsappUrl} target="_blank" rel="noopener noreferrer">
+            {LEGAL.whatsapp}
+          </Link>
+          .
+        </P>
+      </Section>
+    </LegalLayout>
+  );
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
 import Alert from '@mui/material/Alert';
@@ -10,6 +10,8 @@ import Chip from '@mui/material/Chip';
 import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
+import ListItemText from '@mui/material/ListItemText';
+import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Pagination from '@mui/material/Pagination';
 import Popover from '@mui/material/Popover';
@@ -37,6 +39,7 @@ import {
   IconFileSpreadsheet,
   IconInfoCircle,
   IconMessage,
+  IconMessagePlus,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -51,11 +54,28 @@ import {
 import { api, get, patch, post, remove } from 'api/api';
 import { TgCard, TgAvatar, TgFilterBar, TgModal, TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
 import { WaPageHeader } from './waKit';
-import { WA_GREEN, WA_DARK, WaNotConnected, useWaSession, tint, errMsg, fmtPhone, onlyDigits, fmtDateTime, fmtAgo } from './waShared';
+import {
+  WA_GREEN,
+  WA_DARK,
+  WaNotConnected,
+  useWaSession,
+  WaNumberChip,
+  WaNumberSelect,
+  sessionLabel,
+  tint,
+  errMsg,
+  fmtPhone,
+  onlyDigits,
+  fmtDateTime,
+  fmtAgo
+} from './waShared';
 
 // ============================================================================
-// WhatsApp → Contatos: contatos da sessão (celular) + salvos na organização.
-// Sincronizar / adicionar / importar CSV / exportar / tags / salvar / abrir conversa.
+// WhatsApp → Contatos: agenda da ORGANIZAÇÃO (compartilhada entre os números)
+// + salvos na organização. Sincronizar (por número) / adicionar / importar CSV /
+// exportar / tags / salvar / abrir conversa (por número).
+// Multi-número: `?session=` filtra "contatos que têm conversa naquele número";
+// cada contato traz `chats:[{id, session_id}]` (uma conversa por número).
 // ============================================================================
 
 const PAGE_SIZES = [25, 50, 100];
@@ -83,6 +103,13 @@ const parseTags = (v) => [
   )
 ];
 
+// conversas do contato: [{ chat_id, session_id }] (o back manda `chats:[{id, session_id}]`)
+const chatsOf = (c) =>
+  (Array.isArray(c?.chats) ? c.chats : [])
+    .map((x) => ({ chat_id: x.chat_id || x.id, session_id: x.session_id || null }))
+    .filter((x) => x.chat_id);
+const isReady = (s) => Boolean(s && (s.connected || s.status === 'ready'));
+
 const downloadBlob = (blob, filename) => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -93,6 +120,40 @@ const downloadBlob = (blob, filename) => {
   a.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 };
+
+// ----------------------------------------------------------------------------
+// Números em que o contato tem conversa (chip por número; máx. 3 + "+N")
+// ----------------------------------------------------------------------------
+function NumbersCell({ chats, sessionOf, onOpen, max = 3 }) {
+  const seen = new Set();
+  const list = chats.filter((x) => x.session_id && !seen.has(x.session_id) && seen.add(x.session_id));
+  if (!list.length)
+    return (
+      <Typography variant="caption" sx={{ color: 'text.disabled' }}>
+        sem conversa
+      </Typography>
+    );
+  const shown = list.slice(0, max);
+  const rest = list.slice(max);
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center">
+      {shown.map((x) => {
+        const s = sessionOf(x.session_id);
+        return s ? <WaNumberChip key={x.chat_id} session={s} onClick={() => onOpen(x.chat_id)} /> : null;
+      })}
+      {rest.length ? (
+        <Tooltip title={rest.map((x) => sessionLabel(sessionOf(x.session_id))).join(', ')}>
+          <Chip
+            size="small"
+            label={`+${rest.length}`}
+            variant="outlined"
+            sx={{ height: 20, fontSize: 11, borderRadius: 1, fontWeight: 700 }}
+          />
+        </Tooltip>
+      ) : null}
+    </Stack>
+  );
+}
 
 // ----------------------------------------------------------------------------
 // KPI chip
@@ -200,7 +261,22 @@ function TagsEditor({ value, onChange, suggestions = [], autoFocus }) {
 // ============================================================================
 export default function WhatsAppContacts() {
   const navigate = useNavigate();
-  const { session, loading: sessionLoading, connected } = useWaSession(20000);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { session, sessions, loading: sessionLoading, connected } = useWaSession(20000);
+  const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const manyNumbers = sessions.length > 1;
+  const readySessions = useMemo(() => sessions.filter(isReady), [sessions]);
+  // filtro por número ('' = todos) persistido na URL (?session=) — mesmo padrão do Chat
+  const sessionParam = searchParams.get('session') || '';
+  const sessionFilter = sessionParam && byId.has(sessionParam) ? sessionParam : '';
+  const setSessionFilter = (id) =>
+    setSearchParams((prev) => {
+      const n = new URLSearchParams(prev);
+      if (id) n.set('session', id);
+      else n.delete('session');
+      return n;
+    });
+  const sessionOf = useCallback((id, fallback) => (id && byId.get(id)) || fallback || null, [byId]);
 
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -223,6 +299,8 @@ export default function WhatsAppContacts() {
   const [bulkTagDlg, setBulkTagDlg] = useState(null); // {tags, loading}
   const [confirm, setConfirm] = useState(null); // {kind:'remove', contact} | {kind:'unsave-bulk'}
   const [syncResult, setSyncResult] = useState(null);
+  const [openMenu, setOpenMenu] = useState(null); // {anchor, contact, options:[{chat_id?, session, openWith?}]}
+  const [syncMenu, setSyncMenu] = useState(null); // anchor do menu "sincronizar qual número"
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
@@ -231,7 +309,7 @@ export default function WhatsAppContacts() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedQ, saved, tag, optout, pageSize]);
+  }, [debouncedQ, saved, tag, optout, pageSize, sessionFilter]);
 
   const load = useCallback(
     async ({ silent = false } = {}) => {
@@ -244,6 +322,7 @@ export default function WhatsAppContacts() {
             saved,
             tag: tag || undefined,
             optout: optout === '1' ? 1 : undefined,
+            session_id: sessionFilter || undefined,
             page,
             page_size: pageSize
           }
@@ -263,7 +342,7 @@ export default function WhatsAppContacts() {
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [debouncedQ, saved, tag, optout, page, pageSize]
+    [debouncedQ, saved, tag, optout, page, pageSize, sessionFilter]
   );
 
   useEffect(() => {
@@ -327,30 +406,60 @@ export default function WhatsAppContacts() {
     }
   };
 
-  const openConversation = async (contact) => {
-    if (!connected) return toast.error('Conecte o WhatsApp para abrir conversas.');
+  const goChat = (chatId) => navigate(`/whatsapp/chat?chat=${encodeURIComponent(chatId)}`);
+  // abre (cria) a conversa por um número e navega
+  const openNewChat = async (contact, withSession) => {
+    const sess = withSession ? byId.get(withSession) : null;
+    if (withSession && !isReady(sess)) return toast.error(`${sessionLabel(sess)} não está conectado.`);
+    if (!withSession && !connected) return toast.error('Conecte o WhatsApp para abrir conversas.');
     setRowLoading(contact.id, true);
     try {
-      let chatId = contact.chat_id;
-      if (!chatId) {
-        const chat = await post('/whatsapp/chats/open', { phone: onlyDigits(contact.phone) });
-        chatId = chat?.chat_id;
-        if (chatId) patchRow(contact.id, { chat_id: chatId });
-      }
+      const chat = await post('/whatsapp/chats/open', {
+        phone: onlyDigits(contact.phone),
+        ...(withSession ? { session_id: withSession } : {})
+      });
+      const chatId = chat?.chat_id;
       if (!chatId) throw new Error('Não foi possível abrir a conversa.');
-      navigate(`/whatsapp/chat?chat=${encodeURIComponent(chatId)}`);
+      patchRow(contact.id, {
+        chat_id: contact.chat_id || chatId,
+        chats: [...chatsOf(contact), { chat_id: chatId, session_id: chat.session_id || withSession || null }]
+      });
+      goChat(chatId);
     } catch (e) {
       toast.error(errMsg(e, 'Não foi possível abrir a conversa.'));
     } finally {
       setRowLoading(contact.id, false);
     }
+    return undefined;
+  };
+  // conversa em mais de um número → menu para escolher; sem conversa → abre pelo número filtrado (ou pergunta qual)
+  const openConversation = (contact, ev) => {
+    const list = chatsOf(contact);
+    if (sessionFilter) {
+      const own = list.find((x) => x.session_id === sessionFilter);
+      return own ? goChat(own.chat_id) : openNewChat(contact, sessionFilter);
+    }
+    if (list.length === 1) return goChat(list[0].chat_id);
+    if (list.length === 0) {
+      if (readySessions.length > 1)
+        return setOpenMenu({
+          anchor: ev?.currentTarget || null,
+          contact,
+          options: readySessions.map((sx) => ({ session: sx, openWith: sx.id }))
+        });
+      return openNewChat(contact, readySessions[0]?.id);
+    }
+    const options = list.map((x) => ({ chat_id: x.chat_id, session: sessionOf(x.session_id) }));
+    for (const sx of readySessions) if (!list.some((x) => x.session_id === sx.id)) options.push({ session: sx, openWith: sx.id });
+    return setOpenMenu({ anchor: ev?.currentTarget || null, contact, options });
   };
 
   const checkWhatsApp = async (contact) => {
     if (!connected) return toast.error('Conecte o WhatsApp para verificar números.');
     setRowLoading(contact.id, true);
     try {
-      const r = await get(`/whatsapp/contacts/${contact.id}/check`);
+      // confere pelo número filtrado (ou por qualquer número conectado)
+      const r = await get(`/whatsapp/contacts/${contact.id}/check`, { params: { session_id: sessionFilter || undefined } });
       if (r?.exists) {
         toast.success(`${contact.display_name || contact.name || fmtPhone(contact.phone)} tem WhatsApp.`);
         if (r.wa_id) patchRow(contact.id, { wa_id: r.wa_id });
@@ -402,14 +511,15 @@ export default function WhatsAppContacts() {
   };
 
   // ---------------- header ----------------
-  const sync = async () => {
-    if (!connected) return;
+  const sync = async (sessionId) => {
+    const sess = sessionId ? byId.get(sessionId) : readySessions[0];
+    if (!isReady(sess)) return toast.error('Conecte um número do WhatsApp para sincronizar a agenda.');
     setBusy(true);
-    const tid = toast.loading('Sincronizando contatos do celular…');
+    const tid = toast.loading(`Sincronizando a agenda de ${sessionLabel(sess)}…`);
     try {
-      const r = await post('/whatsapp/contacts/sync');
+      const r = await post('/whatsapp/contacts/sync', { session_id: sess.id });
       toast.dismiss(tid);
-      setSyncResult({ ...r, at: new Date().toISOString() });
+      setSyncResult({ ...r, session: sess, at: new Date().toISOString() });
       toast.success(
         `Sincronizado: ${r?.imported ?? 0} novo${r?.imported === 1 ? '' : 's'}, ${r?.updated ?? 0} atualizado${r?.updated === 1 ? '' : 's'}.`
       );
@@ -420,7 +530,10 @@ export default function WhatsAppContacts() {
     } finally {
       setBusy(false);
     }
+    return undefined;
   };
+  // mais de um número conectado → pergunta qual agenda sincronizar
+  const syncClick = (ev) => (readySessions.length > 1 ? setSyncMenu(ev?.currentTarget || null) : sync(readySessions[0]?.id));
 
   const exportCsv = async () => {
     setBusy(true);
@@ -493,18 +606,27 @@ export default function WhatsAppContacts() {
   const total = data.total;
   const from = total ? (data.page - 1) * pageSize + 1 : 0;
   const to = Math.min(total, data.page * pageSize);
-  const filtered = Boolean(debouncedQ || tag || saved !== 'all');
+  const filtered = Boolean(debouncedQ || tag || saved !== 'all' || sessionFilter);
+  const colCount = manyNumbers ? 7 : 6;
   const counts = data.counts;
 
   const headerAction = useMemo(
     () => (
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
-        <Tooltip title={connected ? 'Puxa os contatos da agenda do celular conectado' : 'Conecte o WhatsApp para sincronizar'}>
+        <Tooltip
+          title={
+            connected
+              ? readySessions.length > 1
+                ? 'Puxa a agenda do celular de um dos números conectados'
+                : 'Puxa os contatos da agenda do celular conectado'
+              : 'Conecte o WhatsApp para sincronizar'
+          }
+        >
           <span>
             <Button
               variant="outlined"
               startIcon={<IconDeviceMobile size={18} />}
-              onClick={sync}
+              onClick={syncClick}
               disabled={!connected || busy}
               sx={{ fontWeight: 700, borderRadius: 2 }}
             >
@@ -543,7 +665,7 @@ export default function WhatsAppContacts() {
       </Stack>
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [connected, busy, saved]
+    [connected, busy, saved, readySessions]
   );
 
   // ============================================================ render
@@ -552,7 +674,11 @@ export default function WhatsAppContacts() {
       <WaPageHeader
         icon={IconAddressBook}
         title="Contatos"
-        subtitle="Contatos do número conectado e os salvos na organização."
+        subtitle={
+          manyNumbers
+            ? 'Agenda compartilhada da organização — filtre por número para ver quem já conversou com cada um.'
+            : 'Contatos do número conectado e os salvos na organização.'
+        }
         sx={{ mb: 2.5 }}
         action={headerAction}
       />
@@ -567,8 +693,8 @@ export default function WhatsAppContacts() {
         sx={{ mb: 2.5, borderRadius: 2.5, '& .MuiAlert-message': { width: '100%' } }}
       >
         <strong>Salvo na organização</strong> = o contato fica com a organização no Pub Mail, mesmo se você desconectar ou trocar de número.
-        Contatos <strong>só da sessão</strong> vêm da agenda do celular conectado e somem quando a sessão muda. Tags e observações só
-        existem em contatos salvos ou adicionados aqui.
+        Contatos <strong>só da sessão</strong> vêm da agenda do celular de um número conectado e somem quando a sessão muda. Tags e
+        observações só existem em contatos salvos ou adicionados aqui.
       </Alert>
 
       <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0, 1fr))' }, mb: 2.5 }}>
@@ -599,6 +725,17 @@ export default function WhatsAppContacts() {
             ) : null
           }}
         />
+        {manyNumbers ? (
+          <WaNumberSelect
+            sessions={sessions}
+            value={sessionFilter}
+            onChange={(v) => setSessionFilter(v || '')}
+            allowAll
+            label="Número"
+            fullWidth={false}
+            sx={{ minWidth: 220 }}
+          />
+        ) : null}
         <TextField select size="small" label="Salvos" value={saved} onChange={(e) => setSaved(e.target.value)} sx={{ minWidth: 200 }}>
           {SAVED_OPTIONS.map((o) => (
             <MenuItem key={o.value} value={o.value}>
@@ -644,8 +781,16 @@ export default function WhatsAppContacts() {
 
       {syncResult ? (
         <Alert severity="success" onClose={() => setSyncResult(null)} sx={{ mb: 2, borderRadius: 2.5 }}>
-          Sincronização concluída {fmtAgo(syncResult.at)}: <strong>{syncResult.imported ?? 0}</strong> novos e{' '}
-          <strong>{syncResult.updated ?? 0}</strong> atualizados.
+          Sincronização{' '}
+          {syncResult.session ? (
+            <>
+              de <strong>{sessionLabel(syncResult.session)}</strong>{' '}
+            </>
+          ) : (
+            ''
+          )}
+          concluída {fmtAgo(syncResult.at)}: <strong>{syncResult.imported ?? 0}</strong> novos e <strong>{syncResult.updated ?? 0}</strong>{' '}
+          atualizados.
         </Alert>
       ) : null}
 
@@ -710,7 +855,7 @@ export default function WhatsAppContacts() {
       ) : null}
 
       <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper' }}>
-        <Table size="small" sx={{ minWidth: 960 }}>
+        <Table size="small" sx={{ minWidth: 760 }}>
           <TableHead>
             <TableRow sx={{ '& th': { fontWeight: 800, bgcolor: 'action.hover', whiteSpace: 'nowrap' } }}>
               <TableCell padding="checkbox">
@@ -724,22 +869,28 @@ export default function WhatsAppContacts() {
               </TableCell>
               <TableCell>Contato</TableCell>
               <TableCell>Telefone</TableCell>
+              {manyNumbers ? (
+                <TableCell>
+                  <Tooltip title="Números em que este contato já tem conversa (clique para abrir)">
+                    <span>Números</span>
+                  </Tooltip>
+                </TableCell>
+              ) : null}
               <TableCell>Tags</TableCell>
               <TableCell align="center">Salvo na organização</TableCell>
-              <TableCell>Última mensagem</TableCell>
               <TableCell align="right">Ações</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {loading && !items.length ? (
               <TableRow>
-                <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+                <TableCell colSpan={colCount} align="center" sx={{ py: 6 }}>
                   <CircularProgress size={26} sx={{ color: WA_GREEN }} />
                 </TableCell>
               </TableRow>
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} sx={{ py: 3, border: 0 }}>
+                <TableCell colSpan={colCount} sx={{ py: 3, border: 0 }}>
                   <TgEmptyState
                     dense
                     icon={IconAddressBook}
@@ -757,7 +908,7 @@ export default function WhatsAppContacts() {
                           variant="contained"
                           disableElevation
                           startIcon={<IconDeviceMobile size={18} />}
-                          onClick={sync}
+                          onClick={syncClick}
                           disabled={busy}
                           sx={{ fontWeight: 700, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
                         >
@@ -851,6 +1002,11 @@ export default function WhatsAppContacts() {
                         </Typography>
                       </Stack>
                     </TableCell>
+                    {manyNumbers ? (
+                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                        <NumbersCell chats={chatsOf(c)} sessionOf={sessionOf} onOpen={goChat} />
+                      </TableCell>
+                    ) : null}
                     <TableCell sx={{ minWidth: 180 }}>
                       <Stack
                         direction="row"
@@ -921,26 +1077,21 @@ export default function WhatsAppContacts() {
                         />
                       </Tooltip>
                     </TableCell>
-                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                      {c.last_message_at ? (
-                        <Tooltip title={fmtDateTime(c.last_message_at)}>
-                          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                            {fmtAgo(c.last_message_at)}
-                          </Typography>
-                        </Tooltip>
-                      ) : (
-                        <Typography variant="body2" sx={{ color: 'text.disabled' }}>
-                          —
-                        </Typography>
-                      )}
-                    </TableCell>
                     <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                       <Stack direction="row" spacing={0.25} justifyContent="flex-end">
-                        <Tooltip title="Abrir conversa">
+                        <Tooltip
+                          title={
+                            manyNumbers && chatsOf(c).length > 1
+                              ? `Abrir conversa (${chatsOf(c).length} números — escolha qual)`
+                              : sessionFilter && !chatsOf(c).some((x) => x.session_id === sessionFilter)
+                                ? `Abrir conversa nova por ${sessionLabel(byId.get(sessionFilter))}`
+                                : 'Abrir conversa'
+                          }
+                        >
                           <span>
                             <IconButton
                               size="small"
-                              onClick={() => openConversation(c)}
+                              onClick={(e) => openConversation(c, e)}
                               disabled={rb || !connected}
                               sx={{ color: WA_DARK }}
                             >
@@ -1007,6 +1158,64 @@ export default function WhatsAppContacts() {
           shape="rounded"
         />
       </Stack>
+
+      {/* ---------------- abrir conversa: por qual número? ---------------- */}
+      <Menu
+        anchorEl={openMenu?.anchor}
+        open={Boolean(openMenu?.anchor)}
+        onClose={() => setOpenMenu(null)}
+        slotProps={{ paper: { sx: { borderRadius: 2, minWidth: 250 } } }}
+      >
+        {openMenu ? (
+          <Typography variant="caption" sx={{ px: 2, pt: 0.5, pb: 0.75, display: 'block', color: 'text.secondary', fontWeight: 700 }}>
+            {openMenu.contact.display_name || openMenu.contact.name || fmtPhone(openMenu.contact.phone)} — abrir por qual número?
+          </Typography>
+        ) : null}
+        {(openMenu?.options || []).map((o) => (
+          <MenuItem
+            key={o.chat_id || `open-${o.openWith}`}
+            onClick={() => {
+              const c = openMenu.contact;
+              setOpenMenu(null);
+              if (o.chat_id) goChat(o.chat_id);
+              else openNewChat(c, o.openWith);
+            }}
+            sx={{ gap: 1.25, fontSize: 14 }}
+          >
+            {o.chat_id ? <IconMessage size={16} style={{ opacity: 0.7 }} /> : <IconMessagePlus size={16} style={{ opacity: 0.7 }} />}
+            <WaNumberChip session={o.session} showPhone />
+            <ListItemText
+              primary={o.chat_id ? 'conversa existente' : 'conversa nova'}
+              slotProps={{ primary: { sx: { fontSize: 12.5, color: 'text.secondary' } } }}
+            />
+          </MenuItem>
+        ))}
+      </Menu>
+
+      {/* ---------------- sincronizar: agenda de qual número? ---------------- */}
+      <Menu
+        anchorEl={syncMenu}
+        open={Boolean(syncMenu)}
+        onClose={() => setSyncMenu(null)}
+        slotProps={{ paper: { sx: { borderRadius: 2, minWidth: 250 } } }}
+      >
+        <Typography variant="caption" sx={{ px: 2, pt: 0.5, pb: 0.75, display: 'block', color: 'text.secondary', fontWeight: 700 }}>
+          Sincronizar a agenda de qual número?
+        </Typography>
+        {readySessions.map((sx) => (
+          <MenuItem
+            key={sx.id}
+            onClick={() => {
+              setSyncMenu(null);
+              sync(sx.id);
+            }}
+            sx={{ gap: 1.25, fontSize: 14 }}
+          >
+            <IconDeviceMobile size={16} style={{ opacity: 0.7 }} />
+            <WaNumberChip session={sx} showPhone />
+          </MenuItem>
+        ))}
+      </Menu>
 
       {/* ---------------- popover de tags ---------------- */}
       <Popover

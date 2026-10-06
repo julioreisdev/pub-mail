@@ -8,10 +8,11 @@ import { OpenWaClient } from './openwa.client';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
-import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { ChatKey, WhatsAppAttendanceService } from './whatsapp-attendance.service';
+import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppCrmService, advanceDue, fillCrmVars, formatBRL } from './whatsapp-crm.service';
 import { WhatsAppPipelineService } from './whatsapp-pipeline.service';
-import { phoneFromJid } from './wa-jid.util';
+import { isGroupJid, jidFromPhone, phoneFromJid } from './wa-jid.util';
 
 // ============================================================================
 // Cobranças pelo WhatsApp (CRM, fase 2)
@@ -27,6 +28,12 @@ import { phoneFromJid } from './wa-jid.util';
 //    param ao pagar; D+1 marca a assinatura em atraso e aplica a etiqueta.
 //  - Atenção Mercado Pago: PIX pago depois de vencido vira estorno pro pagador →
 //    a validade do PIX = vencimento + `pix_days` (padrão 7) e EXPIRED para tudo.
+//
+// Multi-número: `whatsapp_charges.session_id` = NÚMERO pelo qual a cobrança (e os lembretes,
+// o recibo) saem; `chat_id` = jid. Cobrar a partir de uma conversa (uuid) usa o número dela;
+// a partir do cliente usa `session_id` informado → conversa mais recente do contato num número
+// permitido → qualquer número conectado. Na API a cobrança devolve `chat_id` (uuid), `jid`,
+// `session_id` e `session`.
 // ============================================================================
 
 export const CHARGE_STATUSES = ['PENDING', 'PAID', 'EXPIRED', 'CANCELED', 'FAILED'] as const;
@@ -72,6 +79,7 @@ const fmtBR = (s?: string | null) => (s ? String(s).slice(0, 10).split('-').reve
 const endOfDayBRT = (dateStr: string) => new Date(`${dateStr}T23:59:59-03:00`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clampInt = (v: unknown, min: number, max: number, def: number) => { const n = parseInt(String(v), 10); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
+const chatKeyOf = (sessionId: string | null | undefined, jid: string) => `${sessionId || ''}|${jid}`;
 
 @Injectable()
 export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
@@ -86,6 +94,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     private readonly inbound: WhatsAppInboundService,
     private readonly presenter: WhatsAppPresenter,
     private readonly attendance: WhatsAppAttendanceService,
+    private readonly sessions: WhatsAppSessionsService,
     private readonly crm: WhatsAppCrmService,
     private readonly access: AccessService,
     private readonly pipeline: WhatsAppPipelineService,
@@ -156,12 +165,17 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ---------------------------------------------------------------- formato
-  private shape(c: any, extra?: { customer?: any }) {
+  private shape(c: any, extra?: { customer?: any; smap?: Map<string, any>; cmap?: Map<string, string> }) {
     const today = brtDateStr();
     const due = toDateStr(new Date(c.due_at));
     const days = Math.round((dateOnlyUTC(due).getTime() - dateOnlyUTC(today).getTime()) / DAY);
     return {
-      id: c.id, customer_id: c.customer_id, subscription_id: c.subscription_id, product_id: c.product_id, chat_id: c.chat_id,
+      id: c.id, customer_id: c.customer_id, subscription_id: c.subscription_id, product_id: c.product_id,
+      // conversa: uuid (quando existe), jid e número pelo qual a cobrança sai
+      chat_id: extra?.cmap?.get(chatKeyOf(c.session_id, c.chat_id)) || null,
+      jid: c.chat_id,
+      session_id: c.session_id || null,
+      session: (c.session_id && extra?.smap?.get(c.session_id)) || null,
       kind: c.kind, amount_cents: c.amount_cents, amount_label: formatBRL(c.amount_cents), description: c.description,
       due_at: due, due_label: fmtBR(due), days_to_due: days, overdue: c.status === 'PENDING' && days < 0,
       status: c.status, origin: c.origin, provider: c.provider,
@@ -171,6 +185,23 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
       created_at: c.created_at, updated_at: c.updated_at,
       customer: extra?.customer ? { id: extra.customer.id, name: extra.customer.name, phone: extra.customer.phone } : undefined,
     };
+  }
+
+  /** Mapas para o shape: números (brief) + uuid das conversas (número|jid → uuid). */
+  private async decorate(orgId: string, rows: any[]) {
+    const pairs = new Map<string, any>();
+    for (const r of rows) if (r.session_id && r.chat_id) pairs.set(chatKeyOf(r.session_id, r.chat_id), { session_id: r.session_id, chat_id: r.chat_id });
+    const [smap, chats] = await Promise.all([
+      this.presenter.sessionMap(orgId),
+      pairs.size ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, OR: [...pairs.values()] }, select: { id: true, session_id: true, chat_id: true } }) : Promise.resolve([] as any[]),
+    ]);
+    const cmap = new Map<string, string>(chats.map((c: any) => [chatKeyOf(c.session_id, c.chat_id), c.id] as [string, string]));
+    return { smap, cmap };
+  }
+
+  private async shapeOne(orgId: string, c: any, customer?: any) {
+    const { smap, cmap } = await this.decorate(orgId, [c]);
+    return this.shape(c, { customer, smap, cmap });
   }
 
   private async gateway(orgId: string) {
@@ -183,21 +214,57 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     return `${base}/payments/webhook/${provider || 'mercadopago'}`;
   }
 
+  // ---------------------------------------------------------------- número da cobrança
+  /** jids pelos quais o contato pode aparecer numa conversa. */
+  private contactJids(contact: any): string[] {
+    return [...new Set([contact?.wa_id, contact?.lid, contact?.phone ? jidFromPhone(contact.phone) : null].filter(Boolean))] as string[];
+  }
+
+  /**
+   * Por qual número cobrar um cliente (sem conversa informada): `wanted` (session_id do DTO) →
+   * conversa mais recente do contato num número permitido → qualquer número conectado (permitido).
+   */
+  private async pickSession(orgId: string, contact: any, wanted?: string | null, allowed: Set<string> | null = null): Promise<ChatKey> {
+    const jids = this.contactJids(contact);
+    const fallbackJid = contact?.phone ? jidFromPhone(contact.phone) : String(contact?.wa_id || '');
+    if (!fallbackJid) throw new BadRequestException('O contato do cliente não tem telefone.');
+    if (wanted) {
+      const row = await this.sessions.requireRow(orgId, String(wanted));
+      if (allowed !== null && !allowed.has(row.id)) throw new NotFoundException('Número não encontrado.');
+      const chat = await this.prisma.whatsapp_chats.findFirst({ where: { organization_id: orgId, session_id: row.id, kind: 'individual', chat_id: { in: jids } }, orderBy: { last_message_at: 'desc' } });
+      return { session_id: row.id, chat_id: chat?.chat_id || fallbackJid };
+    }
+    const recent = jids.length
+      ? await this.prisma.whatsapp_chats.findFirst({ where: { organization_id: orgId, kind: 'individual', chat_id: { in: jids }, ...(allowed !== null ? { session_id: { in: [...allowed] } } : {}) }, orderBy: { last_message_at: 'desc' } })
+      : null;
+    if (recent) return { session_id: recent.session_id, chat_id: recent.chat_id };
+    const ready = (await this.sessions.readyRows(orgId)).filter((r) => allowed === null || allowed.has(r.id));
+    if (!ready.length) throw new BadRequestException('Nenhum número do WhatsApp conectado para enviar a cobrança.');
+    return { session_id: ready[0].id, chat_id: fallbackJid };
+  }
+
   // ---------------------------------------------------------------- criar + enviar
-  async create(orgId: string, userId: string | null, dto: any, origin: 'manual' | 'recurring' | 'bot' = 'manual') {
+  /**
+   * `dto.chat_id` = uuid da conversa (cobra pelo número dela) OU `dto.customer_id` (+ `dto.session_id` opcional).
+   * `allowed` = números do usuário (null = todos) — só vale para escolher o número a partir do cliente.
+   */
+  async create(orgId: string, userId: string | null, dto: any, origin: 'manual' | 'recurring' | 'bot' = 'manual', allowed: Set<string> | null = null) {
     const cfg = await this.settings(orgId);
     let customer: any = null;
-    if (dto.customer_id) customer = await this.prisma.whatsapp_customers.findFirst({ where: { id: String(dto.customer_id), organization_id: orgId } });
-    else if (dto.chat_id) {
-      const r = await this.crm.byChat(orgId, String(dto.chat_id));
+    let key: ChatKey | null = null;
+    if (dto.chat_id) {
+      const chat = await this.attendance.chatRow(orgId, String(dto.chat_id));
+      if (isGroupJid(chat.chat_id) || chat.kind !== 'individual') throw new BadRequestException('Cobrança é só para conversas individuais.');
+      const r = await this.crm.byContactJid(orgId, chat.session_id, chat.chat_id);
       if (!r.customer) throw new BadRequestException('Este contato ainda não é cliente. Cadastre-o primeiro (painel "Cliente" da conversa).');
       customer = await this.prisma.whatsapp_customers.findUnique({ where: { id: r.customer.id } });
-    }
+      key = { session_id: chat.session_id, chat_id: chat.chat_id };
+    } else if (dto.customer_id) customer = await this.prisma.whatsapp_customers.findFirst({ where: { id: String(dto.customer_id), organization_id: orgId } });
     if (!customer) throw new NotFoundException('Cliente não encontrado.');
     if (customer.status !== 'active') throw new BadRequestException('Cliente inativo. Reative-o para cobrar.');
     const contact = await this.prisma.whatsapp_contacts.findUnique({ where: { id: customer.contact_id } });
     if (!contact) throw new BadRequestException('O contato do cliente não existe mais.');
-    const chatId = contact.wa_id;
+    if (!key) key = await this.pickSession(orgId, contact, dto.session_id, allowed);
 
     // valor/descrição: da assinatura, do produto ou livres
     let sub: any = null, product: any = null;
@@ -222,7 +289,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     const payerRef = createHash('sha1').update(`${orgId}:${customer.id}`).digest('hex').slice(0, 12);
     const stamp = Math.floor(Date.now() / 60000);
     const row = await this.prisma.whatsapp_charges.create({
-      data: { organization_id: orgId, customer_id: customer.id, subscription_id: sub?.id || null, product_id: product?.id || sub?.product_id || null, chat_id: chatId, kind, amount_cents: amount, description, due_at: dateOnlyUTC(dueStr), status: 'PENDING', origin, provider: gw.provider, created_by: userId, reminders: [] },
+      data: { organization_id: orgId, session_id: key.session_id, customer_id: customer.id, subscription_id: sub?.id || null, product_id: product?.id || sub?.product_id || null, chat_id: key.chat_id, kind, amount_cents: amount, description, due_at: dateOnlyUTC(dueStr), status: 'PENDING', origin, provider: gw.provider, created_by: userId, reminders: [] },
     });
     const data: any = {};
     const errors: string[] = [];
@@ -247,12 +314,12 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     if (errors.length) data.error = errors.join(' | ').slice(0, 255);
     let charge = await this.prisma.whatsapp_charges.update({ where: { id: row.id }, data });
     if (dto.send !== false) charge = await this.sendCharge(orgId, charge, customer, 'charge').catch((e) => { this.logger.warn(`envio da cobrança ${row.id}: ${e?.message || e}`); return charge; });
-    return this.shape(charge, { customer: { ...customer, phone: contact.phone } });
+    return this.shapeOne(orgId, charge, { ...customer, phone: contact.phone });
   }
 
   // ---------------------------------------------------------------- mensagens
   private async varsFor(orgId: string, c: any, customer: any) {
-    const base = await this.crm.varsForChat(orgId, c.chat_id);
+    const base = await this.crm.varsForChat(orgId, c.chat_id, c.session_id || null);
     const name = customer?.name || base['cliente.nome'] || '';
     return {
       ...base, nome: name, 'cliente.nome': name, 'cliente.primeiro_nome': name.split(/\s+/)[0] || '',
@@ -261,47 +328,53 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private async sessionReady(orgId: string) {
-    const s = await this.prisma.whatsapp_sessions.findUnique({ where: { organization_id: orgId } });
-    if (!s?.openwa_session_id || s.status !== 'ready') throw new BadRequestException('O WhatsApp não está conectado.');
-    return s;
+  /** Número pronto da cobrança (400 claro quando não está). Cobrança antiga sem número usa qualquer um conectado e adota-o. */
+  private async sessionFor(orgId: string, c: any) {
+    if (c.session_id) return this.sessions.requireReady(orgId, c.session_id);
+    const row = await this.sessions.anyReady(orgId);
+    if (!row) throw new BadRequestException('O WhatsApp não está conectado.');
+    await this.prisma.whatsapp_charges.update({ where: { id: c.id }, data: { session_id: row.id } }).catch(() => undefined);
+    c.session_id = row.id;
+    return row;
   }
 
-  private async send(orgId: string, sid: string, chatId: string, msg: { kind: 'text' | 'image'; text?: string; mediaId?: string | null }, chargeId: string) {
+  /** Envia pelo número `row` para o jid; grava a mensagem OUT com `session_id` e `extra.charge`. */
+  private async send(orgId: string, row: any, jid: string, msg: { kind: 'text' | 'image'; text?: string; mediaId?: string | null }, chargeId: string) {
+    const sid = String(row.openwa_session_id);
     let r: any; let type = 'text';
     if (msg.kind === 'image' && msg.mediaId) {
       const f = await this.media.readBase64(orgId, msg.mediaId);
-      r = await this.openwa.sendMedia(sid, 'image' as any, chatId, { base64: f.base64, mimetype: f.mime, filename: f.filename || 'pix.png', caption: msg.text || undefined });
+      r = await this.openwa.sendMedia(sid, 'image' as any, jid, { base64: f.base64, mimetype: f.mime, filename: f.filename || 'pix.png', caption: msg.text || undefined });
       type = 'image';
     } else {
       if (!msg.text) return;
-      r = await this.openwa.sendText(sid, chatId, msg.text);
+      r = await this.openwa.sendText(sid, jid, msg.text);
     }
     const at = r?.timestamp ? new Date(Number(r.timestamp) * 1000) : new Date();
     const waId = String(r?.messageId || `charge_${Date.now()}_${Math.random().toString(36).slice(2)}`);
     await this.prisma.whatsapp_messages
-      .create({ data: { organization_id: orgId, chat_id: chatId, wa_message_id: waId, direction: 'OUT', type, body: msg.text || null, media_id: msg.kind === 'image' ? msg.mediaId || null : null, ack: 1, timestamp: at, extra: { charge: chargeId } } })
-      .catch(async (e: any) => { if (e?.code === 'P2002') await this.prisma.whatsapp_messages.update({ where: { organization_id_wa_message_id: { organization_id: orgId, wa_message_id: waId } }, data: { extra: { charge: chargeId } } }).catch(() => undefined); });
-    await this.inbound.bumpChat(orgId, chatId, { type, body: msg.text, direction: 'OUT', at });
-    this.presenter.message(orgId, { waId });
+      .create({ data: { organization_id: orgId, session_id: row.id, chat_id: jid, wa_message_id: waId, direction: 'OUT', type, body: msg.text || null, media_id: msg.kind === 'image' ? msg.mediaId || null : null, ack: 1, timestamp: at, extra: { charge: chargeId } } })
+      .catch(async (e: any) => { if (e?.code === 'P2002') await this.prisma.whatsapp_messages.update({ where: { organization_id_session_id_wa_message_id: { organization_id: orgId, session_id: row.id, wa_message_id: waId } }, data: { extra: { charge: chargeId } } }).catch(() => undefined); });
+    await this.inbound.bumpChat(orgId, row.id, jid, { type, body: msg.text, direction: 'OUT', at });
+    this.presenter.message(orgId, { waId, sessionId: row.id });
   }
 
   /** Envia a cobrança (ou um lembrete) na conversa: texto + PIX copia-e-cola + QR + boleto. */
   private async sendCharge(orgId: string, c: any, customer: any, which: 'charge' | 'reminder_before' | 'reminder_due' | 'reminder_after') {
-    const s = await this.sessionReady(orgId);
+    const row = await this.sessionFor(orgId, c);
     const cfg = await this.settings(orgId);
     const vars = await this.varsFor(orgId, c, customer);
     const text = fillCrmVars(cfg.texts[which], vars).trim();
-    if (text) await this.send(orgId, s.openwa_session_id!, c.chat_id, { kind: 'text', text }, c.id);
+    if (text) await this.send(orgId, row, c.chat_id, { kind: 'text', text }, c.id);
     if (c.pix_code) {
       await sleep(400);
-      await this.send(orgId, s.openwa_session_id!, c.chat_id, { kind: 'text', text: c.pix_code }, c.id);
-      if (which === 'charge' && c.pix_qr_media_id && cfg.send_qr) { await sleep(400); await this.send(orgId, s.openwa_session_id!, c.chat_id, { kind: 'image', mediaId: c.pix_qr_media_id, text: `QR Code do PIX · ${formatBRL(c.amount_cents)}` }, c.id).catch((e) => this.logger.debug(`QR: ${e?.message || e}`)); }
+      await this.send(orgId, row, c.chat_id, { kind: 'text', text: c.pix_code }, c.id);
+      if (which === 'charge' && c.pix_qr_media_id && cfg.send_qr) { await sleep(400); await this.send(orgId, row, c.chat_id, { kind: 'image', mediaId: c.pix_qr_media_id, text: `QR Code do PIX · ${formatBRL(c.amount_cents)}` }, c.id).catch((e) => this.logger.debug(`QR: ${e?.message || e}`)); }
     }
     if (c.boleto_charge_id && (c.boleto_url || c.boleto_digitable || c.boleto_barcode)) {
       await sleep(400);
       const bt = fillCrmVars(cfg.texts.boleto, vars).trim();
-      if (bt) await this.send(orgId, s.openwa_session_id!, c.chat_id, { kind: 'text', text: bt }, c.id);
+      if (bt) await this.send(orgId, row, c.chat_id, { kind: 'text', text: bt }, c.id);
     }
     const reminders = Array.isArray(c.reminders) ? [...c.reminders] : [];
     if (which !== 'charge') reminders.push({ kind: which, at: new Date().toISOString(), day: brtDateStr() });
@@ -309,16 +382,35 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ---------------------------------------------------------------- consultas
-  async list(orgId: string, q: any = {}) {
+  /** Cláusula de número para listagens: `session_id` pedido (se permitido) ou todos os permitidos. null = nada. */
+  private sessionFilter(sessionId: unknown, allowed: Set<string> | null): { session_id?: any } | null {
+    const sid = sessionId ? String(sessionId) : '';
+    if (sid) return allowed !== null && !allowed.has(sid) ? null : { session_id: sid };
+    if (allowed === null) return {};
+    if (!allowed.size) return null;
+    return { session_id: { in: [...allowed] } };
+  }
+
+  /** `q.session_id` filtra um número; `q.chat_id` = uuid da conversa; `allowed` = números do usuário (null = todos). */
+  async list(orgId: string, q: any = {}, allowed: Set<string> | null = null) {
     const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
     const size = Math.min(200, Math.max(5, parseInt(String(q.page_size || 25), 10) || 25));
-    const where: any = { organization_id: orgId };
+    const zero = { count: 0, cents: 0, label: formatBRL(0) };
+    const empty = { items: [] as any[], total: 0, page, page_size: size, pages: 1, kpis: { pending: zero, overdue: zero, paid_month: zero } };
+    const sess = this.sessionFilter(q.session_id, allowed);
+    if (sess === null) return empty;
+    const where: any = { organization_id: orgId, ...sess };
     if (q.status && q.status !== 'all') {
       if (q.status === 'OVERDUE') { where.status = 'PENDING'; where.due_at = { lt: dateOnlyUTC(brtDateStr()) }; }
       else if (CHARGE_STATUSES.includes(String(q.status).toUpperCase() as any)) where.status = String(q.status).toUpperCase();
     }
     if (q.customer_id) where.customer_id = String(q.customer_id);
-    if (q.chat_id) where.chat_id = String(q.chat_id);
+    if (q.chat_id) {
+      const chat = await this.prisma.whatsapp_chats.findFirst({ where: { id: String(q.chat_id), organization_id: orgId }, select: { session_id: true, chat_id: true } });
+      if (!chat || (allowed !== null && !allowed.has(chat.session_id))) return empty;
+      where.session_id = chat.session_id;
+      where.chat_id = chat.chat_id;
+    }
     if (q.kind && ['pix', 'boleto', 'both'].includes(q.kind)) where.kind = q.kind;
     if (q.origin && ['manual', 'recurring', 'bot'].includes(q.origin)) where.origin = q.origin;
     if (q.from || q.to) where.due_at = { ...(where.due_at || {}), ...(q.from ? { gte: dateOnlyUTC(String(q.from).slice(0, 10)) } : {}), ...(q.to ? { lte: dateOnlyUTC(String(q.to).slice(0, 10)) } : {}) };
@@ -329,20 +421,22 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     }
     const todayStr = brtDateStr();
     const monthStart = new Date(`${todayStr.slice(0, 7)}-01T00:00:00-03:00`);
+    const kpiBase = { organization_id: orgId, ...sess };
     const [total, rows, pend, overdueRows, paidMonth] = await Promise.all([
       this.prisma.whatsapp_charges.count({ where }),
       this.prisma.whatsapp_charges.findMany({ where, orderBy: [{ created_at: 'desc' }], skip: (page - 1) * size, take: size }),
-      this.prisma.whatsapp_charges.aggregate({ where: { organization_id: orgId, status: 'PENDING' }, _sum: { amount_cents: true }, _count: { _all: true } }),
-      this.prisma.whatsapp_charges.aggregate({ where: { organization_id: orgId, status: 'PENDING', due_at: { lt: dateOnlyUTC(todayStr) } }, _sum: { amount_cents: true }, _count: { _all: true } }),
-      this.prisma.whatsapp_charges.aggregate({ where: { organization_id: orgId, status: 'PAID', paid_at: { gte: monthStart } }, _sum: { amount_cents: true }, _count: { _all: true } }),
+      this.prisma.whatsapp_charges.aggregate({ where: { ...kpiBase, status: 'PENDING' }, _sum: { amount_cents: true }, _count: { _all: true } }),
+      this.prisma.whatsapp_charges.aggregate({ where: { ...kpiBase, status: 'PENDING', due_at: { lt: dateOnlyUTC(todayStr) } }, _sum: { amount_cents: true }, _count: { _all: true } }),
+      this.prisma.whatsapp_charges.aggregate({ where: { ...kpiBase, status: 'PAID', paid_at: { gte: monthStart } }, _sum: { amount_cents: true }, _count: { _all: true } }),
     ]);
     const custIds = [...new Set(rows.map((r) => r.customer_id))];
     const custs = custIds.length ? await this.prisma.whatsapp_customers.findMany({ where: { id: { in: custIds } } }) : [];
     const contacts = custs.length ? await this.prisma.whatsapp_contacts.findMany({ where: { id: { in: custs.map((c) => c.contact_id) } }, select: { id: true, phone: true } }) : [];
     const phone = new Map(contacts.map((c) => [c.id, c.phone]));
     const byId = new Map(custs.map((c) => [c.id, { ...c, phone: phone.get(c.contact_id) || null }]));
+    const { smap, cmap } = await this.decorate(orgId, rows);
     const kpi = (a: any) => ({ count: a._count._all, cents: a._sum.amount_cents || 0, label: formatBRL(a._sum.amount_cents || 0) });
-    return { items: rows.map((r) => this.shape(r, { customer: byId.get(r.customer_id) })), total, page, page_size: size, pages: Math.max(1, Math.ceil(total / size)), kpis: { pending: kpi(pend), overdue: kpi(overdueRows), paid_month: kpi(paidMonth) } };
+    return { items: rows.map((r) => this.shape(r, { customer: byId.get(r.customer_id), smap, cmap })), total, page, page_size: size, pages: Math.max(1, Math.ceil(total / size)), kpis: { pending: kpi(pend), overdue: kpi(overdueRows), paid_month: kpi(paidMonth) } };
   }
 
   async get(orgId: string, id: string) {
@@ -350,7 +444,14 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     if (!c) throw new NotFoundException('Cobrança não encontrada.');
     const customer = await this.prisma.whatsapp_customers.findUnique({ where: { id: c.customer_id } });
     const contact = customer ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: customer.contact_id }, select: { phone: true } }) : null;
-    return this.shape(c, { customer: customer ? { ...customer, phone: contact?.phone || null } : undefined });
+    return this.shapeOne(orgId, c, customer ? { ...customer, phone: contact?.phone || null } : undefined);
+  }
+
+  /** Número da cobrança (para o controller conferir o acesso). */
+  async sessionOf(orgId: string, id: string) {
+    const c = await this.prisma.whatsapp_charges.findFirst({ where: { id, organization_id: orgId }, select: { session_id: true } });
+    if (!c) throw new NotFoundException('Cobrança não encontrada.');
+    return c.session_id;
   }
 
   // ---------------------------------------------------------------- ações
@@ -360,7 +461,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     if (c.status !== 'PENDING') throw new BadRequestException('Só cobranças em aberto podem ser reenviadas.');
     const customer = await this.prisma.whatsapp_customers.findUnique({ where: { id: c.customer_id } });
     const upd = await this.sendCharge(orgId, c, customer, 'charge');
-    return this.shape(upd, { customer });
+    return this.shapeOne(orgId, upd, customer);
   }
 
   async cancel(orgId: string, id: string) {
@@ -370,7 +471,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     const gw = await this.prisma.telegram_payment_settings.findUnique({ where: { organization_id: orgId } });
     if (gw?.access_token) for (const cid of [c.pix_charge_id, c.boleto_charge_id]) if (cid) await cancelCharge(c.provider || gw.provider, gw.access_token, cid).catch(() => undefined);
     const upd = await this.prisma.whatsapp_charges.update({ where: { id }, data: { status: 'CANCELED' } });
-    return this.shape(upd);
+    return this.shapeOne(orgId, upd);
   }
 
   async markPaid(orgId: string, userId: string, id: string) {
@@ -421,6 +522,10 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     return false;
   }
 
+  private keyOf(c: any): ChatKey | null {
+    return c?.session_id && c?.chat_id ? { session_id: c.session_id, chat_id: c.chat_id } : null;
+  }
+
   /** Liquida a cobrança (uma vez só): assinatura avança, recibo, etiqueta sai. */
   private async settle(c: any, via: 'pix' | 'boleto' | 'manual', userId: string | null) {
     const u = await this.prisma.whatsapp_charges.updateMany({ where: { id: c.id, status: { not: 'PAID' } }, data: { status: 'PAID', paid_at: new Date(), paid_via: via, paid_manual_by: via === 'manual' ? userId : null } });
@@ -437,27 +542,30 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
         await this.prisma.whatsapp_subscriptions.update({ where: { id: sub.id }, data: { last_paid_at: new Date(), status: sub.status === 'overdue' ? 'active' : sub.status, ...(next ? { next_due_at: next } : {}) } });
       }
     }
-    await this.syncOverdueTag(orgId, c.customer_id, c.chat_id).catch(() => undefined);
-    await this.pipeline.onPaid(orgId, c.chat_id); // funil: pago → etapa (se configurado)
+    const key = this.keyOf(c);
+    if (key) {
+      await this.syncOverdueTag(orgId, c.customer_id, key).catch(() => undefined);
+      await this.pipeline.onPaid(orgId, key); // funil: pago → etapa (se configurado)
+    }
     const customer = await this.prisma.whatsapp_customers.findUnique({ where: { id: c.customer_id } });
     try {
-      const s = await this.sessionReady(orgId);
+      const row = await this.sessionFor(orgId, c);
       const cfg = await this.settings(orgId);
       const text = fillCrmVars(cfg.texts.paid, await this.varsFor(orgId, c, customer)).trim();
-      if (text) await this.send(orgId, s.openwa_session_id!, c.chat_id, { kind: 'text', text }, c.id);
+      if (text) await this.send(orgId, row, c.chat_id, { kind: 'text', text }, c.id);
     } catch (e: any) { this.logger.debug(`recibo ${c.id}: ${e?.message || e}`); }
     this.logger.log(`cobrança ${c.id} paga via ${via}`);
   }
 
-  /** Etiqueta "Inadimplente" na conversa quando há cobrança vencida em aberto; sai quando não há mais. */
-  private async syncOverdueTag(orgId: string, customerId: string, chatId: string) {
+  /** Etiqueta "Inadimplente" na conversa (número + jid) quando há cobrança vencida em aberto; sai quando não há mais. */
+  private async syncOverdueTag(orgId: string, customerId: string, key: ChatKey) {
     const cfg = await this.settings(orgId);
     if (!cfg.overdue_tag) return;
     const overdue = await this.prisma.whatsapp_charges.count({ where: { organization_id: orgId, customer_id: customerId, status: 'PENDING', due_at: { lt: dateOnlyUTC(brtDateStr()) } } });
     let tag = await this.prisma.whatsapp_tags.findFirst({ where: { organization_id: orgId, name: OVERDUE_TAG.name } });
     if (!tag && overdue) tag = await this.prisma.whatsapp_tags.create({ data: { organization_id: orgId, name: OVERDUE_TAG.name, color: OVERDUE_TAG.color, position: 99 } }).catch(() => null as any);
     if (!tag) return;
-    await this.attendance.changeTags(orgId, chatId, overdue ? [tag.id] : [], overdue ? [] : [tag.id]);
+    await this.attendance.changeTags(orgId, key, overdue ? [tag.id] : [], overdue ? [] : [tag.id]);
   }
 
   // ---------------------------------------------------------------- runner
@@ -488,6 +596,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     const todayD = dateOnlyUTC(today);
     const result = { generated: 0, reminders: 0, overdue: 0, errors: [] as string[] };
     // 1) recorrentes: vence em até N dias e ainda não tem cobrança para esse vencimento
+    //    (o número é o da última conversa do contato; sem conversa, qualquer número conectado)
     if (cfg.auto_recurring && cfg.gateway_ready) {
       const limit = new Date(todayD.getTime() + cfg.days_before_due * DAY);
       const subs = await this.prisma.whatsapp_subscriptions.findMany({ where: { organization_id: orgId, status: { in: ['active', 'overdue'] }, billing: { in: ['monthly', 'quarterly', 'yearly'] }, next_due_at: { not: null, lte: limit } }, take: 500 });
@@ -524,7 +633,8 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
       }
       if (days >= 1) {
         if (c.subscription_id) { const u = await this.prisma.whatsapp_subscriptions.updateMany({ where: { id: c.subscription_id, status: 'active' }, data: { status: 'overdue' } }); if (u.count) result.overdue++; }
-        await this.syncOverdueTag(orgId, c.customer_id, c.chat_id).catch(() => undefined);
+        const key = this.keyOf(c);
+        if (key) await this.syncOverdueTag(orgId, c.customer_id, key).catch(() => undefined);
       }
     }
     if (result.generated || result.reminders || result.errors.length) this.logger.log(`daily ${orgId}: ${JSON.stringify(result)}`);
@@ -538,6 +648,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.prisma.whatsapp_charges.findMany({ where, orderBy: { created_at: 'desc' }, take: 2000 });
     const custs = rows.length ? await this.prisma.whatsapp_customers.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.customer_id))] } }, select: { id: true, name: true } }) : [];
     const name = new Map(custs.map((c) => [c.id, c.name]));
-    return rows.map((r) => ({ id: r.id, channel: 'whatsapp', title: r.description, source_name: r.origin === 'recurring' ? 'Cobrança recorrente' : r.origin === 'bot' ? 'Bot' : 'Cobrança manual', customer: name.get(r.customer_id) || phoneFromJid(r.chat_id) || '—', amount_cents: r.amount_cents, amount_label: formatBRL(r.amount_cents), status: r.status, provider: r.provider, delivered: r.status === 'PAID', paid_at: r.paid_at, created_at: r.created_at }));
+    const smap = rows.length ? await this.presenter.sessionMap(orgId) : new Map<string, any>();
+    return rows.map((r) => ({ id: r.id, channel: 'whatsapp', title: r.description, source_name: r.origin === 'recurring' ? 'Cobrança recorrente' : r.origin === 'bot' ? 'Bot' : 'Cobrança manual', customer: name.get(r.customer_id) || phoneFromJid(r.chat_id) || '—', amount_cents: r.amount_cents, amount_label: formatBRL(r.amount_cents), status: r.status, provider: r.provider, delivered: r.status === 'PAID', paid_at: r.paid_at, created_at: r.created_at, session_id: r.session_id || null, session: (r.session_id && smap.get(r.session_id)) || null }));
   }
 }

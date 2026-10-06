@@ -41,15 +41,17 @@ import { useAuth } from 'contexts/AuthContext';
 import { useRealtimeEvent } from 'realtime/useRealtime';
 import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
 import WaChatPicker from './WaChatPicker';
-import { WaPageHeader, useNow } from './waKit';
+import { WaNumberChip, WaPageHeader, useNow, useWaSessions } from './waKit';
 import { errMsg, fmtAgo, fmtPhone, tint } from './waShared';
-import { CrmKpi, MoneyField, formatBRL, waPrimaryBtn } from './crm/crmKit';
+import { CrmKpi, MoneyField, WaNumberFilter, chatUrl, formatBRL, useSessionFilter, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Funil (Kanban): colunas = etapas (por org), cards = conversas.
 // Arrastar entre colunas (HTML5 DnD) ou menu "Mover para…". Etapa pode disparar
 // ações ao receber uma conversa (mensagem, etiquetas, tarefa) — configuradas no
 // diálogo da etapa (dono/admin).
+// Multi-número: `chat_id` dos cards = uuid da conversa (o jid vem em `jid`); filtro
+// "Número" (?session=) no quadro e chip do número em cada card quando a org tem > 1.
 // ============================================================================
 
 const COLORS = ['#3B82F6', '#06B6D4', '#F59E0B', '#8B5CF6', '#EC4899', '#22C55E', '#EF4444', '#64748B'];
@@ -363,7 +365,7 @@ function DealDialog({ open, onClose, card, onSaved }) {
       open={open}
       onClose={() => !busy && onClose()}
       title="Valor estimado"
-      subtitle={card?.name}
+      subtitle={card?.session ? `${card?.name || ''} · ${card.session.label || ''}` : card?.name}
       maxWidth="xs"
       footer={
         <>
@@ -388,7 +390,7 @@ function DealDialog({ open, onClose, card, onSaved }) {
 }
 
 // ----------------------------------------------------------------------------
-function AddChatDialog({ open, onClose, stages, defaultStage, onDone }) {
+function AddChatDialog({ open, onClose, stages, defaultStage, onDone, sessions, initialSessionId }) {
   const [picked, setPicked] = useState([]);
   const [stageId, setStageId] = useState('');
   const [busy, setBusy] = useState(false);
@@ -450,14 +452,14 @@ function AddChatDialog({ open, onClose, stages, defaultStage, onDone }) {
             </MenuItem>
           ))}
         </TextField>
-        <WaChatPicker value={picked} onChange={setPicked} listHeight={320} />
+        <WaChatPicker value={picked} onChange={setPicked} listHeight={320} sessions={sessions} initialSessionId={initialSessionId} />
       </Stack>
     </TgModal>
   );
 }
 
 // ----------------------------------------------------------------------------
-function Card({ c, now, onOpen, onMenu, dragging }) {
+function Card({ c, now, onOpen, onMenu, dragging, multi }) {
   const stale = c.last_message_at ? Date.now() - new Date(c.last_message_at).getTime() > 3 * 86400000 : false;
   return (
     <Box
@@ -524,6 +526,7 @@ function Card({ c, now, onOpen, onMenu, dragging }) {
             </Typography>
           ) : null}
           <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+            {multi && c.session ? <WaNumberChip session={c.session} /> : null}
             {c.deal_cents ? (
               <Chip
                 size="small"
@@ -589,6 +592,8 @@ export default function WhatsAppPipeline() {
   const { user } = useAuth();
   const canAdmin = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
   const now = useNow(30000);
+  const { sessions } = useWaSessions(30000);
+  const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
   const [board, setBoard] = useState(null);
   const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -622,7 +627,7 @@ export default function WhatsAppPipeline() {
       if (!silent) setLoading(true);
       try {
         const r = await get('/whatsapp/pipeline/board', {
-          params: { q: debouncedQ || undefined, assigned: mine ? 'me' : undefined, per: 40 }
+          params: { q: debouncedQ || undefined, assigned: mine ? 'me' : undefined, session_id: sessionId || undefined, per: 40 }
         });
         if (s !== seq.current) return;
         setBoard(r);
@@ -632,7 +637,7 @@ export default function WhatsAppPipeline() {
         if (s === seq.current) setLoading(false);
       }
     },
-    [debouncedQ, mine]
+    [debouncedQ, mine, sessionId]
   );
   useEffect(() => {
     load();
@@ -647,11 +652,13 @@ export default function WhatsAppPipeline() {
       load({ silent: true });
     }, 800);
   }, [load]);
-  useRealtimeEvent('wa:chat', scheduleReload);
+  useRealtimeEvent('wa:chat', (p) => {
+    if (!sessionId || !p?.session_id || p.session_id === sessionId) scheduleReload();
+  });
   useRealtimeEvent('wa:sync', (p) => p?.kind === 'pipeline' && scheduleReload());
 
   const stages = useMemo(() => board?.columns.map((c) => c.stage) || [], [board]);
-  const openChat = (c) => navigate(`/whatsapp/chat?chat=${encodeURIComponent(c.chat_id)}`);
+  const openChat = (c) => navigate(chatUrl(c.chat_id));
 
   const moveTo = async (card, stageId) => {
     if (!card || (card.stage_id || null) === (stageId || null)) return;
@@ -766,6 +773,7 @@ export default function WhatsAppPipeline() {
           onClick={() => setMine((v) => !v)}
           sx={{ fontWeight: 700 }}
         />
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
         <Box sx={{ flex: 1 }} />
         <Tooltip title="Atualizar">
           <span>
@@ -852,6 +860,7 @@ export default function WhatsAppPipeline() {
                       onOpen={openChat}
                       onMenu={(e, card) => setCardMenu({ anchor: e.currentTarget, card })}
                       dragging={dragging}
+                      multi={multi}
                     />
                   ))}
                   {col.total > col.cards.length ? (
@@ -1045,6 +1054,8 @@ export default function WhatsAppPipeline() {
         onClose={() => setAddDlg(null)}
         stages={stages}
         defaultStage={addDlg?.stageId}
+        sessions={sessions}
+        initialSessionId={sessionId || undefined}
         onDone={() => load({ silent: true })}
       />
       <TgModal

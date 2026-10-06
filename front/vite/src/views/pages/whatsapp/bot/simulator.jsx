@@ -1,6 +1,6 @@
 // =============================================================================
 // WhatsApp — Fluxo do Bot: simulador (celular de mentira). Testa o rascunho
-// ATUAL (não salvo) via POST /whatsapp/bot/simulate — nada vai ao WhatsApp.
+// ATUAL via POST /whatsapp/bot/simulate { flow_id | definition, settings } — nada vai ao WhatsApp.
 // =============================================================================
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Button, CircularProgress, IconButton, InputBase, Stack, Tooltip, Typography } from '@mui/material';
@@ -389,8 +389,8 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
     setInput('');
     setBusy(true);
     try {
-      const { definition, settings } = getPayload();
-      const body = { definition, settings };
+      // fluxo salvo → só flow_id; rascunho alterado → definition/settings atuais (nada vai ao WhatsApp)
+      const body = { ...(getPayload() || {}) };
       if (state) body.state = state;
       if (t) body.input = t;
       if (event) body.event = event;

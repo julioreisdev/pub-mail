@@ -27,14 +27,16 @@ import {
   IconX
 } from '@tabler/icons-react';
 
-import { TgAvatar, TgCard } from 'views/pages/telegram/ui';
-import { WA_DARK, WA_GREEN, WA_GRADIENT } from '../waKit';
+import { TgAvatar, TgCard, TgStatusPill } from 'views/pages/telegram/ui';
+import { WA_DARK, WA_GREEN, WA_GRADIENT, WaNumberDot, fmtPhoneBR, sessionLabel } from '../waKit';
 import SectionTitle from './SectionTitle';
 import { agoShort, displayName } from './statusShared';
 
 // =============================================================================
-// Faixa "Status dos contatos" — avatares com anel segmentado (verde = novo,
-// cinza = visto), nome e há quanto tempo postou. Rola na horizontal.
+// Faixa "Status dos contatos" — multi-número: UM BLOCO EMPILHADO POR NÚMERO
+// (cabeçalho com a cor/nome interno/telefone + "Sincronizar" individual; com um
+// número só, sem cabeçalho extra). Em cada bloco: "Meu status" daquele número +
+// avatares com anel segmentado (verde = novo, cinza = visto). Rola na horizontal.
 // =============================================================================
 
 // ----------------------------------------------------------------------------
@@ -158,14 +160,14 @@ function StripItem({ label, sub, subStrong, onClick, children, title }) {
   );
 }
 
-function MyStatusItem({ onNew, picture, name, postedCount }) {
+function MyStatusItem({ onNew, picture, name, postedCount, color }) {
   return (
     <StripItem
       label="Meu status"
       sub={postedCount ? `${postedCount} ${postedCount === 1 ? 'publicado' : 'publicados'}` : 'Publicar'}
       subStrong={!postedCount}
       onClick={onNew}
-      title="Publicar um novo status"
+      title="Publicar um novo status por este número"
     >
       <Box sx={{ position: 'relative' }}>
         <StatusRing segments={postedCount ? Array.from({ length: Math.min(postedCount, 12) }, () => true) : []} dashed>
@@ -182,7 +184,7 @@ function MyStatusItem({ onNew, picture, name, postedCount }) {
                   color: '#fff',
                   fontWeight: 800,
                   fontSize: inner * 0.4,
-                  background: WA_GRADIENT
+                  background: color ? `linear-gradient(135deg, ${color} 0%, ${WA_DARK} 100%)` : WA_GRADIENT
                 }}
               >
                 {(name || 'E').trim().charAt(0).toUpperCase()}
@@ -198,7 +200,7 @@ function MyStatusItem({ onNew, picture, name, postedCount }) {
             width: 22,
             height: 22,
             borderRadius: '50%',
-            bgcolor: WA_GREEN,
+            bgcolor: color || WA_GREEN,
             color: '#fff',
             display: 'grid',
             placeItems: 'center',
@@ -221,7 +223,7 @@ function ContactItem({ contact, now, onOpen }) {
       label={name}
       sub={agoShort(contact.last_at, now)}
       subStrong={!contact.all_viewed}
-      onClick={() => onOpen(contact.chat_id)}
+      onClick={() => onOpen(contact.key)}
       title={`${name} · ${contact.statuses.length} ${contact.statuses.length === 1 ? 'status' : 'status'}${unseen ? ` (${unseen} ${unseen === 1 ? 'novo' : 'novos'})` : ''}`}
     >
       <StatusRing segments={contact.statuses.map((s) => s.viewed)}>
@@ -232,49 +234,11 @@ function ContactItem({ contact, now, onOpen }) {
 }
 
 // ----------------------------------------------------------------------------
-// Faixa completa
+// Rolagem horizontal com setas + esmaecimento nas bordas
 // ----------------------------------------------------------------------------
-// Conectado há menos de 24 h: parte dos status do dia é de antes da conexão e não chega.
-const recentlyConnected = (iso, now) => Boolean(iso) && (now || Date.now()) - new Date(iso).getTime() < 24 * 3600 * 1000;
-const fmtConnected = (iso) => {
-  const d = new Date(iso);
-  const hm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  return d.toDateString() === new Date().toDateString() ? `hoje às ${hm}` : `ontem às ${hm}`;
-};
-
-export default function ContactStatusStrip({
-  contacts,
-  loading,
-  syncing,
-  unavailable,
-  error,
-  syncedAt,
-  now,
-  connected,
-  onOpen,
-  onSync,
-  onReload,
-  onNew,
-  myPicture,
-  myName,
-  myPostedCount,
-  connectedSince
-}) {
-  const [q, setQ] = useState('');
+function Scroller({ children, deps = [] }) {
   const scroller = useRef(null);
   const [edges, setEdges] = useState({ left: false, right: false });
-
-  const filtered = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return contacts;
-    const digits = term.replace(/\D/g, '');
-    return contacts.filter(
-      (c) => displayName(c).toLowerCase().includes(term) || (digits.length >= 3 && String(c.phone || '').includes(digits))
-    );
-  }, [contacts, q]);
-
-  const unseenCount = useMemo(() => contacts.filter((c) => !c.all_viewed).length, [contacts]);
-  const firstSeenIdx = filtered.findIndex((c) => c.all_viewed);
 
   const measure = useCallback(() => {
     const el = scroller.current;
@@ -286,16 +250,11 @@ export default function ContactStatusStrip({
     measure();
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-  }, [measure, filtered.length, loading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measure, ...deps]);
 
   const scrollBy = (dir) =>
     scroller.current?.scrollBy({ left: dir * Math.max(240, (scroller.current?.clientWidth || 600) * 0.7), behavior: 'smooth' });
-
-  const openFromStrip = (chatId) =>
-    onOpen(
-      chatId,
-      filtered.map((c) => c.chat_id)
-    );
 
   const arrowSx = {
     position: 'absolute',
@@ -320,6 +279,220 @@ export default function ContactStatusStrip({
         : edges.right
           ? 'linear-gradient(to right, #000 calc(100% - 28px), transparent)'
           : 'none';
+
+  return (
+    <Box sx={{ position: 'relative' }}>
+      {edges.left ? (
+        <IconButton aria-label="Rolar para a esquerda" onClick={() => scrollBy(-1)} sx={{ ...arrowSx, left: -6 }}>
+          <IconChevronLeft size={18} />
+        </IconButton>
+      ) : null}
+      {edges.right ? (
+        <IconButton aria-label="Rolar para a direita" onClick={() => scrollBy(1)} sx={{ ...arrowSx, right: -6 }}>
+          <IconChevronRight size={18} />
+        </IconButton>
+      ) : null}
+      <Box
+        ref={scroller}
+        onScroll={measure}
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 0.5,
+          overflowX: 'auto',
+          overscrollBehaviorX: 'contain',
+          scrollSnapType: 'x proximity',
+          scrollbarWidth: 'none',
+          '&::-webkit-scrollbar': { display: 'none' },
+          WebkitMaskImage: mask,
+          maskImage: mask,
+          mx: -0.5
+        }}
+      >
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Bloco de UM número
+// ----------------------------------------------------------------------------
+// Conectado há menos de 24 h: parte dos status do dia é de antes da conexão e não chega.
+const recentlyConnected = (iso, now) => Boolean(iso) && (now || Date.now()) - new Date(iso).getTime() < 24 * 3600 * 1000;
+const fmtConnected = (iso) => {
+  const d = new Date(iso);
+  const hm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? `hoje às ${hm}` : `ontem às ${hm}`;
+};
+
+function NumberBlock({ block, full, q, now, showHeader, syncing, syncingId, onOpen, onSync, onNew, mine }) {
+  const { session, contacts } = block;
+  const connected = Boolean(full?.connected ?? session.connected);
+  const term = q.trim().toLowerCase();
+  const digits = term.replace(/\D/g, '');
+  const filtered = useMemo(
+    () =>
+      term
+        ? contacts.filter(
+            (c) => displayName(c).toLowerCase().includes(term) || (digits.length >= 3 && String(c.phone || '').includes(digits))
+          )
+        : contacts,
+    [contacts, term, digits]
+  );
+  const unseen = contacts.filter((c) => !c.all_viewed).length;
+  const firstSeenIdx = filtered.findIndex((c) => c.all_viewed);
+  const busy = syncingId === 'all' || syncingId === session.id;
+  const nobody = contacts.length === 0;
+  const connectedSince = connected ? full?.paired_at : null;
+
+  return (
+    <Box>
+      {showHeader ? (
+        <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5, mt: 0.5 }}>
+          <WaNumberDot session={{ ...session, connected }} size={11} />
+          <Typography sx={{ fontWeight: 800, fontSize: 14 }} noWrap>
+            {sessionLabel(session)}
+          </Typography>
+          {session.phone ? (
+            <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+              {fmtPhoneBR(session.phone)}
+            </Typography>
+          ) : null}
+          {!connected ? <TgStatusPill status="inactive" label="Não conectado" /> : null}
+          {unseen ? (
+            <Chip
+              size="small"
+              label={`${unseen} ${unseen === 1 ? 'novo' : 'novos'}`}
+              sx={{ height: 20, fontSize: 11, fontWeight: 800, color: '#fff', bgcolor: session.color || WA_GREEN }}
+            />
+          ) : null}
+          <Box sx={{ flex: 1 }} />
+          <Tooltip title={connected ? 'Buscar status novos deste número no WhatsApp' : 'Número não conectado'}>
+            <span>
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => onSync(session.id)}
+                disabled={syncing || !connected}
+                startIcon={busy ? <CircularProgress size={13} color="inherit" /> : <IconRefresh size={15} />}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2, color: 'text.secondary', minWidth: 0 }}
+              >
+                {busy ? 'Sincronizando…' : 'Sincronizar'}
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
+      ) : null}
+      {recentlyConnected(connectedSince, now) ? (
+        <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 0.75 }}>
+          Número conectado {fmtConnected(connectedSince)}: status publicados antes disso não são repassados ao Pub Mail. Os novos aparecem
+          aqui assim que forem postados.
+        </Typography>
+      ) : null}
+      <Scroller deps={[filtered.length]}>
+        {onNew ? (
+          <MyStatusItem
+            onNew={() => onNew(session.id)}
+            picture={mine?.picture || null}
+            name={mine?.name || full?.push_name || sessionLabel(session)}
+            postedCount={mine?.postedCount || 0}
+            color={session.color}
+          />
+        ) : null}
+        {onNew && filtered.length ? (
+          <Box sx={{ width: '1px', alignSelf: 'stretch', my: 2, mx: 0.75, bgcolor: 'divider', flexShrink: 0 }} />
+        ) : null}
+        {filtered.map((c, i) => (
+          <Box key={c.key} sx={{ display: 'flex', alignItems: 'flex-start', flexShrink: 0 }}>
+            {i > 0 && i === firstSeenIdx ? (
+              <Tooltip title="Daqui em diante: já vistos">
+                <Box sx={{ alignSelf: 'stretch', display: 'flex', alignItems: 'center', px: 0.75 }}>
+                  <Box sx={{ color: 'text.disabled', display: 'grid', placeItems: 'center' }}>
+                    <IconEyeCheck size={16} />
+                  </Box>
+                </Box>
+              </Tooltip>
+            ) : null}
+            <ContactItem
+              contact={c}
+              now={now}
+              onOpen={(key) =>
+                onOpen(
+                  key,
+                  filtered.map((x) => x.key)
+                )
+              }
+            />
+          </Box>
+        ))}
+        {nobody || !filtered.length ? (
+          <Box sx={{ flex: 1, minWidth: 220, alignSelf: 'center', px: 1.5, py: 1 }}>
+            {nobody ? (
+              <>
+                <Typography sx={{ fontWeight: 700 }}>
+                  {showHeader ? 'Nenhum status neste número nas últimas 24 horas' : 'Nenhum contato publicou status nas últimas 24 horas'}
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
+                  {connected
+                    ? 'Quando alguém da agenda deste número publicar, o status aparece aqui na hora.'
+                    : 'Conecte o número para receber os status dos contatos.'}
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  onClick={() => onSync(session.id)}
+                  disabled={syncing || !connected}
+                  startIcon={busy ? <CircularProgress size={14} color="inherit" /> : <IconRefresh size={16} />}
+                  sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
+                >
+                  Buscar no WhatsApp
+                </Button>
+              </>
+            ) : (
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                Nenhum contato encontrado para “{q.trim()}”.
+              </Typography>
+            )}
+          </Box>
+        ) : null}
+      </Scroller>
+    </Box>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Faixa completa
+// ----------------------------------------------------------------------------
+/**
+ * blocks       : [{ session, contacts }] (já sem vencidos e ordenados)
+ * sessionsById : Map id → sessão completa (useWaSessions) — conexão ao vivo, `paired_at`, `push_name`
+ * mine         : Map session_id → { picture, name, postedCount } (o "Meu status" de cada número)
+ * onSync(id?)  : sincroniza um número (id) ou todos (undefined); onNew(id?) abre o composer já no número
+ * onOpen(key, queue) : abre o visualizador (chave = `session_id:jid`)
+ */
+export default function ContactStatusStrip({
+  blocks,
+  sessionsById,
+  loading,
+  syncing,
+  syncingId,
+  unavailable,
+  error,
+  syncedAt,
+  now,
+  connected,
+  onOpen,
+  onSync,
+  onReload,
+  onNew,
+  mine
+}) {
+  const [q, setQ] = useState('');
+  const contactsCount = useMemo(() => blocks.reduce((n, b) => n + b.contacts.length, 0), [blocks]);
+  const unseenCount = useMemo(() => blocks.reduce((n, b) => n + b.contacts.filter((c) => !c.all_viewed).length, 0), [blocks]);
+  const many = blocks.length > 1;
 
   // ---------- corpo ----------
   let body;
@@ -370,7 +543,7 @@ export default function ContactStatusStrip({
         </Button>
       </Stack>
     );
-  } else if (error && !contacts.length) {
+  } else if (error && !contactsCount) {
     body = (
       <Alert
         severity="warning"
@@ -384,86 +557,32 @@ export default function ContactStatusStrip({
         {error}
       </Alert>
     );
-  } else {
-    const nobody = contacts.length === 0;
+  } else if (!blocks.length) {
     body = (
-      <Box sx={{ position: 'relative' }}>
-        {edges.left ? (
-          <IconButton aria-label="Rolar para a esquerda" onClick={() => scrollBy(-1)} sx={{ ...arrowSx, left: -6 }}>
-            <IconChevronLeft size={18} />
-          </IconButton>
-        ) : null}
-        {edges.right ? (
-          <IconButton aria-label="Rolar para a direita" onClick={() => scrollBy(1)} sx={{ ...arrowSx, right: -6 }}>
-            <IconChevronRight size={18} />
-          </IconButton>
-        ) : null}
-        <Box
-          ref={scroller}
-          onScroll={measure}
-          sx={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 0.5,
-            overflowX: 'auto',
-            overscrollBehaviorX: 'contain',
-            scrollSnapType: 'x proximity',
-            scrollbarWidth: 'none',
-            '&::-webkit-scrollbar': { display: 'none' },
-            WebkitMaskImage: mask,
-            maskImage: mask,
-            mx: -0.5
-          }}
-        >
-          {onNew ? <MyStatusItem onNew={onNew} picture={myPicture} name={myName} postedCount={myPostedCount} /> : null}
-          {onNew && filtered.length ? (
-            <Box sx={{ width: '1px', alignSelf: 'stretch', my: 2, mx: 0.75, bgcolor: 'divider', flexShrink: 0 }} />
-          ) : null}
-          {filtered.map((c, i) => (
-            <Box key={c.chat_id} sx={{ display: 'flex', alignItems: 'flex-start', flexShrink: 0 }}>
-              {i > 0 && i === firstSeenIdx ? (
-                <Tooltip title="Daqui em diante: já vistos">
-                  <Box sx={{ alignSelf: 'stretch', display: 'flex', alignItems: 'center', px: 0.75 }}>
-                    <Box sx={{ color: 'text.disabled', display: 'grid', placeItems: 'center' }}>
-                      <IconEyeCheck size={16} />
-                    </Box>
-                  </Box>
-                </Tooltip>
-              ) : null}
-              <ContactItem contact={c} now={now} onOpen={openFromStrip} />
-            </Box>
-          ))}
-          {nobody || !filtered.length ? (
-            <Box sx={{ flex: 1, minWidth: 220, alignSelf: 'center', px: 1.5, py: 1 }}>
-              {nobody ? (
-                <>
-                  <Typography sx={{ fontWeight: 700 }}>Nenhum contato publicou status nas últimas 24 horas</Typography>
-                  <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
-                    {connected
-                      ? 'Quando alguém da sua agenda publicar, o status aparece aqui na hora.'
-                      : 'Conecte o WhatsApp para receber os status dos seus contatos.'}
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="inherit"
-                    onClick={onSync}
-                    disabled={syncing || !connected}
-                    startIcon={syncing ? <CircularProgress size={14} color="inherit" /> : <IconRefresh size={16} />}
-                    sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 2 }}
-                  >
-                    Buscar no WhatsApp
-                  </Button>
-                </>
-              ) : (
-                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                  Nenhum contato encontrado para “{q.trim()}”.
-                </Typography>
-              )}
-            </Box>
-          ) : null}
-        </Box>
-      </Box>
+      <Typography variant="body2" sx={{ color: 'text.secondary', py: 1 }}>
+        Nenhum número do WhatsApp cadastrado. Conecte um número nas Configurações para ver os status dos contatos.
+      </Typography>
+    );
+  } else {
+    body = (
+      <Stack spacing={many ? 1.25 : 0} divider={many ? <Box sx={{ borderTop: '1px dashed', borderColor: 'divider' }} /> : null}>
+        {blocks.map((b) => (
+          <NumberBlock
+            key={b.session.id}
+            block={b}
+            full={sessionsById?.get(b.session.id) || null}
+            q={q}
+            now={now}
+            showHeader={many}
+            syncing={syncing}
+            syncingId={syncingId}
+            onOpen={onOpen}
+            onSync={onSync}
+            onNew={onNew}
+            mine={mine?.get?.(b.session.id) || null}
+          />
+        ))}
+      </Stack>
     );
   }
 
@@ -473,7 +592,7 @@ export default function ContactStatusStrip({
         <SectionTitle
           icon={IconUsers}
           title="Status dos contatos"
-          caption={`Últimas 24 h${syncedAt ? ` · atualizado ${agoShort(syncedAt, now)}` : ''}`}
+          caption={`Últimas 24 h${many ? ` · ${blocks.length} números` : ''}${syncedAt ? ` · atualizado ${agoShort(syncedAt, now)}` : ''}`}
           extra={
             unseenCount ? (
               <Chip
@@ -484,10 +603,10 @@ export default function ContactStatusStrip({
             ) : null
           }
           action={
-            <Tooltip title={connected ? 'Buscar status novos no WhatsApp' : 'Conecte o WhatsApp para buscar'}>
+            <Tooltip title={connected ? 'Buscar status novos em todos os números conectados' : 'Conecte um número para buscar'}>
               <span>
                 <IconButton
-                  onClick={onSync}
+                  onClick={() => onSync()}
                   disabled={syncing || unavailable || !connected}
                   sx={{ display: { sm: 'none' }, color: WA_DARK }}
                   aria-label="Atualizar status"
@@ -499,7 +618,7 @@ export default function ContactStatusStrip({
           }
           sx={{ flex: 1 }}
         />
-        {!unavailable && contacts.length > 0 ? (
+        {!unavailable && contactsCount > 0 ? (
           <TextField
             size="small"
             placeholder="Buscar contato"
@@ -524,14 +643,22 @@ export default function ContactStatusStrip({
             }}
           />
         ) : null}
-        <Tooltip title={connected ? 'Buscar status novos no WhatsApp' : 'Conecte o WhatsApp para buscar'}>
+        <Tooltip
+          title={
+            connected
+              ? many
+                ? 'Buscar status novos em todos os números conectados'
+                : 'Buscar status novos no WhatsApp'
+              : 'Conecte um número para buscar'
+          }
+        >
           <span>
             <Button
               variant="outlined"
               color="inherit"
-              onClick={onSync}
+              onClick={() => onSync()}
               disabled={syncing || unavailable || !connected}
-              startIcon={syncing ? <CircularProgress size={14} color="inherit" /> : <IconRefresh size={17} />}
+              startIcon={syncingId === 'all' ? <CircularProgress size={14} color="inherit" /> : <IconRefresh size={17} />}
               sx={{
                 display: { xs: 'none', sm: 'inline-flex' },
                 textTransform: 'none',
@@ -540,17 +667,11 @@ export default function ContactStatusStrip({
                 borderColor: 'divider'
               }}
             >
-              {syncing ? 'Atualizando…' : 'Atualizar'}
+              {syncingId === 'all' ? 'Atualizando…' : many ? 'Atualizar todos' : 'Atualizar'}
             </Button>
           </span>
         </Tooltip>
       </Stack>
-      {recentlyConnected(connectedSince, now) ? (
-        <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1.25 }}>
-          Número conectado {fmtConnected(connectedSince)}: status publicados antes disso não são repassados ao Pub Mail. Os novos aparecem
-          aqui assim que forem postados.
-        </Typography>
-      ) : null}
       {body}
     </TgCard>
   );

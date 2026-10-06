@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import { useSearchParams } from 'react-router-dom';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -41,13 +42,17 @@ import {
   IconCircleCheck,
   IconRefreshDot,
   IconDatabase,
-  IconUserCircle
+  IconUserCircle,
+  IconPlus,
+  IconTag,
+  IconRobot,
+  IconDotsVertical
 } from '@tabler/icons-react';
 
 import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
-import { TgCard, TgStatusPill, TgModal, TgConfirmDialog } from 'views/pages/telegram/ui';
-import { WaPageHeader } from './waKit';
+import { TgCard, TgStatusPill, TgModal, TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
+import { WaPageHeader, WaNumberDot, SESSION_STATUS_UI, fmtPhoneBR, sessionLabel, useWaSessions } from './waKit';
 import { useRealtimeEvent } from 'realtime/useRealtime';
 import AttendanceCard from './settings/AttendanceCard';
 import TagsCard from './settings/TagsCard';
@@ -56,51 +61,182 @@ import DiagnosticsCard from './settings/DiagnosticsCard';
 import { SettingsCardHeader, cardSx } from './settings/settingsKit';
 
 // ============================================================================
-// WhatsApp → Configurações: sessão da organização (1 por org) via OpenWA.
-// Conectar (QR / código), status ao vivo, perfil, teste, motor, sincronização,
-// atendimento, etiquetas, respostas rápidas, diagnóstico (cards em ./settings/),
-// aquecimento, atividade. Estado ao vivo pelo WebSocket (wa:session / wa:sync);
-// polling de reserva: 3 s enquanto conecta/aguarda QR; 15 s quando conectado.
+// WhatsApp → Configurações (MULTI-NÚMERO): uma aba por número + "Novo número".
+// Dentro da aba: identificação (nome interno, cor, fluxo do bot), conexão (QR / código),
+// perfil, motor, sincronização, aquecimento, diagnóstico, atividade, dados do número.
+// Abaixo das abas, o que é da ORGANIZAÇÃO: atendimento, etiquetas, respostas rápidas, dados.
+// Estado ao vivo pelo WebSocket (wa:session / wa:sessions / wa:sync); polling de reserva.
 // ============================================================================
 
 const WA_GREEN = '#25D366';
 const WA_DARK = '#128C7E';
 const pulse = keyframes`0%{box-shadow:0 0 0 0 rgba(37,211,102,.45)}70%{box-shadow:0 0 0 14px rgba(37,211,102,0)}100%{box-shadow:0 0 0 0 rgba(37,211,102,0)}`;
-
-const STATUS_UI = {
-  none: { pill: 'inactive', label: 'Não conectado' },
-  created: { pill: 'pending', label: 'Preparando…' },
-  initializing: { pill: 'pending', label: 'Iniciando…' },
-  qr_ready: { pill: 'pending', label: 'Aguardando leitura do QR' },
-  authenticating: { pill: 'pending', label: 'Autenticando…' },
-  ready: { pill: 'active', label: 'Conectado' },
-  disconnected: { pill: 'error', label: 'Desconectado' },
-  action_required: { pill: 'flood', label: 'Ação necessária' },
-  failed: { pill: 'error', label: 'Falhou' }
-};
+const STATUS_UI = SESSION_STATUS_UI;
+const COLORS = ['#25D366', '#3B82F6', '#8B5CF6', '#F59E0B', '#EC4899', '#14B8A6', '#EF4444', '#6366F1', '#84CC16', '#F97316'];
 
 const WARMUP = [20, 40, 80, 160, 320, 640, 1000];
 const COLD = [5, 10, 20, 40, 60, 80, 100];
 
-const fmtPhone = (p) => {
-  const d = String(p || '').replace(/\D/g, '');
-  if (!d) return '';
-  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) {
-    const ddd = d.slice(2, 4);
-    const rest = d.slice(4);
-    return `+55 (${ddd}) ${rest.length === 9 ? `${rest.slice(0, 5)}-${rest.slice(5)}` : `${rest.slice(0, 4)}-${rest.slice(4)}`}`;
-  }
-  return `+${d}`;
-};
+const fmtPhone = fmtPhoneBR;
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 const errMsg = (e, fb) => e?.response?.data?.message || e?.message || fb;
+const api = (id, path = '') => `/whatsapp/sessions/${id}${path}`;
+
+// ---------------------------------------------------------------- abas dos números
+function NumberTab({ session, selected, onClick }) {
+  const st = session?.status || 'none';
+  const ui = STATUS_UI[st] || STATUS_UI.none;
+  const color = session?.color || WA_GREEN;
+  return (
+    <ButtonBase
+      onClick={onClick}
+      sx={{
+        px: 1.5,
+        py: 1,
+        borderRadius: 2.5,
+        border: '1.5px solid',
+        borderColor: selected ? color : 'divider',
+        bgcolor: selected ? `${color}18` : 'background.paper',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1,
+        minWidth: 0,
+        maxWidth: 260,
+        flexShrink: 0,
+        textAlign: 'left',
+        transition: 'border-color .15s, background-color .15s'
+      }}
+    >
+      <WaNumberDot session={session} size={11} />
+      <Box sx={{ minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.2 }} noWrap>
+          {sessionLabel(session)}
+        </Typography>
+        <Typography
+          variant="caption"
+          sx={{ color: st === 'ready' ? 'success.main' : 'text.secondary', display: 'block', lineHeight: 1.2 }}
+          noWrap
+        >
+          {st === 'ready' && session?.phone ? fmtPhone(session.phone) : ui.label}
+        </Typography>
+      </Box>
+    </ButtonBase>
+  );
+}
+
+// ---------------------------------------------------------------- identificação (nome interno, cor, bot)
+function IdentityCard({ session, canEdit, flows, onSave, onRemove }) {
+  const [label, setLabel] = useState(session?.label || '');
+  const [color, setColor] = useState(session?.color || COLORS[0]);
+  const [flow, setFlow] = useState(session?.bot_flow_id || '');
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setLabel(session?.label || '');
+    setColor(session?.color || COLORS[0]);
+    setFlow(session?.bot_flow_id || '');
+  }, [session?.id, session?.label, session?.color, session?.bot_flow_id]);
+  const dirty =
+    label !== (session?.label || '') || color !== (session?.color || COLORS[0]) || (flow || '') !== (session?.bot_flow_id || '');
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave({ label: label.trim(), color, bot_flow_id: flow || null });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <TgCard hover={false} sx={cardSx}>
+      <SettingsCardHeader
+        icon={IconTag}
+        title="Identificação do número"
+        subtitle="Como este número aparece no Pub Mail (chat, agendamentos, campanhas)."
+        action={
+          canEdit ? (
+            <Tooltip title="Apagar este número e tudo que veio dele">
+              <IconButton size="small" color="error" onClick={onRemove}>
+                <IconTrash size={18} />
+              </IconButton>
+            </Tooltip>
+          ) : null
+        }
+      />
+      <Stack spacing={1.75}>
+        <TextField
+          label="Nome interno"
+          placeholder="Ex.: Vendas, Suporte, Loja Centro"
+          value={label}
+          onChange={(e) => setLabel(e.target.value.slice(0, 80))}
+          size="small"
+          fullWidth
+          disabled={!canEdit}
+          helperText="Só a sua equipe vê. O cliente continua vendo o nome do perfil do WhatsApp."
+        />
+        <Box>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75 }}>
+            Cor de identificação
+          </Typography>
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+            {COLORS.map((c) => (
+              <ButtonBase
+                key={c}
+                disabled={!canEdit}
+                onClick={() => setColor(c)}
+                aria-label={c}
+                sx={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: '50%',
+                  bgcolor: c,
+                  border: '2px solid',
+                  borderColor: color === c ? 'text.primary' : 'transparent',
+                  boxShadow: color === c ? `0 0 0 2px ${c}66` : 'none'
+                }}
+              />
+            ))}
+          </Stack>
+        </Box>
+        <TextField
+          select
+          size="small"
+          label="Fluxo do bot neste número"
+          value={flow}
+          onChange={(e) => setFlow(e.target.value)}
+          disabled={!canEdit}
+          fullWidth
+          helperText={flows?.length ? 'O mesmo fluxo pode ser usado por vários números.' : 'Crie um fluxo em WhatsApp → Fluxo do Bot.'}
+          InputProps={{ startAdornment: <IconRobot size={16} style={{ marginRight: 8, opacity: 0.7 }} /> }}
+        >
+          <MenuItem value="">Sem bot neste número</MenuItem>
+          {(flows || []).map((f) => (
+            <MenuItem key={f.id} value={f.id}>
+              {f.name}
+              {f.active ? '' : ' (desligado)'}
+            </MenuItem>
+          ))}
+        </TextField>
+        <Button
+          variant="contained"
+          disableElevation
+          onClick={save}
+          disabled={!canEdit || !dirty || saving}
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <IconCheck size={18} />}
+          sx={{ alignSelf: 'flex-start', fontWeight: 700, borderRadius: 2 }}
+        >
+          Salvar
+        </Button>
+      </Stack>
+    </TgCard>
+  );
+}
 
 // ---------------------------------------------------------------- QR / conexão
-function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPairing, onReconnect }) {
+function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTest, onPairing, onReconnect }) {
   const st = session?.status || 'none';
   const ui = STATUS_UI[st] || STATUS_UI.none;
   const restricted = Boolean(session?.restricted_at);
   const connecting = ['created', 'initializing', 'authenticating'].includes(st);
+  const color = session?.color || WA_GREEN;
 
   return (
     <TgCard hover={false} sx={cardSx}>
@@ -114,7 +250,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
             placeItems: 'center',
             color: '#fff',
             flexShrink: 0,
-            background: `linear-gradient(135deg, ${WA_GREEN}, ${WA_DARK})`,
+            background: `linear-gradient(135deg, ${color}, ${WA_DARK})`,
             animation: st === 'ready' ? `${pulse} 2.4s ease-out infinite` : 'none'
           }}
         >
@@ -122,8 +258,8 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
         </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography sx={{ fontWeight: 800, fontSize: 17, lineHeight: 1.2 }}>Conexão</Typography>
-          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
-            Um número por organização
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
+            {sessionLabel(session)}
           </Typography>
         </Box>
         {restricted ? <TgStatusPill status="banned" label="Restrito pelo WhatsApp" /> : <TgStatusPill status={ui.pill} label={ui.label} />}
@@ -141,32 +277,34 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
         </Alert>
       ) : null}
 
-      {/* ---------- não conectado ---------- */}
       {st === 'none' && (
         <Stack spacing={2}>
           <Typography sx={{ color: 'text.secondary' }}>
-            Conecte o WhatsApp da sua organização para usar chat, status, contatos e broadcasts a partir do Pub Mail.
+            Conecte este número para usar chat, status, contatos, agendamentos e campanhas a partir do Pub Mail.
           </Typography>
           <Alert severity="info" icon={<IconAlertTriangle size={20} />}>
             Use um <strong>número dedicado</strong>, não o seu pessoal. O WhatsApp pode restringir números que automatizam mensagens, e
             nesse caso o Pub Mail não tem como reverter.
           </Alert>
-          <Button
-            size="large"
-            variant="contained"
-            disableElevation
-            disabled={busy || session?.configured === false}
-            onClick={onConnect}
-            startIcon={busy ? <CircularProgress size={18} color="inherit" /> : <IconPlugConnected size={20} />}
-            sx={{ alignSelf: 'flex-start', fontWeight: 700, borderRadius: 2.5, px: 3, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
-          >
-            Conectar WhatsApp
-          </Button>
+          <Tooltip title={canEdit ? '' : 'Só dono ou admin da organização'}>
+            <span>
+              <Button
+                size="large"
+                variant="contained"
+                disableElevation
+                disabled={busy || !canEdit || session?.configured === false}
+                onClick={onConnect}
+                startIcon={busy ? <CircularProgress size={18} color="inherit" /> : <IconPlugConnected size={20} />}
+                sx={{ fontWeight: 700, borderRadius: 2.5, px: 3, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
+              >
+                Conectar WhatsApp
+              </Button>
+            </span>
+          </Tooltip>
           {session?.configured === false ? <Alert severity="error">Gateway WhatsApp não configurado no servidor.</Alert> : null}
         </Stack>
       )}
 
-      {/* ---------- conectando ---------- */}
       {connecting && (
         <Stack alignItems="center" spacing={1.5} sx={{ py: 5 }}>
           <CircularProgress size={34} sx={{ color: WA_GREEN }} />
@@ -177,7 +315,6 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
         </Stack>
       )}
 
-      {/* ---------- QR ---------- */}
       {st === 'qr_ready' && (
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={3} alignItems={{ xs: 'center', md: 'flex-start' }}>
           <Box
@@ -237,7 +374,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
                 variant="outlined"
                 startIcon={<IconDeviceMobile size={16} />}
                 onClick={onPairing}
-                disabled={busy}
+                disabled={busy || !canEdit}
                 sx={{ fontWeight: 700 }}
               >
                 Conectar pelo número
@@ -247,7 +384,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
                 variant="text"
                 startIcon={<IconRefresh size={16} />}
                 onClick={onReconnect}
-                disabled={busy}
+                disabled={busy || !canEdit}
                 sx={{ fontWeight: 600 }}
               >
                 Gerar novo QR
@@ -258,7 +395,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
                 color="error"
                 startIcon={<IconPlugConnectedX size={16} />}
                 onClick={onLogout}
-                disabled={busy}
+                disabled={busy || !canEdit}
                 sx={{ fontWeight: 600 }}
               >
                 Cancelar
@@ -268,7 +405,6 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
         </Stack>
       )}
 
-      {/* ---------- conectado ---------- */}
       {st === 'ready' && (
         <Stack spacing={2}>
           <Stack direction="row" spacing={2} alignItems="center">
@@ -280,7 +416,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
                 display: 'grid',
                 placeItems: 'center',
                 color: '#fff',
-                background: `linear-gradient(135deg, ${WA_GREEN}, ${WA_DARK})`,
+                background: `linear-gradient(135deg, ${color}, ${WA_DARK})`,
                 flexShrink: 0
               }}
             >
@@ -327,20 +463,18 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
               color="error"
               startIcon={<IconPlugConnectedX size={18} />}
               onClick={onLogout}
-              disabled={busy}
+              disabled={busy || !canEdit}
               sx={{ fontWeight: 700, borderRadius: 2 }}
             >
               Desconectar / trocar número
             </Button>
           </Stack>
           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-            A mensagem de teste é enviada para o próprio número conectado. Para trazer conversas e contatos de novo, use Sincronizar agora,
-            logo abaixo.
+            A mensagem de teste é enviada para o próprio número conectado. Para trazer conversas e contatos de novo, use Sincronizar agora.
           </Typography>
         </Stack>
       )}
 
-      {/* ---------- caiu ---------- */}
       {(st === 'disconnected' || st === 'failed' || st === 'action_required') && (
         <Stack spacing={2}>
           <Alert severity={st === 'action_required' ? 'warning' : 'error'}>
@@ -354,7 +488,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
               disableElevation
               startIcon={<IconRefresh size={18} />}
               onClick={onReconnect}
-              disabled={busy}
+              disabled={busy || !canEdit}
               sx={{ fontWeight: 700, borderRadius: 2 }}
             >
               Reconectar
@@ -364,7 +498,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
               color="error"
               startIcon={<IconPlugConnectedX size={18} />}
               onClick={onLogout}
-              disabled={busy}
+              disabled={busy || !canEdit}
               sx={{ fontWeight: 700, borderRadius: 2 }}
             >
               Desconectar / trocar número
@@ -376,10 +510,7 @@ function ConnectionCard({ session, qr, busy, onConnect, onLogout, onTest, onPair
   );
 }
 
-// ---------------------------------------------------------------- perfil
-// ----------------------------------------------------------------------------
-// Motor de conexão (whatsapp-web.js ↔ direto/Baileys)
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------- motor
 const ENGINE_UI = {
   baileys: {
     label: 'Direto (recomendado)',
@@ -390,11 +521,7 @@ const ENGINE_UI = {
       'Leve: conecta e reconecta mais rápido'
     ]
   },
-  wwjs: {
-    label: 'WhatsApp Web (antigo)',
-    pill: 'flood',
-    points: ['Não baixa as mídias que os clientes enviam', 'Mais pesado no servidor']
-  }
+  wwjs: { label: 'WhatsApp Web (antigo)', pill: 'flood', points: ['Não baixa as mídias que os clientes enviam', 'Mais pesado no servidor'] }
 };
 
 function EngineCard({ session, canEdit, busy, onMigrate }) {
@@ -407,16 +534,14 @@ function EngineCard({ session, canEdit, busy, onMigrate }) {
       <Box sx={{ mb: 1.5 }}>
         {engine ? <TgStatusPill status={ui.pill} label={`Em uso: ${ui.label}`} /> : <Chip size="small" label="Definido ao conectar" />}
       </Box>
-
       {engine === 'wwjs' && session?.engine_upgrade ? (
         <Alert severity="warning" icon={<IconAlertTriangle size={20} />} sx={{ mb: 1.5 }}>
-          Este motor <strong>não consegue baixar as mídias</strong> que os seus clientes enviam (limitação do WhatsApp Web desde julho de
-          2026). Migre para o motor direto: você escaneia um QR Code novo com o mesmo celular e nada do Pub Mail se perde.
+          Este motor <strong>não consegue baixar as mídias</strong> que os seus clientes enviam. Migre para o motor direto: você escaneia um
+          QR Code novo com o mesmo celular e nada do Pub Mail se perde.
         </Alert>
       ) : null}
-
       <Stack spacing={0.75} sx={{ mb: engine === 'wwjs' ? 2 : 0 }}>
-        {(ENGINE_UI[engine || def] || ENGINE_UI.baileys).points.map((t) => (
+        {ui.points.map((t) => (
           <Stack key={t} direction="row" spacing={1} alignItems="center">
             {engine === 'wwjs' ? (
               <IconAlertTriangle size={16} style={{ color: '#f59e0b', flexShrink: 0 }} />
@@ -432,7 +557,6 @@ function EngineCard({ session, canEdit, busy, onMigrate }) {
           </Typography>
         ) : null}
       </Stack>
-
       {engine && session?.engine_upgrade ? (
         <Tooltip title={canEdit ? '' : 'Só dono ou admin da organização'}>
           <span>
@@ -453,9 +577,7 @@ function EngineCard({ session, canEdit, busy, onMigrate }) {
   );
 }
 
-// ----------------------------------------------------------------------------
-// Sincronização com o celular (progresso ao vivo)
-// ----------------------------------------------------------------------------
+// ---------------------------------------------------------------- sincronização
 const SYNC_STEPS = [
   { id: 'chats', label: 'Conversas' },
   { id: 'contacts', label: 'Contatos' },
@@ -481,7 +603,7 @@ function SyncCard({ session, connected, onSync }) {
       <SettingsCardHeader
         icon={IconRefreshDot}
         title="Sincronização com o celular"
-        subtitle="Conversas, contatos e mensagens recentes"
+        subtitle="Conversas, contatos e mensagens recentes deste número"
         stackAction
         action={
           <Button
@@ -496,9 +618,7 @@ function SyncCard({ session, connected, onSync }) {
           </Button>
         }
       />
-
       {running ? <LinearProgress sx={{ mb: 1.5, borderRadius: 1, '& .MuiLinearProgress-bar': { bgcolor: WA_GREEN } }} /> : null}
-
       <Box
         sx={{
           display: 'grid',
@@ -538,7 +658,6 @@ function SyncCard({ session, connected, onSync }) {
           );
         })}
       </Box>
-
       {sync?.phase === 'error' ? (
         <Alert severity="error" sx={{ py: 0.25 }}>
           A última sincronização falhou: {sync.error || 'erro desconhecido'}
@@ -560,7 +679,8 @@ function SyncCard({ session, connected, onSync }) {
   );
 }
 
-function ProfileCard({ enabled, canEdit }) {
+// ---------------------------------------------------------------- perfil
+function ProfileCard({ sessionId, enabled, canEdit }) {
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ name: '', status: '' });
@@ -569,10 +689,10 @@ function ProfileCard({ enabled, canEdit }) {
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
-    if (!enabled) return;
+    if (!enabled || !sessionId) return;
     setLoading(true);
     try {
-      const p = await get('/whatsapp/profile');
+      const p = await get(api(sessionId, '/profile'));
       setProfile(p);
       setForm({ name: p?.name || '', status: p?.status || '' });
     } catch {
@@ -580,21 +700,20 @@ function ProfileCard({ enabled, canEdit }) {
     } finally {
       setLoading(false);
     }
-  }, [enabled]);
-
+  }, [enabled, sessionId]);
   useEffect(() => {
+    setProfile(null);
     load();
   }, [load]);
 
   const dirty = profile && (form.name !== (profile.name || '') || form.status !== (profile.status || ''));
-
   const save = async () => {
     setSaving(true);
     try {
       const body = {};
       if (form.name !== (profile?.name || '')) body.name = form.name.trim();
       if (form.status !== (profile?.status || '')) body.status = form.status;
-      const p = await put('/whatsapp/profile', body);
+      const p = await put(api(sessionId, '/profile'), body);
       setProfile(p);
       setForm({ name: p?.name || '', status: p?.status || '' });
       toast.success('Perfil atualizado no WhatsApp.');
@@ -604,14 +723,13 @@ function ProfileCard({ enabled, canEdit }) {
       setSaving(false);
     }
   };
-
   const upload = async (file) => {
     if (!file) return;
     setUploading(true);
     try {
       const fd = new FormData();
       fd.append('file', file);
-      await put('/whatsapp/profile/picture', fd, { headers: { 'Content-Type': undefined } });
+      await put(api(sessionId, '/profile/picture'), fd, { headers: { 'Content-Type': undefined } });
       toast.success('Foto de perfil atualizada.');
       await load();
     } catch (e) {
@@ -621,11 +739,10 @@ function ProfileCard({ enabled, canEdit }) {
       if (fileRef.current) fileRef.current.value = '';
     }
   };
-
   const removePicture = async () => {
     setUploading(true);
     try {
-      await remove('/whatsapp/profile/picture');
+      await remove(api(sessionId, '/profile/picture'));
       toast.success('Foto removida.');
       await load();
     } catch (e) {
@@ -637,7 +754,6 @@ function ProfileCard({ enabled, canEdit }) {
 
   const picture = profile?.picture || null;
   const initial = (form.name || profile?.name || 'W').trim().charAt(0).toUpperCase();
-
   return (
     <TgCard hover={false} sx={cardSx}>
       <SettingsCardHeader
@@ -718,7 +834,6 @@ function ProfileCard({ enabled, canEdit }) {
             ) : null}
           </Box>
         </Stack>
-
         <Stack spacing={1.75}>
           <TextField
             label="Nome de exibição"
@@ -770,7 +885,7 @@ function WarmupCard({ session, canEdit, onToggle }) {
       <SettingsCardHeader
         icon={IconFlame}
         title="Aquecimento e limites de envio"
-        subtitle="Imita o uso humano nos primeiros dias para reduzir o risco de restrição."
+        subtitle="Imita o uso humano nos primeiros dias para reduzir o risco de restrição (por número)."
         action={
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="caption" sx={{ fontWeight: 700, color: on ? 'success.main' : 'text.secondary' }}>
@@ -836,9 +951,9 @@ const EVENT_LABEL = {
   'session.restriction': 'Restrição do WhatsApp',
   'local.logout': 'Desconectado pelo usuário',
   'local.purge': 'Dados do número apagados',
-  'local.switch_engine': 'Motor de conexão trocado'
+  'local.switch_engine': 'Motor de conexão trocado',
+  'local.create': 'Número criado'
 };
-// Agrupa eventos iguais consecutivos (o QR renova a cada ~40 s e encheria a lista).
 function groupEvents(events) {
   const out = [];
   for (const ev of events || []) {
@@ -853,7 +968,7 @@ function groupEvents(events) {
 function ActivityCard({ events }) {
   return (
     <TgCard hover={false} sx={cardSx}>
-      <SettingsCardHeader icon={IconHistory} title="Atividade da sessão" subtitle="Conexões, quedas e ações feitas nesta tela" />
+      <SettingsCardHeader icon={IconHistory} title="Atividade do número" subtitle="Conexões, quedas e ações feitas nesta tela" />
       {!events?.length ? (
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
           Nenhum evento ainda.
@@ -883,8 +998,7 @@ function ActivityCard({ events }) {
   );
 }
 
-// ============================================================================
-// ---------------------------------------------------------------- dados do número
+// ---------------------------------------------------------------- dados (do número / da org)
 const fmtBytes = (b) => {
   const n = Number(b) || 0;
   if (n < 1024 * 1024) return `${Math.max(0, Math.round(n / 1024))} KB`;
@@ -893,7 +1007,6 @@ const fmtBytes = (b) => {
 };
 const num = (v) => (Number(v) || 0).toLocaleString('pt-BR');
 
-// O que a limpeza apaga, na ordem em que aparece (só as linhas com algo guardado).
 const PURGE_ROWS = [
   { key: 'chats', label: 'Conversas' },
   { key: 'messages', label: 'Mensagens' },
@@ -905,21 +1018,20 @@ const PURGE_ROWS = [
   { key: 'service_events', label: 'Histórico de atendimento' },
   { key: 'filters', label: 'Filtros de conversa' }
 ];
-function purgeValues(sum, keepContacts) {
+function purgeValues(sum, keepContacts, perNumber) {
   if (!sum) return {};
   return {
     chats: num(sum.chats),
     messages: num(sum.messages),
     media: sum.media_files ? `${num(sum.media_files)} · ${fmtBytes(sum.media_bytes)}` : '0',
-    contacts: num(Math.max(0, (sum.contacts || 0) - (keepContacts ? sum.contacts_keepable || 0 : 0))),
+    contacts: perNumber ? '0' : num(Math.max(0, (sum.contacts || 0) - (keepContacts ? sum.contacts_keepable || 0 : 0))),
     statuses: num((sum.contact_statuses || 0) + (sum.statuses || 0)),
     schedules: num(sum.schedules),
     broadcast_runs: num(sum.broadcast_runs),
     service_events: num(sum.service_events),
-    filters: num(sum.filters)
+    filters: perNumber ? '0' : num(sum.filters)
   };
 }
-
 const DATA_TILES = [
   { label: 'Conversas', get: (s) => num(s.chats) },
   { label: 'Mensagens', get: (s) => num(s.messages) },
@@ -929,13 +1041,17 @@ const DATA_TILES = [
   { label: 'Agendamentos', get: (s) => num(s.schedules) }
 ];
 
-function DataCard({ summary, canEdit, busy, onPurge }) {
+function DataCard({ summary, canEdit, busy, onPurge, perNumber }) {
   return (
     <TgCard hover={false} sx={{ ...cardSx, gridColumn: '1 / -1' }}>
       <SettingsCardHeader
         icon={IconDatabase}
-        title="Dados do número"
-        subtitle="Tudo o que veio do WhatsApp fica guardado no Pub Mail até você apagar."
+        title={perNumber ? 'Dados deste número' : 'Dados de todos os números'}
+        subtitle={
+          perNumber
+            ? 'Conversas, mensagens e mídias que vieram deste número.'
+            : 'Tudo o que veio do WhatsApp fica guardado no Pub Mail até você apagar.'
+        }
         stackAction
         action={
           <Tooltip title={canEdit ? '' : 'Só dono ou admin da organização'}>
@@ -949,7 +1065,7 @@ function DataCard({ summary, canEdit, busy, onPurge }) {
                 startIcon={<IconTrash size={16} />}
                 sx={{ fontWeight: 700 }}
               >
-                Limpar todos os dados
+                {perNumber ? 'Limpar dados do número' : 'Limpar todos os dados'}
               </Button>
             </span>
           </Tooltip>
@@ -962,7 +1078,7 @@ function DataCard({ summary, canEdit, busy, onPurge }) {
           gridTemplateColumns: { xs: 'repeat(2, minmax(0,1fr))', sm: 'repeat(3, minmax(0,1fr))', md: 'repeat(6, minmax(0,1fr))' }
         }}
       >
-        {DATA_TILES.map((t) => (
+        {DATA_TILES.filter((t) => !(perNumber && t.label === 'Contatos')).map((t) => (
           <Box key={t.label} sx={{ p: 1.25, borderRadius: 2, border: '1px solid', borderColor: 'divider', minWidth: 0 }}>
             <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
               {t.label}
@@ -974,14 +1090,14 @@ function DataCard({ summary, canEdit, busy, onPurge }) {
         ))}
       </Box>
       <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1.5 }}>
-        Limpar apaga isso de vez e desconecta o número, se ele ainda estiver conectado. Etiquetas, respostas rápidas, o fluxo do bot e as
-        campanhas de broadcast continuam.
+        {perNumber
+          ? 'Limpar apaga as conversas, mensagens, status e agendamentos deste número e o desconecta. Contatos são da organização e continuam.'
+          : 'Limpar apaga isso de vez e desconecta todos os números. Etiquetas, respostas rápidas, fluxos do bot e campanhas continuam.'}
       </Typography>
     </TgCard>
   );
 }
 
-// Desconectar (escolhendo manter ou apagar os dados) ou só limpar os dados.
 function ChoiceCard({ selected, danger, icon: Icon, title, text, onClick }) {
   return (
     <ButtonBase
@@ -1031,36 +1147,44 @@ function ChoiceCard({ selected, danger, icon: Icon, title, text, onClick }) {
   );
 }
 
+// mode: 'logout' | 'purge' (número) | 'purge_all' (org) | 'remove' (apagar o número)
 function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
   const open = Boolean(mode);
   const [choice, setChoice] = useState('keep');
   const [keepContacts, setKeepContacts] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [loading, setLoading] = useState(false);
-
   useEffect(() => {
     if (!open) return;
-    setChoice(mode === 'purge' ? 'purge' : 'keep');
+    setChoice(mode === 'logout' ? 'keep' : 'purge');
     setKeepContacts(false);
     setConfirmText('');
   }, [open, mode]);
 
+  const perNumber = mode !== 'purge_all';
   const purging = choice === 'purge';
-  const hasSession = Boolean(session?.openwa_session_id || summary?.has_session);
-  const values = purgeValues(summary, keepContacts);
+  const hasSession = Boolean(session?.exists || summary?.has_session);
+  const values = purgeValues(summary, keepContacts, perNumber);
   const rows = PURGE_ROWS.filter((r) => values[r.key] && values[r.key] !== '0');
   const confirmed = confirmText.trim().toUpperCase() === 'APAGAR';
 
   const submit = async () => {
     setLoading(true);
     try {
-      if (purging) {
-        const r = await post('/whatsapp/session/purge', { confirm: confirmText.trim(), keep_contacts: keepContacts });
+      if (mode === 'remove') {
+        await remove(api(session.id));
+        toast.success(`Número "${sessionLabel(session)}" apagado.`);
+      } else if (purging && mode === 'purge_all') {
+        const r = await post('/whatsapp/sessions/purge', { confirm: confirmText.trim(), keep_contacts: keepContacts });
         const d = r?.deleted || {};
         toast.success(`Dados apagados: ${num(d.chats)} conversas, ${num(d.messages)} mensagens e ${num(d.files)} arquivos.`);
+      } else if (purging) {
+        const r = await post(api(session.id, '/purge'), { confirm: confirmText.trim() });
+        const d = r?.deleted || {};
+        toast.success(`Dados do número apagados: ${num(d.chats)} conversas e ${num(d.messages)} mensagens.`);
       } else {
-        await post('/whatsapp/session/logout');
-        toast.success('WhatsApp desconectado.');
+        await post(api(session.id, '/logout'));
+        toast.success('Número desconectado.');
       }
       onDone();
     } catch (e) {
@@ -1070,14 +1194,23 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
     }
   };
 
-  const title = mode === 'purge' ? 'Limpar todos os dados do WhatsApp?' : 'Desconectar o WhatsApp?';
+  const title =
+    mode === 'remove'
+      ? `Apagar o número "${sessionLabel(session)}"?`
+      : mode === 'purge_all'
+        ? 'Limpar os dados de todos os números?'
+        : mode === 'purge'
+          ? 'Limpar os dados deste número?'
+          : 'Desconectar este número?';
   const subtitle =
-    mode === 'purge'
-      ? hasSession
-        ? 'O número também será desconectado.'
-        : 'Apaga o que ficou guardado do número que estava conectado.'
-      : 'Escolha o que acontece com o que veio deste número.';
-  const actionLabel = purging ? (hasSession ? 'Desconectar e apagar' : 'Apagar tudo') : 'Desconectar';
+    mode === 'remove'
+      ? 'Remove a aba e tudo o que veio dele. Não dá para desfazer.'
+      : purging
+        ? hasSession
+          ? 'O número também será desconectado.'
+          : 'Apaga o que ficou guardado.'
+        : 'Escolha o que acontece com o que veio deste número.';
+  const actionLabel = mode === 'remove' ? 'Apagar número' : purging ? (hasSession ? 'Desconectar e apagar' : 'Apagar') : 'Desconectar';
 
   return (
     <TgModal
@@ -1096,11 +1229,11 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
             color="error"
             disableElevation
             onClick={submit}
-            disabled={loading || (purging && !confirmed)}
+            disabled={loading || ((purging || mode === 'remove') && !confirmed)}
             startIcon={
               loading ? (
                 <CircularProgress size={16} color="inherit" />
-              ) : purging ? (
+              ) : purging || mode === 'remove' ? (
                 <IconTrash size={18} />
               ) : (
                 <IconPlugConnectedX size={18} />
@@ -1120,7 +1253,7 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
               selected={!purging}
               icon={IconPlugConnectedX}
               title="Só desconectar"
-              text="Conversas, contatos e histórico continuam no Pub Mail. Bom para reconectar o mesmo número depois."
+              text="Conversas e histórico continuam no Pub Mail. Bom para reconectar o mesmo número depois."
               onClick={() => setChoice('keep')}
             />
             <ChoiceCard
@@ -1134,7 +1267,7 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
           </Stack>
         ) : null}
 
-        {purging ? (
+        {purging || mode === 'remove' ? (
           <>
             <Box>
               <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 700, lineHeight: 1.6 }}>
@@ -1162,12 +1295,11 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
                 </Box>
               ) : (
                 <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                  Não há dados guardados deste número.
+                  Não há dados guardados.
                 </Typography>
               )}
             </Box>
-
-            {summary?.contacts_keepable ? (
+            {mode === 'purge_all' && summary?.contacts_keepable ? (
               <FormControlLabel
                 control={<Checkbox checked={keepContacts} onChange={(e) => setKeepContacts(e.target.checked)} />}
                 label={
@@ -1177,21 +1309,23 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
                 }
               />
             ) : null}
-
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Continuam: etiquetas, respostas rápidas, o fluxo do bot, as campanhas de broadcast e as configurações de atendimento.
+              {perNumber
+                ? 'Continuam: contatos (são da organização), etiquetas, respostas rápidas, fluxos do bot, campanhas e configurações.'
+                : 'Continuam: etiquetas, respostas rápidas, fluxos do bot, campanhas e configurações de atendimento.'}
             </Typography>
             {summary?.bot_active || summary?.active_broadcasts ? (
               <Alert severity="info" sx={{ py: 0.5 }}>
-                {summary.bot_active && summary.active_broadcasts
-                  ? 'O bot e os broadcasts ativos serão desligados'
-                  : summary.bot_active
-                    ? 'O bot será desligado'
-                    : 'Os broadcasts ativos serão desligados'}
-                , para nada sair sozinho do próximo número. Ligue de novo quando ele estiver conectado.
+                {perNumber
+                  ? 'O bot deste número será desligado'
+                  : summary.bot_active && summary.active_broadcasts
+                    ? 'O bot e os broadcasts ativos serão desligados'
+                    : summary.bot_active
+                      ? 'O bot será desligado'
+                      : 'Os broadcasts ativos serão desligados'}
+                , para nada sair sozinho. Ligue de novo quando quiser.
               </Alert>
             ) : null}
-
             <TextField
               label="Digite APAGAR para confirmar"
               value={confirmText}
@@ -1208,78 +1342,78 @@ function DisconnectDialog({ mode, session, summary, onClose, onDone }) {
   );
 }
 
-export default function WhatsAppSettings() {
-  const { user } = useAuth();
-  const role = user?.user?.role;
-  const canEdit = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(role);
-
+// ============================================================================
+// Painel de UM número (aba)
+// ============================================================================
+function NumberPanel({ sessionId, canEdit, flows, onSessionsChanged, onRemove }) {
   const [session, setSession] = useState(null);
   const [qr, setQr] = useState(null);
   const [events, setEvents] = useState([]);
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(null); // {kind:'logout'|'pacing'}
+  const [confirm, setConfirm] = useState(null); // {kind:'pacing'|'migrate'}
   const [pairing, setPairing] = useState({ open: false, phone: '', code: '', loading: false });
   const [test, setTest] = useState({ open: false, text: '', loading: false });
   const [bootstrapping, setBootstrapping] = useState(false);
-  const [syncDlg, setSyncDlg] = useState(null); // {chats, per_chat}
+  const [syncDlg, setSyncDlg] = useState(null);
   const [dataDlg, setDataDlg] = useState(null); // 'logout' | 'purge'
   const [dataSummary, setDataSummary] = useState(null);
-  // muda após "Limpar todos os dados" → recria os cards que buscam dados por conta própria
-  // (diagnóstico e contagem de conversas por etiqueta) sem precisar recarregar a página
   const [dataVersion, setDataVersion] = useState(0);
   const seqRef = useRef(0);
 
   const load = useCallback(async () => {
     const seq = ++seqRef.current;
     try {
-      const s = await get('/whatsapp/session');
+      const s = await get(api(sessionId));
       if (seq !== seqRef.current) return;
       setSession(s);
       if (s?.status === 'qr_ready') {
-        const q = await get('/whatsapp/session/qr').catch(() => null);
+        const q = await get(api(sessionId, '/qr')).catch(() => null);
         if (seq === seqRef.current) setQr(q?.qr || null);
       } else setQr(null);
     } catch (e) {
-      if (seq === seqRef.current) setSession((prev) => prev || { status: 'none', gateway_error: errMsg(e, 'Falha ao carregar.') });
+      if (seq === seqRef.current)
+        setSession((prev) => prev || { id: sessionId, status: 'none', gateway_error: errMsg(e, 'Falha ao carregar.') });
     }
-  }, []);
-
+  }, [sessionId]);
   const loadEvents = useCallback(async () => {
     try {
-      setEvents(await get('/whatsapp/session/events', { params: { limit: 40 } }));
+      setEvents(await get(api(sessionId, '/events'), { params: { limit: 40 } }));
     } catch {
       /* silencioso */
     }
-  }, []);
-
+  }, [sessionId]);
   const loadSummary = useCallback(async () => {
     try {
-      setDataSummary(await get('/whatsapp/session/data-summary'));
+      setDataSummary(await get(api(sessionId, '/data-summary')));
     } catch {
       /* silencioso */
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
+    setSession(null);
+    setQr(null);
+    setEvents([]);
+    setDataSummary(null);
     load();
     loadEvents();
     loadSummary();
   }, [load, loadEvents, loadSummary]);
 
-  // tempo real: conexão mudou (QR novo, conectou, caiu…) e progresso da sincronização
   useRealtimeEvent('wa:session', (ev) => {
+    if (ev?.session_id && ev.session_id !== sessionId) return;
     load();
     loadEvents();
     loadSummary();
     if (ev?.event === 'local.purge') setDataVersion((v) => v + 1);
   });
   useRealtimeEvent('wa:sync', (sync) => {
+    if (sync?.session_id && sync.session_id !== sessionId) return;
     setSession((prev) => (prev ? { ...prev, sync } : prev));
     if (sync?.phase === 'done') loadSummary();
-    if (sync?.phase === 'done' && !sync?.repass) toast.success('Sincronização concluída.', { id: 'wa-sync-done' });
+    if (sync?.phase === 'done' && !sync?.repass) toast.success('Sincronização concluída.', { id: `wa-sync-done-${sessionId}` });
   });
 
-  // polling adaptativo
   const st = session?.status || 'none';
   useEffect(() => {
     if (document.visibilityState === 'hidden') return undefined;
@@ -1300,6 +1434,7 @@ export default function WhatsAppSettings() {
       if (r && typeof r === 'object' && 'status' in r) setSession(r);
       await load();
       await loadEvents();
+      onSessionsChanged?.();
     } catch (e) {
       toast.error(errMsg(e, 'Falha na operação.'));
     } finally {
@@ -1307,17 +1442,15 @@ export default function WhatsAppSettings() {
     }
   };
 
-  const onConnect = () => run(() => post('/whatsapp/session/start'));
-
-  // Sincroniza de novo com o celular (roda sozinha ao conectar; aqui é o "de novo"). Roda em
-  // background no servidor; o progresso chega pelo WebSocket (wa:sync).
+  const onConnect = () => run(() => post(api(sessionId, '/start')));
+  const onReconnect = () => run(() => post(api(sessionId, '/start')), 'Reconectando…');
   const bootstrap = () => setSyncDlg({ chats: 60, per_chat: 40 });
   const doBootstrap = async () => {
     const opts = syncDlg || {};
     setSyncDlg(null);
     setBootstrapping(true);
     try {
-      await post('/whatsapp/session/bootstrap', { chats: opts.chats, per_chat: opts.per_chat });
+      await post(api(sessionId, '/bootstrap'), { chats: opts.chats, per_chat: opts.per_chat });
       setSession((prev) => (prev ? { ...prev, sync: { ...(prev.sync || {}), running: true, phase: 'chats' } } : prev));
       toast('Sincronização iniciada. Acompanhe o progresso no card.', { icon: '🔄' });
     } catch (e) {
@@ -1329,12 +1462,11 @@ export default function WhatsAppSettings() {
   const doMigrate = () => {
     setConfirm(null);
     run(
-      () => post('/whatsapp/session/switch-engine', { engine: session?.default_engine || 'baileys' }),
+      () => post(api(sessionId, '/switch-engine'), { engine: session?.default_engine || 'baileys' }),
       'Escaneie o QR Code novo com o mesmo celular.'
     );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-  const onReconnect = () => run(() => post('/whatsapp/session/start'), 'Reconectando…');
   const onLogout = () => {
     loadSummary();
     setDataDlg('logout');
@@ -1349,22 +1481,32 @@ export default function WhatsAppSettings() {
     load();
     loadEvents();
     loadSummary();
+    onSessionsChanged?.();
   };
   const onToggle = (enabled) => {
     if (!enabled) setConfirm({ kind: 'pacing' });
-    else run(() => put('/whatsapp/session/pacing', { enabled: true }), 'Aquecimento ligado.');
+    else run(() => put(api(sessionId, '/pacing'), { enabled: true }), 'Aquecimento ligado.');
   };
   const doDisablePacing = () => {
     setConfirm(null);
-    run(() => put('/whatsapp/session/pacing', { enabled: false }), 'Limitador desligado. Responsabilidade assumida.');
+    run(() => put(api(sessionId, '/pacing'), { enabled: false }), 'Limitador desligado. Responsabilidade assumida.');
   };
-
+  const saveIdentity = async (body) => {
+    try {
+      const s = await put(api(sessionId), body);
+      setSession(s);
+      toast.success('Número atualizado.');
+      onSessionsChanged?.();
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível salvar.'));
+    }
+  };
   const requestPairing = async () => {
     const phone = pairing.phone.replace(/\D/g, '');
     if (phone.length < 10) return toast.error('Informe o número com DDI e DDD, ex.: 5511999999999.');
     setPairing((p) => ({ ...p, loading: true }));
     try {
-      const r = await post('/whatsapp/session/pairing-code', { phone });
+      const r = await post(api(sessionId, '/pairing-code'), { phone });
       setPairing((p) => ({ ...p, code: r?.code || '', loading: false }));
       if (!r?.code) toast.error('O gateway não devolveu o código. Tente pelo QR.');
     } catch (e) {
@@ -1372,19 +1514,17 @@ export default function WhatsAppSettings() {
       toast.error(errMsg(e, 'Não foi possível gerar o código.'));
     }
   };
-
   const sendTest = async () => {
     setTest((t) => ({ ...t, loading: true }));
     try {
-      await post('/whatsapp/session/test', { text: test.text || undefined });
-      toast.success('Mensagem de teste enviada para o seu número.');
+      await post(api(sessionId, '/test'), { text: test.text || undefined });
+      toast.success('Mensagem de teste enviada para o próprio número.');
       setTest({ open: false, text: '', loading: false });
     } catch (e) {
       toast.error(errMsg(e, 'Não foi possível enviar.'));
       setTest((t) => ({ ...t, loading: false }));
     }
   };
-
   const copyCode = async () => {
     try {
       await navigator.clipboard.writeText(pairing.code);
@@ -1394,77 +1534,57 @@ export default function WhatsAppSettings() {
     }
   };
 
+  if (!session)
+    return (
+      <Stack alignItems="center" sx={{ py: 8 }}>
+        <CircularProgress sx={{ color: WA_GREEN }} />
+      </Stack>
+    );
   const connected = st === 'ready';
-  const headerAction = useMemo(
-    () => (
-      <Tooltip title="Atualizar">
-        <IconButton
-          onClick={() => {
-            load();
-            loadEvents();
-          }}
-          disabled={busy}
-        >
-          <IconRefresh size={20} />
-        </IconButton>
-      </Tooltip>
-    ),
-    [load, loadEvents, busy]
-  );
-
   return (
     <Box>
-      <WaPageHeader
-        icon={IconBrandWhatsapp}
-        title="WhatsApp"
-        subtitle="Conexão do número, perfil, atendimento, etiquetas e respostas rápidas."
-        action={headerAction}
-      />
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 2,
+          alignItems: 'stretch',
+          gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(2, minmax(0, 1fr))' }
+        }}
+      >
+        <ConnectionCard
+          session={session}
+          qr={qr}
+          busy={busy}
+          canEdit={canEdit}
+          onConnect={onConnect}
+          onReconnect={onReconnect}
+          onLogout={onLogout}
+          onTest={() => setTest({ open: true, text: '', loading: false })}
+          onPairing={() => setPairing({ open: true, phone: '', code: '', loading: false })}
+        />
+        <IdentityCard
+          session={session}
+          canEdit={canEdit}
+          flows={flows}
+          onSave={saveIdentity}
+          onRemove={() => onRemove(session, dataSummary)}
+        />
+        <ProfileCard sessionId={sessionId} enabled={connected} canEdit={canEdit} />
+        <EngineCard session={session} canEdit={canEdit} busy={busy} onMigrate={() => setConfirm({ kind: 'migrate' })} />
+        <SyncCard session={session} connected={connected} onSync={bootstrap} />
+        <WarmupCard session={session} canEdit={canEdit} onToggle={onToggle} />
+        <DiagnosticsCard
+          key={`diag-${sessionId}-${dataVersion}`}
+          sessionId={sessionId}
+          status={st}
+          canEdit={canEdit}
+          upgradeAvailable={Boolean(session?.engine_upgrade)}
+          onMigrate={() => setConfirm({ kind: 'migrate' })}
+        />
+        <ActivityCard events={events} />
+        <DataCard summary={dataSummary} canEdit={canEdit} busy={busy} onPurge={onPurge} perNumber />
+      </Box>
 
-      {!session ? (
-        <Stack alignItems="center" sx={{ py: 8 }}>
-          <CircularProgress sx={{ color: WA_GREEN }} />
-        </Stack>
-      ) : (
-        // Uma grade só, com duas colunas iguais: bordas e alturas alinhadas em todas as linhas.
-        <Box
-          sx={{
-            display: 'grid',
-            gap: 2,
-            alignItems: 'stretch',
-            gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(2, minmax(0, 1fr))' }
-          }}
-        >
-          <ConnectionCard
-            session={session}
-            qr={qr}
-            busy={busy}
-            onConnect={onConnect}
-            onReconnect={onReconnect}
-            onLogout={onLogout}
-            onTest={() => setTest({ open: true, text: '', loading: false })}
-            onPairing={() => setPairing({ open: true, phone: '', code: '', loading: false })}
-          />
-          <ProfileCard enabled={connected} canEdit={canEdit} />
-          <EngineCard session={session} canEdit={canEdit} busy={busy} onMigrate={() => setConfirm({ kind: 'migrate' })} />
-          <SyncCard session={session} connected={connected} onSync={bootstrap} />
-          <AttendanceCard canEdit={canEdit} />
-          <TagsCard key={`tags-${dataVersion}`} canEdit={canEdit} />
-          <QuickRepliesCard />
-          <DiagnosticsCard
-            key={`diag-${dataVersion}`}
-            status={st}
-            canEdit={canEdit}
-            upgradeAvailable={Boolean(session?.engine_upgrade)}
-            onMigrate={() => setConfirm({ kind: 'migrate' })}
-          />
-          <WarmupCard session={session} canEdit={canEdit} onToggle={onToggle} />
-          <ActivityCard events={events} />
-          <DataCard summary={dataSummary} canEdit={canEdit} busy={busy} onPurge={onPurge} />
-        </Box>
-      )}
-
-      {/* pareamento por número */}
       <TgModal
         open={pairing.open}
         onClose={() => setPairing({ open: false, phone: '', code: '', loading: false })}
@@ -1530,7 +1650,6 @@ export default function WhatsAppSettings() {
         </Stack>
       </TgModal>
 
-      {/* mensagem de teste */}
       <TgModal
         open={test.open}
         onClose={() => setTest({ open: false, text: '', loading: false })}
@@ -1572,14 +1691,14 @@ export default function WhatsAppSettings() {
         onConfirm={doMigrate}
         loading={busy}
         title="Migrar para o motor direto?"
-        message="A conexão atual será encerrada e um QR Code novo aparece aqui. Escaneie com o mesmo celular (WhatsApp → Dispositivos conectados → Conectar dispositivo). Conversas, contatos, etiquetas, agendamentos e broadcasts continuam no Pub Mail. Depois, remova o aparelho antigo da lista de dispositivos do celular, se ele continuar aparecendo."
+        message="A conexão atual será encerrada e um QR Code novo aparece aqui. Escaneie com o mesmo celular. Conversas, contatos, etiquetas, agendamentos e campanhas continuam no Pub Mail."
         confirmLabel="Migrar agora"
       />
       <TgModal
         open={Boolean(syncDlg)}
         onClose={() => setSyncDlg(null)}
         title="Sincronizar com o celular"
-        subtitle="Traz conversas, contatos e as mensagens mais recentes."
+        subtitle="Traz conversas, contatos e as mensagens mais recentes deste número."
         maxWidth="xs"
         footer={
           <Stack direction="row" spacing={1} justifyContent="flex-end">
@@ -1639,6 +1758,303 @@ export default function WhatsAppSettings() {
         message="Sem o aquecimento e os limites diários, o WhatsApp pode restringir ou banir este número, e o Pub Mail não tem como reverter. Ao continuar, você declara que assume essa responsabilidade."
         confirmLabel="Assumo o risco, desligar"
       />
+    </Box>
+  );
+}
+
+// ============================================================================
+export default function WhatsAppSettings() {
+  const { user } = useAuth();
+  const role = user?.user?.role;
+  const canEdit = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(role);
+  const { sessions, loading, reload, max, configured, gateway_error: gatewayError } = useWaSessions(15000);
+  const [params, setParams] = useSearchParams();
+  const selectedParam = params.get('number');
+  const [creating, setCreating] = useState(false);
+  const [newDlg, setNewDlg] = useState(null); // { label, color }
+  const [removeDlg, setRemoveDlg] = useState(null); // { session, summary }
+  const [orgDlg, setOrgDlg] = useState(null); // 'purge_all'
+  const [orgSummary, setOrgSummary] = useState(null);
+  const [flows, setFlows] = useState([]);
+  const [orgVersion, setOrgVersion] = useState(0);
+
+  const selected = useMemo(() => sessions.find((s) => s.id === selectedParam) || sessions[0] || null, [sessions, selectedParam]);
+  const select = (id) =>
+    setParams(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        if (id) n.set('number', id);
+        else n.delete('number');
+        return n;
+      },
+      { replace: true }
+    );
+
+  const loadFlows = useCallback(async () => {
+    try {
+      const r = await get('/whatsapp/bot/flows');
+      setFlows(Array.isArray(r) ? r : Array.isArray(r?.items) ? r.items : []);
+    } catch {
+      setFlows([]);
+    }
+  }, []);
+  const loadOrgSummary = useCallback(async () => {
+    try {
+      setOrgSummary(await get('/whatsapp/sessions/data-summary'));
+    } catch {
+      /* silencioso */
+    }
+  }, []);
+  useEffect(() => {
+    loadFlows();
+    loadOrgSummary();
+  }, [loadFlows, loadOrgSummary]);
+
+  const createNumber = async () => {
+    setCreating(true);
+    try {
+      const s = await post('/whatsapp/sessions', { label: newDlg?.label?.trim() || undefined, color: newDlg?.color || undefined });
+      setNewDlg(null);
+      await reload();
+      select(s?.id);
+      toast.success('Número criado. Clique em Conectar para escanear o QR.');
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível criar o número.'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const onRemove = async (session, summary) => {
+    setRemoveDlg({ session, summary });
+  };
+  const onRemoved = async () => {
+    setRemoveDlg(null);
+    await reload();
+    select(null);
+    loadOrgSummary();
+  };
+  const onOrgPurge = () => {
+    loadOrgSummary();
+    setOrgDlg('purge_all');
+  };
+  const onOrgDone = () => {
+    setOrgDlg(null);
+    setOrgVersion((v) => v + 1);
+    reload();
+    loadOrgSummary();
+  };
+
+  const headerAction = useMemo(
+    () => (
+      <Stack direction="row" spacing={1} alignItems="center">
+        {canEdit ? (
+          <Button
+            variant="contained"
+            disableElevation
+            startIcon={<IconPlus size={18} />}
+            onClick={() => setNewDlg({ label: '', color: COLORS[sessions.length % COLORS.length] })}
+            disabled={!configured || sessions.length >= max}
+            sx={{ fontWeight: 700, borderRadius: 2, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
+          >
+            Novo número
+          </Button>
+        ) : null}
+        <Tooltip title="Atualizar">
+          <IconButton onClick={reload}>
+            <IconRefresh size={20} />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    ),
+    [canEdit, configured, sessions.length, max, reload]
+  );
+
+  return (
+    <Box>
+      <WaPageHeader
+        icon={IconBrandWhatsapp}
+        title="WhatsApp"
+        subtitle={
+          sessions.length
+            ? `${sessions.length} ${sessions.length === 1 ? 'número' : 'números'} · ${sessions.filter((s) => s.connected).length} conectado${sessions.filter((s) => s.connected).length === 1 ? '' : 's'}`
+            : 'Conecte um ou mais números do WhatsApp à sua organização.'
+        }
+        action={headerAction}
+      />
+
+      {gatewayError ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {gatewayError}
+        </Alert>
+      ) : null}
+
+      {loading && !sessions.length ? (
+        <Stack alignItems="center" sx={{ py: 8 }}>
+          <CircularProgress sx={{ color: WA_GREEN }} />
+        </Stack>
+      ) : !sessions.length ? (
+        <TgCard hover={false} sx={{ ...cardSx, mb: 2 }}>
+          <TgEmptyState
+            icon={IconBrandWhatsapp}
+            title="Nenhum número ainda"
+            description={
+              canEdit
+                ? 'Crie o primeiro número e escaneie o QR Code com o celular. Você pode conectar quantos números quiser, cada um com nome, cor e fluxo do bot próprios.'
+                : 'Peça a um administrador da organização para conectar um número ou liberar o acesso aos números existentes.'
+            }
+            action={
+              canEdit ? (
+                <Button
+                  variant="contained"
+                  disableElevation
+                  size="large"
+                  startIcon={<IconPlus size={20} />}
+                  onClick={() => setNewDlg({ label: 'Principal', color: COLORS[0] })}
+                  disabled={!configured}
+                  sx={{ fontWeight: 700, borderRadius: 2.5, px: 3, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
+                >
+                  Criar o primeiro número
+                </Button>
+              ) : null
+            }
+          />
+        </TgCard>
+      ) : (
+        <>
+          {/* abas dos números */}
+          <Stack direction="row" spacing={1} sx={{ mb: 2, overflowX: 'auto', pb: 0.5, scrollbarWidth: 'thin' }}>
+            {sessions.map((s) => (
+              <NumberTab key={s.id} session={s} selected={selected?.id === s.id} onClick={() => select(s.id)} />
+            ))}
+            {canEdit && sessions.length < max ? (
+              <ButtonBase
+                onClick={() => setNewDlg({ label: '', color: COLORS[sessions.length % COLORS.length] })}
+                sx={{
+                  px: 1.5,
+                  py: 1,
+                  borderRadius: 2.5,
+                  border: '1.5px dashed',
+                  borderColor: 'divider',
+                  color: 'text.secondary',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.75,
+                  flexShrink: 0,
+                  fontWeight: 700,
+                  fontSize: 14,
+                  '&:hover': { borderColor: WA_GREEN, color: WA_DARK }
+                }}
+              >
+                <IconPlus size={16} /> Novo número
+              </ButtonBase>
+            ) : null}
+          </Stack>
+          {selected ? (
+            <NumberPanel
+              key={selected.id}
+              sessionId={selected.id}
+              canEdit={canEdit}
+              flows={flows}
+              onSessionsChanged={reload}
+              onRemove={onRemove}
+            />
+          ) : null}
+        </>
+      )}
+
+      {/* configurações da organização */}
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 4, mb: 1.5 }}>
+        <IconDotsVertical size={18} style={{ opacity: 0.5 }} />
+        <Typography sx={{ fontWeight: 800, fontSize: 16 }}>Configurações da organização</Typography>
+        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+          valem para todos os números
+        </Typography>
+      </Stack>
+      <Box
+        sx={{
+          display: 'grid',
+          gap: 2,
+          alignItems: 'stretch',
+          gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(2, minmax(0, 1fr))' }
+        }}
+      >
+        <AttendanceCard canEdit={canEdit} />
+        <TagsCard key={`tags-${orgVersion}`} canEdit={canEdit} />
+        <QuickRepliesCard />
+        <DataCard summary={orgSummary} canEdit={canEdit} busy={false} onPurge={onOrgPurge} />
+      </Box>
+
+      {/* novo número */}
+      <TgModal
+        open={Boolean(newDlg)}
+        onClose={() => setNewDlg(null)}
+        title="Novo número"
+        subtitle="Depois de criar, clique em Conectar e escaneie o QR Code."
+        maxWidth="xs"
+        footer={
+          <Stack direction="row" spacing={1} justifyContent="flex-end">
+            <Button onClick={() => setNewDlg(null)} disabled={creating}>
+              Cancelar
+            </Button>
+            <Button
+              variant="contained"
+              disableElevation
+              onClick={createNumber}
+              disabled={creating}
+              startIcon={creating ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={18} />}
+              sx={{ fontWeight: 700, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
+            >
+              Criar
+            </Button>
+          </Stack>
+        }
+      >
+        <Stack spacing={2}>
+          <TextField
+            label="Nome interno"
+            placeholder="Ex.: Vendas, Suporte, Loja Centro"
+            value={newDlg?.label || ''}
+            onChange={(e) => setNewDlg((d) => ({ ...d, label: e.target.value.slice(0, 80) }))}
+            size="small"
+            fullWidth
+            autoFocus
+            helperText="Só a sua equipe vê. Dá para mudar depois."
+          />
+          <Box>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.75 }}>
+              Cor de identificação
+            </Typography>
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+              {COLORS.map((c) => (
+                <ButtonBase
+                  key={c}
+                  onClick={() => setNewDlg((d) => ({ ...d, color: c }))}
+                  aria-label={c}
+                  sx={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: '50%',
+                    bgcolor: c,
+                    border: '2px solid',
+                    borderColor: newDlg?.color === c ? 'text.primary' : 'transparent',
+                    boxShadow: newDlg?.color === c ? `0 0 0 2px ${c}66` : 'none'
+                  }}
+                />
+              ))}
+            </Stack>
+          </Box>
+        </Stack>
+      </TgModal>
+
+      <DisconnectDialog
+        mode={removeDlg ? 'remove' : null}
+        session={removeDlg?.session}
+        summary={removeDlg?.summary}
+        onClose={() => setRemoveDlg(null)}
+        onDone={onRemoved}
+      />
+      <DisconnectDialog mode={orgDlg} session={null} summary={orgSummary} onClose={() => setOrgDlg(null)} onDone={onOrgDone} />
     </Box>
   );
 }

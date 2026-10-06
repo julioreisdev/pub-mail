@@ -4,9 +4,12 @@ import { IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength,
 export const CHARGE_KINDS = ['pix', 'boleto', 'both'] as const;
 
 export class CreateChargeDto {
-  // cliente OU conversa (o cliente é achado pela conversa)
+  // cliente OU conversa (o cliente é achado pela conversa). `chat_id` = uuid da conversa (a cobrança
+  // sai pelo número dessa conversa). Com `customer_id`, o número é `session_id` (opcional); sem ele,
+  // a conversa mais recente do contato num número permitido ou qualquer número conectado.
   @ValidateIf((o) => !o.chat_id) @IsString() customer_id?: string;
   @ValidateIf((o) => !o.customer_id) @IsString() chat_id?: string;
+  @IsOptional() @IsString() session_id?: string;
   @IsOptional() @IsString() subscription_id?: string;
   @IsOptional() @IsString() product_id?: string;
   @IsOptional() @IsInt() @Min(100) @Max(99_999_999) amount_cents?: number;

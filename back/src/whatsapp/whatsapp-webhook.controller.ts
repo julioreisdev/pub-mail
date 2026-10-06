@@ -8,9 +8,9 @@ import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppBootstrapService } from './whatsapp-bootstrap.service';
 import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.service';
 
-// Receptor dos eventos do OpenWA (um webhook por sessão: /webhooks/whatsapp/<id da linha>).
+// Receptor dos eventos do OpenWA (um webhook por NÚMERO: /webhooks/whatsapp/<id da linha de whatsapp_sessions>).
 // - assinatura HMAC-SHA256 do OpenWA sobre o corpo bruto (`X-OpenWA-Signature: sha256=<hex>`)
-//   com o segredo daquela sessão (gerado por nós);
+//   com o segredo daquele número (gerado por nós);
 // - idempotência por `X-OpenWA-Idempotency-Key` (unique em whatsapp_session_events);
 // - ACK 200 imediato e processamento em background (igual ao webhook do Telegram).
 @ApiExcludeController()
@@ -19,7 +19,7 @@ import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.serv
 @Controller('webhooks/whatsapp')
 export class WhatsAppWebhookController {
   private readonly logger = new Logger(WhatsAppWebhookController.name);
-  // Fila por sessão: eventos do mesmo número são processados em ORDEM (mensagem antes do ack/reação/edição).
+  // Fila por número: eventos do mesmo número são processados em ORDEM (mensagem antes do ack/reação/edição).
   private readonly queues = new Map<string, Promise<void>>();
 
   constructor(
@@ -54,7 +54,7 @@ export class WhatsAppWebhookController {
     const row = await this.sessions.findByRowId(rowId).catch(() => null);
     if (!row?.webhook_secret) return { ok: false };
     if (!this.verify(row.webhook_secret, req.rawBody, signature)) {
-      this.logger.warn(`assinatura inválida no webhook da sessão ${rowId}`);
+      this.logger.warn(`assinatura inválida no webhook do número ${rowId}`);
       return { ok: false };
     }
     const event = String(body?.event || eventHeader || '').slice(0, 48);
@@ -84,17 +84,16 @@ export class WhatsAppWebhookController {
       }
       return;
     }
-    const orgId = row.organization_id;
     switch (event) {
       case 'message.received': await this.inbound.onMessage(row, data, false); break;
       case 'message.sent': await this.inbound.onMessage(row, data, true); break;
       case 'message.ack':
-      case 'message.failed': await this.inbound.onAck(orgId, data); break;
-      case 'message.revoked': await this.inbound.onRevoked(orgId, data); break;
-      case 'message.reaction': await this.inbound.onReaction(orgId, data, (row.settings as any)?.own_lid || (row.phone ? `${row.phone}@c.us` : null)); break;
-      case 'message.edited': await this.inbound.onEdited(orgId, data); break;
-      case 'group.join': case 'group.leave': case 'group.update': case 'group.join_request': await this.inbound.onGroupEvent(orgId, event, data); break;
-      case 'status.received': await this.contactStatuses.ingest(orgId, row, data); break;
+      case 'message.failed': await this.inbound.onAck(row, data); break;
+      case 'message.revoked': await this.inbound.onRevoked(row, data); break;
+      case 'message.reaction': await this.inbound.onReaction(row, data, (row.settings as any)?.own_lid || (row.phone ? `${row.phone}@c.us` : null)); break;
+      case 'message.edited': await this.inbound.onEdited(row, data); break;
+      case 'group.join': case 'group.leave': case 'group.update': case 'group.join_request': await this.inbound.onGroupEvent(row, event, data); break;
+      case 'status.received': await this.contactStatuses.ingest(row, data); break;
       default: break; // call.*, presence: ignorados por ora
     }
     await this.sessions.touchEvent(row.id).catch(() => undefined);

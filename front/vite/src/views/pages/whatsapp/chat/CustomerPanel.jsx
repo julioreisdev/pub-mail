@@ -28,6 +28,7 @@ import {
 
 import { get } from 'api/api';
 import { TgAvatar, TgListSkeleton } from 'views/pages/telegram/ui';
+import { WaNumberChip, useWaSessions } from '../waKit';
 import { WA_DARK, errMsg, fmtPhone, tint } from '../waShared';
 import CustomerDialog from '../crm/CustomerDialog';
 import ChargeDialog from '../crm/ChargeDialog';
@@ -37,6 +38,9 @@ import { BILLING_STATUS, StatusChip, SUB_STATUS, billingShort, dueText, fmtCep, 
 // ============================================================================
 // Painel "Cliente" do chat (drawer à direita): mostra se o contato é cliente,
 // o que ele usa/paga, situação e próximo vencimento; promove a cliente com 1 clique.
+// Multi-número: `chat.chat_id` é o uuid da conversa ativa (usado em by-chat, funil, tarefas,
+// notas e cobranças); `chat.session` = número (chip no cabeçalho). "Cobrar" passa `chatId`
+// para a cobrança sair pelo número desta conversa.
 // ============================================================================
 
 const CHARGE_STATUS = {
@@ -70,8 +74,11 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
   const [tab, setTab] = useState('customer'); // customer | stage | tasks | notes
   const [chargeDlg, setChargeDlg] = useState(false);
   const [charges, setCharges] = useState(null); // últimas cobranças do cliente
-  const chatId = chat?.chat_id;
+  const chatId = chat?.chat_id; // uuid da conversa
   const customerId = state.customer?.id;
+  const { sessions, byId: sessionsById } = useWaSessions(open ? 60000 : 0);
+  const multi = sessions.length > 1;
+  const chatSession = chat?.session || (chat?.session_id ? sessionsById.get(chat.session_id) : null) || null;
 
   const loadCharges = useCallback(async () => {
     if (!customerId) {
@@ -134,7 +141,12 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
       <Drawer anchor="right" open={open} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 400 } } }}>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
           <IconUserDollar size={20} />
-          <Typography sx={{ fontWeight: 800, fontSize: 17, flex: 1 }}>{chat?.name || fmtPhone(chat?.phone) || 'Conversa'}</Typography>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: 17 }} noWrap>
+              {chat?.name || fmtPhone(chat?.phone) || 'Conversa'}
+            </Typography>
+            {multi && chatSession ? <WaNumberChip session={chatSession} showPhone /> : null}
+          </Box>
           {c && tab === 'customer' ? (
             <Tooltip title="Editar cadastro">
               <IconButton size="small" onClick={() => setDlg(true)}>
@@ -359,10 +371,13 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
                         <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
                           {ch.description}
                         </Typography>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
-                          {ch.amount_label} · vence {ch.due_label}
-                          {ch.status === 'PAID' && ch.paid_at ? ` · pago ${new Date(ch.paid_at).toLocaleDateString('pt-BR')}` : ''}
-                        </Typography>
+                        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                            {ch.amount_label} · vence {ch.due_label}
+                            {ch.status === 'PAID' && ch.paid_at ? ` · pago ${new Date(ch.paid_at).toLocaleDateString('pt-BR')}` : ''}
+                          </Typography>
+                          {multi && ch.session && ch.session_id !== chat?.session_id ? <WaNumberChip session={ch.session} /> : null}
+                        </Stack>
                       </Box>
                       <StatusChip map={CHARGE_STATUS} status={ch.overdue ? 'OVERDUE' : ch.status} />
                     </Stack>
@@ -397,7 +412,15 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
         )}
       </Drawer>
 
-      <ChargeDialog open={chargeDlg} onClose={() => setChargeDlg(false)} customer={c} products={products} onCreated={loadCharges} />
+      <ChargeDialog
+        open={chargeDlg}
+        onClose={() => setChargeDlg(false)}
+        customer={c}
+        chatId={chatId}
+        chat={chat}
+        products={products}
+        onCreated={loadCharges}
+      />
       <CustomerDialog
         open={dlg}
         onClose={() => setDlg(false)}

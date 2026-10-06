@@ -24,4 +24,12 @@ export class CreateAdminUserDto {
   @IsArray()
   @IsIn(MODULES, { each: true })
   modules?: string[];
+
+  // Números do WhatsApp liberados p/ este usuário (ids de `whatsapp_sessions` da MESMA org).
+  // `null`/ausente = todos; `[]` = nenhum. Ignorado p/ OWNER/ADMIN/SUPER_ADMIN (sempre todos).
+  // (@IsOptional deixa null passar sem validar o array.)
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  whatsapp_sessions?: string[] | null;
 }
