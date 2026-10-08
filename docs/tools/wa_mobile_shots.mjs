@@ -4,7 +4,7 @@
 // Usa o Playwright/Chromium instalados em /opt/keepalive (keep-alive do Supabase). Assina um JWT de 1 h do
 // superadmin com o JWT_ACCESS_SECRET do back/.env (nunca impresso) e injeta no localStorage antes de cada página.
 // Saída: /tmp/shots/<tela>.png + relatório JSON (scrollWidth > clientWidth = rolagem horizontal da página).
-// Com DARK=1 captura no tema escuro. Puxar as imagens: ssh pubmail-hostinger 'cd /tmp/shots && tar -czf - *.png' | tar -xzf - -C <pasta>
+// Com DARK=1 captura no tema escuro; DESKTOP=1 usa janela de 1366×768 em vez do celular. Puxar as imagens: ssh pubmail-hostinger 'cd /tmp/shots && tar -czf - *.png' | tar -xzf - -C <pasta>
 import jwt from 'jsonwebtoken';
 import fs from 'node:fs';
 import mysql from 'mysql2/promise';
@@ -21,7 +21,8 @@ const tok = jwt.sign({ sub: u.id, org: u.organization_id, role: u.role }, env.JW
 const me = await fetch('http://127.0.0.1:8000/auth/me', { headers: { Authorization: 'Bearer ' + tok } }).then((r) => r.json());
 fs.mkdirSync('/tmp/shots', { recursive: true });
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ ...devices['iPhone 13'], locale: 'pt-BR', colorScheme: process.env.DARK ? 'dark' : 'light' });
+const view = process.env.DESKTOP ? { viewport: { width: 1366, height: 768 } } : devices['iPhone 13'];
+const ctx = await browser.newContext({ ...view, locale: 'pt-BR', colorScheme: process.env.DARK ? 'dark' : 'light' });
 await ctx.addInitScript(([t, u2, dark]) => { try { localStorage.setItem('token', t); localStorage.setItem('refreshToken', t); localStorage.setItem('user', JSON.stringify(u2)); localStorage.setItem('theme-mode', dark ? 'dark' : 'light'); } catch {} }, [tok, me, Boolean(process.env.DARK)]);
 const page = await ctx.newPage();
 const routes = [

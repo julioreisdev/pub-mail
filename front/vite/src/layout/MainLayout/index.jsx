@@ -13,6 +13,8 @@ import Sidebar from './Sidebar';
 import MainContentStyled from './MainContentStyled';
 import AccessGate from './AccessGate';
 import WaTaskAlerts from './WaTaskAlerts';
+import PwaBoot from 'pwa/PwaBoot';
+import NotificationCenter from './NotificationCenter';
 import Loader from 'ui-component/Loader';
 
 import useConfig from 'hooks/useConfig';
@@ -47,6 +49,10 @@ export default function MainLayout() {
     <Box sx={{ display: 'flex' }}>
       {/* menu / drawer (sem header — logout e tema ficam dentro da própria sidebar) */}
       <Sidebar />
+      {/* PWA: manifesto + service worker + diálogos de instalar/ativar notificações */}
+      <PwaBoot />
+      {/* avisos em tempo real (WebSocket `notify`): toast + som + vibração; sincroniza o push */}
+      <NotificationCenter />
 
       {/* gatilho de menu SÓ no mobile (única forma de abrir o drawer sem header) */}
       {downMD && (

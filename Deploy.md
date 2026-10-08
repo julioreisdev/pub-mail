@@ -732,6 +732,8 @@ server {
     index index.html;
     client_max_body_size 200m;
     gzip on; gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml; gzip_min_length 1024;
+    location = /sw.js { add_header Cache-Control "no-cache"; try_files \$uri =404; }
+    location = /manifest.webmanifest { default_type application/manifest+json; add_header Cache-Control "no-cache"; try_files \$uri =404; }
     location ~* \.(js|css|woff2?|ttf|png|jpg|jpeg|gif|svg|ico|webp)\$ { expires 30d; add_header Cache-Control "public"; try_files \$uri =404; }
     location / { try_files \$uri \$uri/ /index.html; }
 }
@@ -739,6 +741,8 @@ EOF2
 ```
 
 `try_files … /index.html` é o que faz as rotas da SPA (painel, `/webchat/:slug`, `/quiz/:slug`) funcionarem.
+
+As duas linhas `location = …` são do **app instalável (PWA)**: o service worker (`/sw.js`) e o manifesto não podem ficar 30 dias em cache (sem elas, o regex do `.js` pegaria o `sw.js` e uma atualização do app demoraria a chegar), e o nginx não conhece o tipo `.webmanifest`. Nada mais do PWA depende do servidor — os arquivos estão em `front/vite/public/` e saem no build.
 
 ### 17.2 API (`api.SEU-DOMINIO`)
 
@@ -1004,9 +1008,49 @@ mkdir -p /opt/pub-mail/back/protected/whatsapp && chmod 750 /opt/pub-mail/back/p
 systemctl restart pubmail-back
 ```
 
+#### Criptografia das mensagens e mídias (recomendado)
+
+O back guarda o texto das mensagens, as prévias, as legendas de status e os arquivos de mídia **cifrados** (AES-256-GCM, uma chave por organização). Quem abrir o banco, um dump ou a pasta `protected/whatsapp` vê só dados embaralhados; no painel tudo aparece normal. A chave mestra é gerada no próprio servidor e nunca é impressa:
+
+```bash
+K=$(openssl rand -base64 32)
+printf '\nWHATSAPP_DATA_KEYS=1:%s\n' "$K" >> /opt/pub-mail/back/.env
+printf 'WHATSAPP_DATA_KEYS=1:%s\n' "$K" >> /root/pubmail.secrets
+unset K; chmod 600 /opt/pub-mail/back/.env /root/pubmail.secrets
+systemctl restart pubmail-back
+journalctl -u pubmail-back -n 50 --no-pager | grep Criptografia   # "LIGADA"
+```
+
+> ⚠️ **Sem essa chave as mensagens não abrem mais.** Guarde uma cópia FORA do servidor (gerenciador de senhas): `grep WHATSAPP_DATA_KEYS /root/pubmail.secrets`. Nunca troque o valor da chave `1`; para trocar de chave, acrescente uma nova com número maior (`1:<antiga>,2:<nova>`) — as organizações novas passam a usar a `2` e a `1` continua abrindo o que já existe.
+
+Mensagens e arquivos gravados antes da chave existir são cifrados sozinhos em segundo plano (90 s depois do boot e a cada 30 min; o log mostra `Cifrados: …`). Sem a variável, o sistema funciona normalmente, só sem cifrar.
+
+**Notificações push (Web Push).** O painel manda notificações para o celular/computador dos atendentes (mensagem nova, fila, pagamento…). Precisa de um par de chaves VAPID no `back/.env` — sem elas o push fica desligado e só os avisos dentro do painel funcionam:
+
+```bash
+cd /opt/pub-mail/back
+node -e "const w=require('web-push');const k=w.generateVAPIDKeys();process.stdout.write('WEB_PUSH_VAPID_PUBLIC_KEY='+k.publicKey+'\nWEB_PUSH_VAPID_PRIVATE_KEY='+k.privateKey+'\nWEB_PUSH_SUBJECT=mailto:SEU-EMAIL\n')" > /tmp/vapid.env
+cat /tmp/vapid.env >> .env; cat /tmp/vapid.env >> /root/pubmail.secrets; rm -f /tmp/vapid.env
+systemctl restart pubmail-back && journalctl -u pubmail-back -n 100 --no-pager | grep "Web Push"   # → "Web Push: LIGADO"
+```
+
+Troque `SEU-EMAIL` pelo e-mail do responsável (os serviços de push usam esse contato). **Não troque as chaves depois**: cada aparelho inscrito guarda a chave pública; uma chave nova obriga todo mundo a ativar de novo.
+
 ### 22.5 Backup do volume (sessões WhatsApp)
 
-O volume `data/` de cada gateway guarda as credenciais das sessões pareadas. Sem backup, um disco perdido obriga todo cliente a escanear o QR de novo. Script + timer diário (04:30 UTC, 7 dias de retenção) cobrindo os gateways que existirem:
+O volume `data/` de cada gateway guarda as credenciais das sessões pareadas. Sem backup, um disco perdido obriga todo cliente a escanear o QR de novo. Script + timer diário (04:30 UTC, 7 dias de retenção) cobrindo os gateways que existirem.
+
+**Limpeza do gateway (Baileys):** o gateway guarda uma cópia **em claro** de todas as mensagens (tabela `messages` do `data/openwa.sqlite`, com a mídia em base64) e dos webhooks entregues. O Pub Mail já guarda tudo cifrado (§22.4), então na mesma pausa do backup, antes do `tar`, o script `cleanup.py` apaga o que tem mais de 7 dias (`secure_delete` zera as páginas, o índice de busca é refeito, VACUUM só quando ≥ 20 % do arquivo está livre, cerca de 30 s). Não toca em `baileys_stored_messages` (responder/reagir/editar/apagar; o gateway já limita às últimas 5.000), nos status (o gateway apaga os vencidos) nem nas sessões. Copie o script do repositório (`docs/tools/openwa_cleanup.py`):
+
+```bash
+mkdir -p /opt/openwa-baileys/bin
+scp docs/tools/openwa_cleanup.py <servidor>:/opt/openwa-baileys/bin/cleanup.py   # na sua máquina
+chmod 755 /opt/openwa-baileys/bin/cleanup.py   # roda como o dono do banco (uid do container), precisa ler o script
+# teste numa cópia (sem pausar nada):
+#   python3 /opt/openwa-baileys/bin/cleanup.py --db /root/copia/openwa.sqlite --no-pause --days 7
+```
+
+Backup + limpeza:
 
 ```bash
 mkdir -p /opt/backups/openwa /opt/openwa/bin && chmod 700 /opt/backups
@@ -1014,14 +1058,15 @@ cat > /opt/openwa/bin/backup.sh <<'EOF2'
 #!/bin/bash
 set -euo pipefail
 DEST=/opt/backups/openwa; mkdir -p "$DEST"; STAMP=$(date +%F)
-backup_one() {  # $1=container $2=pasta do compose $3=prefixo
+backup_one() {  # $1=container $2=pasta do compose $3=prefixo [$4=script de limpeza]
   [ -d "$2" ] || return 0
   docker pause "$1" >/dev/null 2>&1 || true
+  if [ -n "${4:-}" ] && [ -x "$4" ]; then python3 "$4" --no-pause --days 7 >/dev/null 2>&1 || true; fi
   if tar -czf "$DEST/$3-$STAMP.tar.gz" -C "$2" data .env docker-compose.yml; then chmod 600 "$DEST/$3-$STAMP.tar.gz"; fi
   docker unpause "$1" >/dev/null 2>&1 || true
 }
 backup_one openwa /opt/openwa openwa-data
-backup_one openwa-baileys /opt/openwa-baileys openwa-baileys-data
+backup_one openwa-baileys /opt/openwa-baileys openwa-baileys-data /opt/openwa-baileys/bin/cleanup.py
 find "$DEST" -name 'openwa-*-*.tar.gz' -mtime +7 -delete
 EOF2
 chmod 700 /opt/openwa/bin/backup.sh
@@ -1029,6 +1074,8 @@ printf '[Unit]\nDescription=Backup OpenWA\n[Service]\nType=oneshot\nExecStart=/o
 printf '[Unit]\nDescription=Backup diário OpenWA\n[Timer]\nOnCalendar=*-*-* 04:30:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n' > /etc/systemd/system/openwa-backup.timer
 systemctl daemon-reload && systemctl enable --now openwa-backup.timer
 ```
+
+Resultado da limpeza em `/var/log/openwa-cleanup.log` (`limpeza ok: N mensagens, … arquivo X MB -> Y MB; check=ok; T s`). A pausa noturna fica em ~2–4 min (limpeza lendo o banco do disco + `tar`); durante ela o WhatsApp segura as mensagens e entrega quando o container volta. O healthcheck do Docker pode marcar `unhealthy` por uma rodada logo depois — volta sozinho. Os backups antigos (ainda com mensagens em claro) saem pela rotação de 7 dias.
 
 ### 22.6 Operação
 

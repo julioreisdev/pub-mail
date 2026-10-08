@@ -319,6 +319,11 @@ export class AdminService {
           await tx.whatsapp_messages.deleteMany(where);
           await tx.whatsapp_chats.deleteMany(where);
           await tx.whatsapp_contact_sessions.deleteMany(where);
+          await tx.whatsapp_data_keys.deleteMany(where); // chave das mensagens: sem ela, nada mais abre
+          await tx.push_subscriptions.deleteMany(where);
+          await tx.notification_prefs.deleteMany(where);
+          await tx.notification_log.deleteMany(where);
+          await tx.notification_custom.deleteMany(where);
           await tx.whatsapp_contacts.deleteMany(where);
           await tx.whatsapp_media.deleteMany(where); // metadados; arquivos em protected/whatsapp/<org> ficam p/ limpeza
           await tx.whatsapp_session_events.deleteMany(where);

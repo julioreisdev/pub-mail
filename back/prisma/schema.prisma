@@ -1577,6 +1577,16 @@ model whatsapp_contacts {
 
 // De qual NÚMERO o contato veio (agenda sincronizada por ele ou conversa/mensagem por ele).
 // FK para whatsapp_sessions só no banco (CASCADE).
+/// Chave de criptografia (em repouso) das mensagens/mídias do WhatsApp, uma por organização,
+/// cifrada pela chave mestra do servidor (WHATSAPP_DATA_KEYS). Ver src/whatsapp/crypto/.
+model whatsapp_data_keys {
+  id              String   @id @db.VarChar(16)
+  organization_id String   @unique(map: "uq_wadatakeys_org") @db.Char(36)
+  master_key_id   String   @db.VarChar(8)
+  wrapped_key     String   @db.VarChar(255)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+}
+
 model whatsapp_contact_sessions {
   contact_id      String            @db.Char(36)
   session_id      String            @db.Char(36)
@@ -1598,7 +1608,7 @@ model whatsapp_chats {
   name                   String?   @db.VarChar(255)
   unread_count           Int       @default(0)
   last_message_at        DateTime? @db.DateTime(3)
-  last_message_preview   String?   @db.VarChar(255)
+  last_message_preview   String?   @db.Text
   last_message_direction String?   @db.VarChar(4)
   archived               Boolean   @default(false)
   pinned                 Boolean   @default(false)
@@ -1740,7 +1750,7 @@ model whatsapp_messages {
   from_jid        String?   @db.VarChar(64)
   sender_name     String?   @db.VarChar(255)
   quoted_wa_id    String?   @db.VarChar(191)
-  quoted_preview  String?   @db.VarChar(255)
+  quoted_preview  String?   @db.Text
   forwarded       Boolean   @default(false)
   ack             Int       @default(0) @db.TinyInt
   reactions       Json?
@@ -2181,4 +2191,75 @@ model team_messages {
 
   @@index([chat_id, created_at], map: "idx_teammsg_chat")
   @@index([organization_id, media_id], map: "idx_teammsg_media")
+}
+
+// ---------------------------------------------------------------- notificações (push + painel)
+model push_subscriptions {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  user_id         String    @db.Char(36)
+  endpoint_hash   String    @unique(map: "uq_pushsub_endpoint") @db.Char(64)
+  endpoint        String    @db.Text
+  p256dh          String    @db.VarChar(255)
+  auth            String    @db.VarChar(64)
+  user_agent      String?   @db.VarChar(255)
+  device_label    String?   @db.VarChar(80)
+  failures        Int       @default(0)
+  last_sent_at    DateTime? @db.DateTime(3)
+  last_seen_at    DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, user_id], map: "idx_pushsub_user")
+}
+
+model notification_prefs {
+  user_id         String   @id @db.Char(36)
+  organization_id String   @db.Char(36)
+  prefs           Json
+  updated_at      DateTime @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([organization_id], map: "idx_notifprefs_org")
+}
+
+model notification_log {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  user_id         String    @db.Char(36)
+  kind            String    @db.VarChar(32)
+  title           String    @db.VarChar(160)
+  body            String?   @db.VarChar(500)
+  url             String?   @db.VarChar(500)
+  data            Json?
+  channels        String    @default("") @db.VarChar(32)
+  status          String    @default("sent") @db.VarChar(16)
+  read_at         DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, user_id, created_at], map: "idx_notiflog_user")
+  @@index([created_at], map: "idx_notiflog_created")
+}
+
+model notification_custom {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  created_by      String    @db.Char(36)
+  name            String    @db.VarChar(80)
+  title           String    @db.VarChar(120)
+  body            String?   @db.VarChar(500)
+  url             String?   @db.VarChar(500)
+  emoji           String?   @db.VarChar(16)
+  icon_url        String?   @db.VarChar(500)
+  sound           String    @default("default") @db.VarChar(16)
+  vibrate         String    @default("short") @db.VarChar(16)
+  important       Boolean   @default(false)
+  recipients      Json
+  schedule_at     DateTime? @db.DateTime(3)
+  sent_at         DateTime? @db.DateTime(3)
+  fire_count      Int       @default(0)
+  last_fired_at   DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, created_at], map: "idx_notifcustom_org")
+  @@index([schedule_at, sent_at], map: "idx_notifcustom_sched")
 }

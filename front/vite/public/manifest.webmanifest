@@ -1,0 +1,30 @@
+{
+  "id": "/app",
+  "name": "Pub Mail",
+  "short_name": "Pub Mail",
+  "description": "WhatsApp, e-mail marketing, webchats com IA, quizzes e Telegram num só painel.",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/dashboard?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "categories": ["business", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "/pwa/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/pwa/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [
+    { "src": "/pwa/screenshot-wide.webp", "sizes": "1280x720", "type": "image/webp", "form_factor": "wide", "label": "Pub Mail no computador" },
+    { "src": "/pwa/screenshot-narrow.webp", "sizes": "780x1688", "type": "image/webp", "form_factor": "narrow", "label": "Pub Mail no celular" }
+  ],
+  "shortcuts": [
+    { "name": "Chat do WhatsApp", "short_name": "Chat", "url": "/whatsapp/chat?source=pwa", "icons": [{ "src": "/pwa/icon-96.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Início", "short_name": "Início", "url": "/dashboard?source=pwa", "icons": [{ "src": "/pwa/icon-96.png", "sizes": "96x96", "type": "image/png" }] }
+  ]
+}

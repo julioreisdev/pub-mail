@@ -1,6 +1,14 @@
 import { io } from 'socket.io-client';
 import { api, getAccessToken, refreshAccessToken } from 'api/api';
 
+const pushHash = () => {
+  try {
+    return JSON.parse(localStorage.getItem('pm-push-sub') || 'null')?.hash || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 // Cliente único do WebSocket do painel (Socket.IO em <API>/realtime).
 // - autentica com o access token no handshake (lido a cada tentativa → pega o token renovado);
 // - token expirado: o servidor recusa com "unauthorized" → renova pelo api.js e reconecta;
@@ -23,7 +31,7 @@ export function getSocket() {
   socket = io(base, {
     path: '/realtime',
     transports: ['websocket', 'polling'],
-    auth: (cb) => cb({ token: getAccessToken() }),
+    auth: (cb) => cb({ token: getAccessToken(), push: pushHash() }), // push = identidade do aparelho (não repete o push onde o painel está aberto)
     reconnectionDelay: 1000,
     reconnectionDelayMax: 10000,
     timeout: 15000
@@ -44,6 +52,14 @@ export function getSocket() {
     scheduleReconnect(Math.min(15000, 1000 * authFailures));
   });
   return socket;
+}
+
+/** Reconecta para o servidor reler o handshake (ex.: aparelho acabou de se inscrever no push). */
+export function refreshSocketAuth() {
+  if (socket && socket.connected) {
+    socket.disconnect();
+    socket.connect();
+  }
 }
 
 export function disconnectSocket() {

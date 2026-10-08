@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppHooks } from './whatsapp-hooks.service';
 import { ChatKey, WhatsAppAttendanceService } from './whatsapp-attendance.service';
 
 // ============================================================================
@@ -18,7 +19,7 @@ const BRT = 'America/Sao_Paulo';
 export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WhatsAppTasksService.name);
   private timer: NodeJS.Timeout | null = null;
-  constructor(private readonly prisma: PrismaService, private readonly presenter: WhatsAppPresenter, private readonly attendance: WhatsAppAttendanceService) {}
+  constructor(private readonly prisma: PrismaService, private readonly presenter: WhatsAppPresenter, private readonly attendance: WhatsAppAttendanceService, private readonly hooks: WhatsAppHooks) {}
 
   onModuleInit() { this.timer = setInterval(() => this.remindDue().catch((e) => this.logger.warn(`lembretes: ${e?.message || e}`)), 60_000); }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
@@ -176,6 +177,7 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
     const shaped = await this.shapeOne(orgId, row);
     if (chat && !opts.silentEvent) await this.attendance.event(orgId, { session_id: chat.session_id, chat_id: chat.chat_id }, 'task_created', userId, { task_id: row.id, title: row.title, due_at: row.due_at, source: opts.source || 'manual' });
     this.presenter.emit(orgId, 'wa:task', { action: 'created', task: shaped });
+    if (shaped?.assigned_user?.id && shaped.assigned_user.id !== userId) this.hooks.emit('task_assigned', { orgId, task: shaped, by: userId });
     return shaped;
   }
 
@@ -196,6 +198,7 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
     const row = await this.prisma.whatsapp_tasks.update({ where: { id }, data });
     const shaped = await this.shapeOne(orgId, row);
     this.presenter.emit(orgId, 'wa:task', { action: 'updated', task: shaped, by: userId });
+    if (data.assigned_user_id && data.assigned_user_id !== cur.assigned_user_id && data.assigned_user_id !== userId) this.hooks.emit('task_assigned', { orgId, task: shaped, by: userId });
     return shaped;
   }
 
@@ -238,6 +241,7 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
     for (const [orgId, list] of byOrg) {
       const shaped = await this.shapeMany(orgId, list);
       for (const t of shaped) this.presenter.emit(orgId, 'wa:task_due', { task: t });
+      this.hooks.emit('task_due', { orgId, tasks: shaped });
     }
     await this.prisma.whatsapp_tasks.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { reminded_at: now } });
     return rows.length;

@@ -228,6 +228,8 @@ export class WhatsAppInboundService {
     }
     if (isGroupJid(chatId) && created?.body && /@\d{7,16}/.test(String(created.body))) await this.contacts.fillMentions(orgId, [created]).catch(() => {});
     if (!opts.silent) this.presenter.message(orgId, { id: created.id });
+    // notificações (painel/push): toda mensagem recebida, individual ou grupo
+    if (!fromMe && !opts.silent && !opts.history && direction === 'IN') this.hooks.emit('message', { orgId, session: row, sessionId, chatId, message: created });
     // mensagem do cliente numa conversa individual → o bot decide se responde
     if (!fromMe && !opts.silent && !opts.history && /@(c\.us|lid|s\.whatsapp\.net)$/.test(chatId)) {
       this.hooks.emitInbound({ orgId, session: row, sessionId, chatId, message: created });

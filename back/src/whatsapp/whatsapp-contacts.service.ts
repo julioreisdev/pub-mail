@@ -645,6 +645,16 @@ export class WhatsAppContactsService {
    * número da conversa; para jid solto, o número informado ou qualquer um conectado.
    * Devolve o caminho absoluto + mime, ou null (sem foto / gateway fora).
    */
+  /** URL PÚBLICA assinada da foto do contato/grupo (ícone de notificação) — null se não há foto. */
+  async photoUrl(orgId: string, target: { contactId?: string; chatUuid?: string; jid?: string; sessionId?: string | null }) {
+    try {
+      const r = await this.photo(orgId, target);
+      return r?.id ? this.media.signedUrl(r.id) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async photo(orgId: string, target: { contactId?: string; chatUuid?: string; jid?: string; sessionId?: string | null }) {
     let waId = target.jid ? normJid(target.jid) : '';
     let sessionId = target.sessionId || null;
@@ -666,7 +676,7 @@ export class WhatsAppContactsService {
     const cachedId = group ? (chat?.group_meta as any)?.photo_media_id : contact?.profile_pic_media_id;
     if (cachedId) {
       const m = await this.prisma.whatsapp_media.findUnique({ where: { id: cachedId } });
-      if (m && (!m.expires_at || m.expires_at > new Date())) return { path: this.media.absPath(m), mime: m.mime };
+      if (m && (!m.expires_at || m.expires_at > new Date())) return { path: this.media.absPath(m), mime: m.mime, id: m.id };
     }
     const row = await this.sessions.anyReady(orgId, sessionId);
     if (!row?.openwa_session_id) return null;
@@ -706,7 +716,7 @@ export class WhatsAppContactsService {
         .create({ data: { organization_id: orgId, wa_id: waId, phone: phoneFromJid(waId) || null, source: 'session', profile_pic_media_id: m.id } })
         .catch(() => undefined);
     }
-    return { path: this.media.absPath(m), mime: m.mime };
+    return { path: this.media.absPath(m), mime: m.mime, id: m.id };
   }
 
   private async fetchImage(url: string): Promise<{ buf: Buffer; mime: string }> {

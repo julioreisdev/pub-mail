@@ -291,6 +291,8 @@ export class WhatsAppAttendanceService {
     await this.prisma.whatsapp_chats.update({ where: { id: c.id }, data });
     if (opts.event) await this.event(orgId, k, opts.event, opts.actor ?? opts.userId ?? null, opts.meta);
     this.presenter.chat(orgId, k.session_id, k.chat_id);
+    // notificações: fila, atribuição, transferência, bot pedindo humano
+    this.hooks.emit('service', { orgId, sessionId: k.session_id, chatId: k.chat_id, chatUuid: c.id, status, prev: c.service_status, prevAssigned: c.assigned_user_id || null, assigned: (data.assigned_user_id !== undefined ? data.assigned_user_id : c.assigned_user_id) || null, event: opts.event, actor: opts.actor ?? opts.userId ?? null, meta: opts.meta });
     // entrou na fila sem dono → distribuição automática (se ligada), excluindo quem liberou
     if (status === 'waiting' && !data.assigned_user_id) void this.autoAssign(orgId, k, opts.actor ?? null).catch((e) => this.logger.warn(`distribuição ${k.chat_id}: ${e?.message || e}`));
     return { ...c, ...data };

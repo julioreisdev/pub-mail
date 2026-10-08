@@ -120,6 +120,8 @@ Plugin WordPress que mostra cada post e página no idioma do navegador de cada v
 - **Integrações**: chaves de IA por provedor **mascaradas** (adicionar/remover por chave, rotação automática), Resend + Signing Secret do webhook, IP de borda e e-mail do certbot. **Status de API** mostra o estado runtime de cada chave; **Tutorial de IA** ensina a obter as chaves.
 - **Conta & Domínios**: dados da conta, domínios de webchat e de quiz.
 - **Interface**: tema **claro/escuro**, sidebar em grupos recolhíveis, dashboard com resumo da conta.
+- **App instalável (PWA)**: botão **Instalar app** na sidebar (Android/Chrome/Edge com o convite nativo; iPhone/iPad com o passo a passo) — abre em tela cheia pela tela inicial, pede a permissão de notificação ao instalar e mostra uma página própria sem internet. O manifesto e o service worker só entram no painel logado (os domínios dos clientes não viram app).
+- **Notificações** (WhatsApp → Notificações; validado em Android, iPhone e Chrome): cada atendente escolhe o que recebe — mensagem nova (todas, só as suas, só de contatos/grupos/números escolhidos), menção em grupo, fila, atribuição, transferência, bot pedindo humano, tarefa no prazo/atribuída, pagamento confirmado, cobrança vencida, funil (por etapa), negócio ganho, número caiu/voltou, avaliação, broadcast concluído, mensagem da equipe — por **push** no aparelho (Web Push) e/ou **aviso no painel**, com som, vibração e horário silencioso. **Avisos personalizados** (título/texto/link, para si ou para a equipe, agora ou agendados), teste de envio e histórico de 30 dias.
 
 ## Arquitetura
 

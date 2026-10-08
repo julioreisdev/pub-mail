@@ -52,6 +52,7 @@ import {
   IconDownload,
   IconExternalLink,
   IconFileText,
+  IconHeadphones,
   IconFolder,
   IconHeadset,
   IconMailOpened,
@@ -81,6 +82,7 @@ import {
   IconUsers,
   IconUserDollar,
   IconReceipt2,
+  IconUpload,
   IconVideo,
   IconVolume,
   IconVolumeOff,
@@ -285,9 +287,35 @@ const summarizeReactions = (reactions) => {
 // ----------------------------------------------------------------------------
 // Texto com formatação do WhatsApp (*negrito* _itálico_ ~tachado~ ```mono```) + links
 // ----------------------------------------------------------------------------
-const FMT_RE = /(```[\s\S]+?```|\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|https?:\/\/[^\s<]+|www\.[^\s<]+|@\d{7,16}(?!\d))/g;
+// Terminações aceitas para um domínio escrito sem "https://" (lista fechada: evita virar link
+// coisa como "arquivo.pdf", "v1.2" ou "obs.final").
+const LINK_TLDS =
+  'com|net|org|br|io|app|dev|co|me|info|biz|online|site|store|shop|tech|ai|gov|edu|xyz|tv|us|uk|pt|es|link|live|club|blog|news|page|cloud|digital|academy|agency|art|bet|vip|top|games|global|group|ly|gg|to|so|sh|fm|be|de|fr|it|ar|mx|cl|uy|py|ca|au|in|jp|eu|website|space|solutions|services|software|systems|email|marketing|media|social|team|work|world|life|today|company|center|network|plus|pro|mobi|chat|bio|ink|lat|one';
+const BARE_DOMAIN_SRC = `(?<![@\\w./-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:${LINK_TLDS})(?![a-z0-9-])(?:[/?#][^\\s<]*)?`;
+const FMT_RE = new RegExp(
+  `(\`\`\`[\\s\\S]+?\`\`\`|\\*[^*\\n]+\\*|_[^_\\n]+_|~[^~\\n]+~|https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|${BARE_DOMAIN_SRC}|@\\d{7,16}(?!\\d))`,
+  'gi'
+);
+const BARE_DOMAIN_RE = new RegExp(`^${BARE_DOMAIN_SRC}$`, 'i');
+// pontuação colada no fim do link ("veja site.com.") não faz parte dele
+const splitLinkTail = (p) => {
+  const m = /[.,;:!?)\]'"»”]+$/.exec(p);
+  return m ? [p.slice(0, m.index), m[0]] : [p, ''];
+};
+const isLinkPart = (p) => /^(https?:\/\/|www\.)/i.test(p) || BARE_DOMAIN_RE.test(p);
+const hrefOf = (p) => (/^https?:\/\//i.test(p) ? p : `https://${p}`);
+/** 1º link de um texto (para a prévia), já sem a pontuação do fim. */
+export function firstLinkOf(text) {
+  for (const m of String(text || '').matchAll(FMT_RE)) {
+    if (isLinkPart(m[0])) {
+      const [link] = splitLinkTail(m[0]);
+      if (link) return hrefOf(link);
+    }
+  }
+  return null;
+}
 // `mentions` = extra.mention_names do back ({ '<id>': { name, phone } }); `onPerson` abre os dados da pessoa
-function WaText({ text, tail = 0, sx, mentions, onPerson }) {
+function WaText({ text, tail = 0, sx, mentions, onPerson, sessionId }) {
   const parts = useMemo(() => String(text || '').split(FMT_RE), [text]);
   return (
     <Typography component="div" variant="body2" sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.45, ...sx }}>
@@ -312,7 +340,7 @@ function WaText({ text, tail = 0, sx, mentions, onPerson }) {
                 clickable
                   ? (e) => {
                       e.stopPropagation();
-                      onPerson({ jid: m.phone ? `${m.phone}@c.us` : `${key}@lid`, name: m.name || null, session_id: msg?.session_id });
+                      onPerson({ jid: m.phone ? `${m.phone}@c.us` : `${key}@lid`, name: m.name || null, session_id: sessionId });
                     }
                   : undefined
               }
@@ -328,19 +356,25 @@ function WaText({ text, tail = 0, sx, mentions, onPerson }) {
         if (/^\*[^*\n]+\*$/.test(p)) return <strong key={i}>{p.slice(1, -1)}</strong>;
         if (/^_[^_\n]+_$/.test(p)) return <em key={i}>{p.slice(1, -1)}</em>;
         if (/^~[^~\n]+~$/.test(p)) return <s key={i}>{p.slice(1, -1)}</s>;
-        if (/^(https?:\/\/|www\.)/.test(p)) {
-          const href = p.startsWith('www.') ? `https://${p}` : p;
+        if (isLinkPart(p)) {
+          const [link, rest] = splitLinkTail(p);
           return (
-            <Box
-              key={i}
-              component="a"
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              sx={{ color: 'inherit', textDecoration: 'underline', fontWeight: 600 }}
-            >
-              {p}
-            </Box>
+            <span key={i}>
+              <Box
+                component="a"
+                href={hrefOf(link)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                sx={[
+                  dual({ color: '#027eb5' }, { color: '#53bdeb' }),
+                  { textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }
+                ]}
+              >
+                {link}
+              </Box>
+              {rest}
+            </span>
           );
         }
         return <span key={i}>{p}</span>;
@@ -348,6 +382,153 @@ function WaText({ text, tail = 0, sx, mentions, onPerson }) {
       {/* espaçador invisível no fim da última linha: reserva o lugar da hora/ack (truque do WhatsApp Web) */}
       {tail ? <span style={{ display: 'inline-block', width: tail, height: 1 }} /> : null}
     </Typography>
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Prévia de link (título, descrição e imagem) — dados do back (GET /whatsapp/link-preview),
+// buscados só quando o balão aparece na tela e guardados em cache por link.
+// ----------------------------------------------------------------------------
+const linkPreviewCache = new Map(); // url -> dados | null (sem prévia)
+const linkPreviewInflight = new Map();
+function loadLinkPreview(url) {
+  if (linkPreviewCache.has(url)) return Promise.resolve(linkPreviewCache.get(url));
+  if (linkPreviewInflight.has(url)) return linkPreviewInflight.get(url);
+  const p = get(`/whatsapp/link-preview?url=${encodeURIComponent(url)}`)
+    .then((d) => {
+      const v = d && !d.empty && (d.title || d.image) ? d : null;
+      linkPreviewCache.set(url, v);
+      return v;
+    })
+    .catch(() => {
+      linkPreviewCache.set(url, null);
+      return null;
+    })
+    .finally(() => linkPreviewInflight.delete(url));
+  linkPreviewInflight.set(url, p);
+  return p;
+}
+
+function LinkPreviewCard({ url, onLoaded }) {
+  const [data, setData] = useState(() => linkPreviewCache.get(url) || null);
+  const boxRef = useRef(null);
+  useEffect(() => {
+    if (!url) return undefined;
+    if (linkPreviewCache.has(url)) {
+      const v = linkPreviewCache.get(url);
+      setData(v);
+      if (v) onLoaded?.(true);
+      return undefined;
+    }
+    let alive = true;
+    const el = boxRef.current;
+    const run = () =>
+      loadLinkPreview(url).then((v) => {
+        if (!alive) return;
+        setData(v);
+        if (v) onLoaded?.(true);
+      });
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      run();
+      return () => {
+        alive = false;
+      };
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          io.disconnect();
+          run();
+        }
+      },
+      { rootMargin: '300px' }
+    );
+    io.observe(el);
+    return () => {
+      alive = false;
+      io.disconnect();
+    };
+  }, [url, onLoaded]);
+
+  if (!data) return <Box ref={boxRef} sx={{ height: 0 }} />;
+  const wide = data.image && data.image_w >= 300 && data.image_w / Math.max(1, data.image_h) >= 1.25;
+  const href = data.final_url || data.url || url;
+  const text = (
+    <Box sx={{ minWidth: 0, flex: 1, px: 1, py: 0.75 }}>
+      {data.title ? (
+        <Typography
+          variant="body2"
+          sx={{
+            fontWeight: 700,
+            lineHeight: 1.3,
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden'
+          }}
+        >
+          {data.title}
+        </Typography>
+      ) : null}
+      {data.description ? (
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'inherit',
+            opacity: 0.75,
+            lineHeight: 1.35,
+            mt: 0.25,
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden'
+          }}
+        >
+          {data.description}
+        </Typography>
+      ) : null}
+      <Typography variant="caption" sx={{ color: 'inherit', opacity: 0.6, display: 'block', mt: 0.25 }} noWrap>
+        {data.site && data.site.toLowerCase() !== data.domain ? `${data.site} · ${data.domain}` : data.domain}
+      </Typography>
+    </Box>
+  );
+  return (
+    <Box
+      component="a"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      sx={[
+        dual({ bgcolor: 'rgba(0,0,0,.05)' }, { bgcolor: 'rgba(0,0,0,.22)' }),
+        {
+          display: 'flex',
+          flexDirection: wide ? 'column' : 'row',
+          alignItems: wide ? 'stretch' : 'center',
+          borderRadius: 1.5,
+          overflow: 'hidden',
+          mb: 0.6,
+          color: 'inherit',
+          textDecoration: 'none',
+          '&:hover': { filter: 'brightness(.97)' }
+        }
+      ]}
+    >
+      {data.image ? (
+        <Box
+          component="img"
+          src={data.image}
+          alt=""
+          loading="lazy"
+          sx={
+            wide
+              ? { display: 'block', width: '100%', maxHeight: 200, objectFit: 'cover' }
+              : { display: 'block', width: 76, height: 76, objectFit: 'cover', flexShrink: 0 }
+          }
+        />
+      ) : null}
+      {text}
+    </Box>
   );
 }
 
@@ -415,17 +596,34 @@ const ChatListItem = memo(function ChatListItem({ chat, active, onOpen, now, ses
           </Typography>
         </Stack>
         <Stack direction="row" alignItems="center" spacing={0.5}>
+          {/* flex: "Você:" fica fixo e a prévia ocupa o resto com reticências próprias
+              (como texto corrido, a prévia inteira caía depois do corte e sobrava só "Você: …") */}
           <Typography
             variant="caption"
-            sx={{ color: unread ? 'text.primary' : 'text.secondary', flex: 1, minWidth: 0, display: 'block', fontSize: 12.5 }}
-            noWrap
+            component="div"
+            sx={{
+              color: unread ? 'text.primary' : 'text.secondary',
+              flex: 1,
+              minWidth: 0,
+              display: 'flex',
+              alignItems: 'center',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              fontSize: 12.5
+            }}
           >
             {chat.last_message_direction === 'OUT' ? (
-              <Box component="span" sx={{ color: 'text.secondary', fontWeight: 600 }}>
-                Você:{' '}
+              <Box component="span" sx={{ color: 'text.secondary', fontWeight: 600, flexShrink: 0, mr: 0.5 }}>
+                Você:
               </Box>
             ) : null}
-            {chat.last_message_preview ? <PreviewText preview={preview} /> : preview}
+            {chat.last_message_preview ? (
+              <PreviewText preview={preview} sx={{ flex: '0 1 auto' }} />
+            ) : (
+              <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {preview}
+              </Box>
+            )}
           </Typography>
           {waiting ? (
             <Tooltip title={`Aguardando resposta há ${fmtWait(waitMs)}`} disableInteractive>
@@ -590,7 +788,8 @@ function MediaDownload({ url }) {
         sx={{
           position: 'absolute',
           top: 6,
-          right: 6,
+          right: 36,
+          zIndex: 1,
           bgcolor: 'rgba(0,0,0,.45)',
           color: '#fff',
           opacity: 0,
@@ -604,6 +803,48 @@ function MediaDownload({ url }) {
   );
 }
 
+// Miniatura de um anexo ainda não enviado (prévia do composer)
+function AttachThumb({ item }) {
+  if (item.kind === 'image' && item.url) {
+    return <img src={item.url} alt="" style={{ width: 56, height: 56, borderRadius: 8, objectFit: 'cover', display: 'block' }} />;
+  }
+  if (item.kind === 'video' && item.url) {
+    return (
+      <Box sx={{ position: 'relative', width: 56, height: 56, borderRadius: 2, overflow: 'hidden', bgcolor: '#000' }}>
+        <video src={item.url} muted preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        <Box sx={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: '#fff' }}>
+          <IconVideo size={20} />
+        </Box>
+      </Box>
+    );
+  }
+  return (
+    <Box
+      sx={{
+        width: 56,
+        height: 56,
+        borderRadius: 2,
+        display: 'grid',
+        placeItems: 'center',
+        bgcolor: 'action.hover',
+        color: 'text.secondary'
+      }}
+    >
+      {item.kind === 'audio' ? <IconHeadphones size={24} /> : <IconFileText size={24} />}
+    </Box>
+  );
+}
+const attachLabel = (a) =>
+  a.asDocument
+    ? 'enviado como documento'
+    : a.kind === 'image'
+      ? 'foto'
+      : a.kind === 'video'
+        ? 'vídeo'
+        : a.kind === 'audio'
+          ? 'áudio'
+          : 'arquivo';
+
 function ImageBody({ msg, onOpen }) {
   const url = msg.media?.url;
   if (!url) return <MediaOmitted msg={msg} label="Foto" />;
@@ -614,9 +855,9 @@ function ImageBody({ msg, onOpen }) {
         cursor: 'zoom-in',
         borderRadius: 1.5,
         overflow: 'hidden',
-        maxWidth: 320,
-        mb: msg.body ? 0.5 : 0,
+        width: '100%',
         position: 'relative',
+        bgcolor: 'rgba(0,0,0,.06)',
         '&:hover .wa-media-dl': { opacity: 1 }
       }}
     >
@@ -624,7 +865,7 @@ function ImageBody({ msg, onOpen }) {
       <img
         src={url}
         alt={msg.body || 'imagem'}
-        style={{ display: 'block', width: '100%', maxHeight: 360, objectFit: 'cover' }}
+        style={{ display: 'block', width: '100%', height: 'auto', minHeight: 80, maxHeight: 420, objectFit: 'cover' }}
         loading="lazy"
       />
       {msg.uploading ? (
@@ -644,15 +885,14 @@ function VideoBody({ msg }) {
       sx={{
         borderRadius: 1.5,
         overflow: 'hidden',
-        maxWidth: 320,
-        mb: msg.body ? 0.5 : 0,
+        width: '100%',
         bgcolor: '#000',
         position: 'relative',
         '&:hover .wa-media-dl': { opacity: 1 }
       }}
     >
       <MediaDownload url={url} />
-      <video src={url} controls preload="metadata" style={{ display: 'block', width: '100%', maxHeight: 360 }} />
+      <video src={url} controls preload="metadata" style={{ display: 'block', width: '100%', maxHeight: 420 }} />
     </Box>
   );
 }
@@ -964,6 +1204,12 @@ const MessageBubble = memo(function MessageBubble({
   const sticker = msg.type === 'sticker' && !hiddenRevoked;
   const reactions = summarizeReactions(msg.reactions);
   const pressRef = useRef(null);
+  // prévia de link (só em mensagem de texto, como o WhatsApp)
+  const previewUrl = useMemo(
+    () => (msg.type === 'text' && !hiddenRevoked ? firstLinkOf(msg.body) : null),
+    [msg.type, msg.body, hiddenRevoked]
+  );
+  const [hasPreview, setHasPreview] = useState(false);
 
   const openMenu = (e) => {
     e.stopPropagation();
@@ -1068,6 +1314,9 @@ const MessageBubble = memo(function MessageBubble({
   const scheduled = Boolean(msg.extra?.scheduled);
   const byBot = out && Boolean(msg.extra?.bot);
   const metaTail = (msg.edited ? 48 : 0) + (scheduled ? 16 : 0) + 40 + (out ? 20 : 0);
+  // foto/vídeo: balão com a largura da mídia (a legenda quebra embaixo dela, como no WhatsApp)
+  const visual = !hiddenRevoked && !sticker && (msg.type === 'image' || msg.type === 'video') && Boolean(msg.media?.url);
+  const timeOnImage = visual && msg.type === 'image' && !showCaption;
 
   return (
     <Stack
@@ -1107,9 +1356,10 @@ const MessageBubble = memo(function MessageBubble({
               maxWidth: '100%',
               minWidth: 0,
               overflowWrap: 'anywhere',
-              px: sticker ? 0 : 1.1,
-              pt: sticker ? 0 : 0.6,
-              pb: sticker ? 0 : 0.5,
+              px: sticker ? 0 : visual ? 0.4 : 1.1,
+              pt: sticker ? 0 : visual ? 0.4 : 0.6,
+              pb: sticker ? 0 : visual ? (showCaption ? 0.6 : 0.4) : 0.5,
+              ...(visual ? { width: 'min(330px, 100%)' } : hasPreview ? { width: 'min(360px, 100%)' } : {}),
               borderRadius: 2,
               boxShadow: sticker ? 'none' : '0 1px 0.5px rgba(0,0,0,.13)',
               ...(first && !sticker ? (out ? { borderTopRightRadius: 3 } : { borderTopLeftRadius: 3 }) : {}),
@@ -1147,6 +1397,7 @@ const MessageBubble = memo(function MessageBubble({
                 fontWeight: 700,
                 display: 'block',
                 mb: 0.25,
+                px: visual ? 0.7 : 0,
                 color: senderColor(msg.from_jid || msg.sender_name),
                 cursor: onPerson && msg.from_jid ? 'pointer' : 'default',
                 '&:hover': onPerson && msg.from_jid ? { textDecoration: 'underline' } : {}
@@ -1216,9 +1467,19 @@ const MessageBubble = memo(function MessageBubble({
           ) : null}
 
           {body}
-          {showText ? <WaText text={msg.body} tail={metaTail} mentions={msg.extra?.mention_names} onPerson={onPerson} /> : null}
+          {showText && previewUrl ? <LinkPreviewCard url={previewUrl} onLoaded={setHasPreview} /> : null}
+          {showText ? (
+            <WaText text={msg.body} tail={metaTail} mentions={msg.extra?.mention_names} onPerson={onPerson} sessionId={msg.session_id} />
+          ) : null}
           {showCaption ? (
-            <WaText text={msg.body} tail={metaTail} sx={{ mt: 0.25 }} mentions={msg.extra?.mention_names} onPerson={onPerson} />
+            <WaText
+              text={msg.body}
+              tail={metaTail}
+              sx={{ mt: visual ? 0.6 : 0.25, px: visual ? 0.7 : 0 }}
+              mentions={msg.extra?.mention_names}
+              onPerson={onPerson}
+              sessionId={msg.session_id}
+            />
           ) : null}
 
           {msg.error ? (
@@ -1250,7 +1511,22 @@ const MessageBubble = memo(function MessageBubble({
                 opacity: 0.75,
                 fontSize: 10.5,
                 lineHeight: 1,
-                ...(showText || showCaption ? { position: 'absolute', right: 7, bottom: 5 } : { mt: 0.35 })
+                ...(timeOnImage
+                  ? {
+                      position: 'absolute',
+                      right: 10,
+                      bottom: 9,
+                      opacity: 1,
+                      color: '#fff',
+                      px: 0.7,
+                      py: 0.35,
+                      borderRadius: 1.5,
+                      bgcolor: 'rgba(0,0,0,.42)',
+                      pointerEvents: 'none'
+                    }
+                  : showText || showCaption
+                    ? { position: 'absolute', right: visual ? 10 : 7, bottom: 5 }
+                    : { mt: 0.35, px: visual ? 0.7 : 0 })
               }}
             >
               {msg.edited ? <span style={{ fontStyle: 'italic' }}>Editada</span> : null}
@@ -1909,7 +2185,12 @@ export default function WhatsAppChat() {
   const replyRef = useRef(null);
   replyRef.current = reply;
   const [editing, setEditing] = useState(null);
-  const [attachment, setAttachment] = useState(null); // {file,url,kind,asDocument}
+  // anexos esperando envio (escolhidos no clipe, arrastados para a conversa ou colados): a
+  // legenda digitada vai junto do 1º; os demais saem em seguida, na ordem
+  const [attachments, setAttachments] = useState([]); // [{id,file,url,kind,asDocument}]
+  const attachment = attachments[0] || null;
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
   const [sending, setSending] = useState(false);
   const draftsRef = useRef(new Map());
   const inputRef = useRef(null);
@@ -2247,7 +2528,7 @@ export default function WhatsAppChat() {
       stopTyping();
       setActive(chat);
       setEditing(null);
-      setAttachment(null);
+      setAttachments([]);
       setQrMedia(null);
       setQr(null);
       setShowJump(false);
@@ -2564,7 +2845,7 @@ export default function WhatsAppChat() {
     }
     // anexo da resposta rápida: fica visível acima do campo e só vai junto no envio (Enter/Enviar)
     if (item.media?.id) {
-      setAttachment(null);
+      setAttachments([]);
       setQrMedia({ media: item.media, shortcut: item.shortcut, title: item.title });
     }
     requestAnimationFrame(() => {
@@ -2767,24 +3048,124 @@ export default function WhatsAppChat() {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  // arquivo escolhido → prévia no composer (legenda = textarea)
-  const pickFile = (e, asDocument) => {
-    const f = e.target.files?.[0];
-    e.target.value = '';
-    if (!f) return;
-    const kind = asDocument
-      ? 'document'
-      : f.type.startsWith('image/')
-        ? 'image'
-        : f.type.startsWith('video/')
-          ? 'video'
-          : f.type.startsWith('audio/')
-            ? 'audio'
-            : 'document';
+  // arquivos → prévia no composer (legenda = campo de texto). Vêm do clipe, de arrastar para a
+  // conversa ou de colar (Ctrl/⌘+V de uma imagem copiada).
+  const MAX_ATTACH = 10;
+  const MAX_ATTACH_BYTES = 64 * 1024 * 1024; // mesmo limite do back (send-media)
+  const addFiles = (files, { asDocument = false } = {}) => {
+    if (!activeRef.current || offline) return;
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    const big = list.filter((f) => f.size > MAX_ATTACH_BYTES);
+    if (big.length) {
+      toast.error(
+        big.length === 1
+          ? `"${big[0].name}" passa de 64 MB e não pode ser enviado.`
+          : `${big.length} arquivos passam de 64 MB e não podem ser enviados.`
+      );
+    }
+    const ok = list.filter((f) => f.size <= MAX_ATTACH_BYTES);
+    if (!ok.length) return;
+    if (editing) {
+      setEditing(null);
+      setText('');
+    }
     setQrMedia(null);
-    setAttachment({ file: f, url: URL.createObjectURL(f), kind, asDocument: Boolean(asDocument) || kind === 'document' });
+    setAttachments((prev) => {
+      const room = Math.max(0, MAX_ATTACH - prev.length);
+      if (ok.length > room) toast(`Até ${MAX_ATTACH} arquivos por vez.`);
+      const items = ok.slice(0, room).map((raw) => {
+        // imagem colada chega como "image.png": dá um nome que diga o que é
+        const ext = (raw.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        const file =
+          !raw.name || /^image\.(png|jpe?g|gif|webp)$/i.test(raw.name)
+            ? new File([raw], `imagem-${stamp}.${ext}`, { type: raw.type })
+            : raw;
+        const kind = asDocument
+          ? 'document'
+          : file.type.startsWith('image/') && !/svg|gif/.test(file.type)
+            ? 'image'
+            : file.type.startsWith('video/')
+              ? 'video'
+              : file.type.startsWith('audio/')
+                ? 'audio'
+                : 'document';
+        return {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          file,
+          url: kind === 'image' || kind === 'video' ? URL.createObjectURL(file) : null,
+          kind,
+          asDocument: Boolean(asDocument) || kind === 'document'
+        };
+      });
+      return [...prev, ...items];
+    });
     requestAnimationFrame(() => inputRef.current?.focus());
   };
+  const pickFile = (e, asDocument) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    addFiles(files, { asDocument });
+  };
+  const removeAttachment = (id) =>
+    setAttachments((prev) => {
+      const it = prev.find((x) => x.id === id);
+      if (it?.url) URL.revokeObjectURL(it.url);
+      return prev.filter((x) => x.id !== id);
+    });
+
+  // arrastar arquivos para cima da conversa
+  const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  const dragHandlers = {
+    onDragEnter: (e) => {
+      if (!hasFiles(e) || !activeRef.current) return;
+      e.preventDefault();
+      dragDepthRef.current += 1;
+      setDragOver(true);
+    },
+    onDragOver: (e) => {
+      if (!hasFiles(e) || !activeRef.current) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = offline ? 'none' : 'copy';
+    },
+    onDragLeave: (e) => {
+      if (!hasFiles(e)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (!dragDepthRef.current) setDragOver(false);
+    },
+    onDrop: (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepthRef.current = 0;
+      setDragOver(false);
+      if (offline) {
+        toast.error('Conecte o WhatsApp para enviar arquivos.');
+        return;
+      }
+      addFiles(e.dataTransfer.files);
+    }
+  };
+  const addFilesRef = useRef(addFiles);
+  addFilesRef.current = addFiles;
+  // colar arquivo/imagem copiada: no campo de texto ou com o foco em qualquer lugar da conversa
+  // (outros campos da página — busca, diálogos — ficam de fora)
+  useEffect(() => {
+    if (teamMode) return undefined;
+    const onPaste = (e) => {
+      if (!activeRef.current) return;
+      const files = Array.from(e.clipboardData?.files || []);
+      if (!files.length) return;
+      const t = e.target;
+      const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+      if (typing && t !== inputRef.current) return;
+      if (document.querySelector('.MuiDialog-root, .MuiDrawer-modal, .MuiPopover-root')) return;
+      e.preventDefault();
+      addFilesRef.current(files);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [teamMode]);
 
   const sendMediaFile = async (file, { caption = '', asVoice = false, asDocument = false, kind = 'document', localUrl } = {}) => {
     const cur = activeRef.current;
@@ -2834,19 +3215,24 @@ export default function WhatsAppChat() {
   };
 
   const sendAttachment = async (caption) => {
-    const a = attachment;
-    if (!a) return;
-    setAttachment(null);
+    const list = attachments;
+    if (!list.length) return;
+    setAttachments([]);
     setText('');
-    const ok = await sendMediaFile(a.file, {
-      caption,
-      asDocument: a.asDocument,
-      kind: a.kind,
-      localUrl: a.kind === 'image' ? a.url : null
-    });
-    if (!ok) {
-      setAttachment(a);
-      setText(caption);
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      const ok = await sendMediaFile(a.file, {
+        caption: i === 0 ? caption : '',
+        asDocument: a.asDocument,
+        kind: a.kind,
+        localUrl: a.kind === 'image' ? a.url : null
+      });
+      if (!ok) {
+        // devolve o que não saiu para o usuário tentar de novo
+        setAttachments(list.slice(i));
+        if (i === 0) setText(caption);
+        return;
+      }
     }
   };
 
@@ -2996,7 +3382,7 @@ export default function WhatsAppChat() {
   const startEdit = (msg) => {
     setEditing(msg);
     setReply(null);
-    setAttachment(null);
+    setAttachments([]);
     setText(msg.body || '');
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -3891,11 +4277,51 @@ export default function WhatsAppChat() {
         {/* ---------------- coluna direita ---------------- */}
         {!teamMode && showChat ? (
           <Box
+            {...dragHandlers}
             sx={[
               THREAD_BG,
               { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', '&::before': WALLPAPER }
             ]}
           >
+            {dragOver && active ? (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  inset: 10,
+                  zIndex: 20,
+                  pointerEvents: 'none',
+                  borderRadius: 3,
+                  border: '2px dashed',
+                  borderColor: WA_GREEN,
+                  display: 'grid',
+                  placeItems: 'center',
+                  bgcolor: (t) => (t.vars ? `rgba(${t.vars.palette.background.paperChannel} / 0.88)` : 'rgba(255,255,255,.88)'),
+                  backdropFilter: 'blur(2px)'
+                }}
+              >
+                <Stack alignItems="center" spacing={1} sx={{ color: 'text.primary', textAlign: 'center', px: 2 }}>
+                  <Box
+                    sx={{
+                      width: 64,
+                      height: 64,
+                      borderRadius: '50%',
+                      display: 'grid',
+                      placeItems: 'center',
+                      color: '#fff',
+                      bgcolor: WA_GREEN
+                    }}
+                  >
+                    <IconUpload size={30} />
+                  </Box>
+                  <Typography sx={{ fontWeight: 800, fontSize: 17 }}>Solte para enviar</Typography>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    {offline
+                      ? 'Conecte o WhatsApp para enviar arquivos.'
+                      : `Para ${active.name || 'esta conversa'} · até 10 arquivos de 64 MB`}
+                  </Typography>
+                </Stack>
+              </Box>
+            ) : null}
             {!active && offline && !listLoading && list.items.length === 0 ? (
               <Box sx={{ flex: 1, display: 'grid', placeItems: 'center', p: 3, position: 'relative', zIndex: 1, overflowY: 'auto' }}>
                 <WaNotConnected session={sessions[0]} title="Conecte o WhatsApp para conversar" sx={{ py: 0, width: '100%' }} />
@@ -4298,12 +4724,9 @@ export default function WhatsAppChat() {
                   </Stack>
                 ) : null}
 
-                {/* prévia do anexo */}
-                {attachment ? (
-                  <Stack
-                    direction="row"
-                    spacing={1.25}
-                    alignItems="center"
+                {/* prévia dos anexos (1 = linha com detalhes; vários = miniaturas) */}
+                {attachments.length ? (
+                  <Box
                     sx={{
                       px: 1.5,
                       py: 1,
@@ -4314,33 +4737,61 @@ export default function WhatsAppChat() {
                       bgcolor: 'background.paper'
                     }}
                   >
-                    {attachment.kind === 'image' ? (
-                      <img src={attachment.url} alt="anexo" style={{ width: 56, height: 56, borderRadius: 8, objectFit: 'cover' }} />
+                    {attachments.length === 1 ? (
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        <AttachThumb item={attachment} />
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                            {attachment.file.name}
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            {fmtBytes(attachment.file.size)} · {attachLabel(attachment)} · escreva uma legenda (opcional)
+                          </Typography>
+                        </Box>
+                        <IconButton size="small" onClick={() => setAttachments([])} aria-label="Remover anexo">
+                          <IconX size={16} />
+                        </IconButton>
+                      </Stack>
                     ) : (
-                      <Box sx={{ width: 56, height: 56, borderRadius: 2, display: 'grid', placeItems: 'center', bgcolor: 'action.hover' }}>
-                        {attachment.kind === 'video' ? <IconPhoto size={24} /> : <IconFileText size={24} />}
-                      </Box>
+                      <>
+                        <Stack direction="row" alignItems="center" sx={{ mb: 0.75 }}>
+                          <Typography variant="caption" sx={{ color: 'text.secondary', flex: 1 }}>
+                            {attachments.length} arquivos · a legenda vai junto do primeiro
+                          </Typography>
+                          <Button size="small" onClick={() => setAttachments([])} sx={{ textTransform: 'none', minWidth: 0 }}>
+                            Remover todos
+                          </Button>
+                        </Stack>
+                        <Stack direction="row" spacing={1} sx={{ overflowX: 'auto', pb: 0.5 }}>
+                          {attachments.map((a) => (
+                            <Tooltip key={a.id} title={`${a.file.name} · ${fmtBytes(a.file.size)}`}>
+                              <Box sx={{ position: 'relative', flexShrink: 0 }}>
+                                <AttachThumb item={a} />
+                                <IconButton
+                                  size="small"
+                                  onClick={() => removeAttachment(a.id)}
+                                  aria-label="Remover"
+                                  sx={{
+                                    position: 'absolute',
+                                    top: -6,
+                                    right: -6,
+                                    width: 20,
+                                    height: 20,
+                                    bgcolor: 'background.paper',
+                                    border: '1px solid',
+                                    borderColor: 'divider',
+                                    '&:hover': { bgcolor: 'background.paper' }
+                                  }}
+                                >
+                                  <IconX size={12} />
+                                </IconButton>
+                              </Box>
+                            </Tooltip>
+                          ))}
+                        </Stack>
+                      </>
                     )}
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                        {attachment.file.name}
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                        {fmtBytes(attachment.file.size)} ·{' '}
-                        {attachment.asDocument
-                          ? 'enviado como documento'
-                          : attachment.kind === 'image'
-                            ? 'foto'
-                            : attachment.kind === 'video'
-                              ? 'vídeo'
-                              : 'áudio'}{' '}
-                        · escreva uma legenda (opcional)
-                      </Typography>
-                    </Box>
-                    <IconButton size="small" onClick={() => setAttachment(null)}>
-                      <IconX size={16} />
-                    </IconButton>
-                  </Stack>
+                  </Box>
                 ) : null}
 
                 {/* anexo da resposta rápida (só vai no envio: Enter / Enviar) */}
@@ -4505,8 +4956,15 @@ export default function WhatsAppChat() {
                             </IconButton>
                           </span>
                         </Tooltip>
-                        <input ref={fileMediaRef} type="file" accept="image/*,video/*" hidden onChange={(e) => pickFile(e, false)} />
-                        <input ref={fileDocRef} type="file" hidden onChange={(e) => pickFile(e, true)} />
+                        <input
+                          ref={fileMediaRef}
+                          type="file"
+                          accept="image/*,video/*"
+                          multiple
+                          hidden
+                          onChange={(e) => pickFile(e, false)}
+                        />
+                        <input ref={fileDocRef} type="file" multiple hidden onChange={(e) => pickFile(e, true)} />
                         <TextField
                           fullWidth
                           variant="standard"

@@ -76,7 +76,9 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection, OnGa
       waAll = allowed === null;
       waSessions = rows.map((r) => r.id).filter((id) => allowed === null || allowed.has(id));
     }
-    socket.data.user = { userId: String(payload.sub), orgId: String(payload.org), role, modules, waSessions, waAll };
+    // identidade do aparelho para o push (sha256 do endpoint): não repete o push onde o painel está aberto
+    const pushHash = String((socket.handshake.auth as any)?.push || '').toLowerCase();
+    socket.data.user = { userId: String(payload.sub), orgId: String(payload.org), role, modules, waSessions, waAll, pushHash: /^[0-9a-f]{64}$/.test(pushHash) ? pushHash : null };
     return true;
   }
 

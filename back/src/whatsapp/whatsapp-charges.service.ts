@@ -8,6 +8,7 @@ import { OpenWaClient } from './openwa.client';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppHooks } from './whatsapp-hooks.service';
 import { ChatKey, WhatsAppAttendanceService } from './whatsapp-attendance.service';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { WhatsAppCrmService, advanceDue, fillCrmVars, formatBRL } from './whatsapp-crm.service';
@@ -98,6 +99,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     private readonly crm: WhatsAppCrmService,
     private readonly access: AccessService,
     private readonly pipeline: WhatsAppPipelineService,
+    private readonly hooks: WhatsAppHooks,
   ) {}
 
   onModuleInit() { this.timer = setInterval(() => void this.tick(), 5 * 60_000); }
@@ -548,6 +550,7 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
       await this.pipeline.onPaid(orgId, key); // funil: pago → etapa (se configurado)
     }
     const customer = await this.prisma.whatsapp_customers.findUnique({ where: { id: c.customer_id } });
+    this.hooks.emit('charge_paid', { orgId, charge: c, customer, via });
     try {
       const row = await this.sessionFor(orgId, c);
       const cfg = await this.settings(orgId);
@@ -614,6 +617,9 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     }
     // 2) lembretes + atraso
     const pend = await this.prisma.whatsapp_charges.findMany({ where: { organization_id: orgId, status: 'PENDING' }, take: 1000 });
+    // venceram ONTEM (o runner é diário → 1 aviso por cobrança)
+    const yesterday = new Date(dateOnlyUTC(brtDateStr()).getTime() - 86_400_000).getTime();
+    for (const c of pend) if (c.due_at && new Date(c.due_at).getTime() === yesterday) this.hooks.emit('charge_overdue', { orgId, charge: c });
     for (const c of pend) {
       const due = toDateStr(new Date(c.due_at));
       const days = Math.round((todayD.getTime() - dateOnlyUTC(due).getTime()) / DAY); // >0 = dias de atraso

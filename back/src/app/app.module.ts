@@ -42,6 +42,7 @@ import { TelegramModule } from 'src/telegram/telegram.module';
 import { PaymentsModule } from 'src/payments/payments.module';
 import { PlatformBillingModule } from 'src/platform-billing/platform-billing.module';
 import { WhatsAppModule } from 'src/whatsapp/whatsapp.module';
+import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
 import { TeamModule } from 'src/team/team.module';
 import { WordpressModule } from 'src/wordpress/wordpress.module';
@@ -93,6 +94,7 @@ import { WordpressModule } from 'src/wordpress/wordpress.module';
     PlatformBillingModule, // assinaturas do Pub Mail + módulos por usuário (AccessInterceptor global)
     RealtimeModule, // WebSocket do painel (Socket.IO em /realtime)
     WhatsAppModule, // WhatsApp via OpenWA (Docker, loopback)
+    NotificationsModule, // push + avisos no painel (global)
     WordpressModule, // plugin WordPress Tradutor Invisível (licença pela conta)
     TeamModule, // chat interno da equipe (dentro da tela de Chat do WhatsApp)
   ],

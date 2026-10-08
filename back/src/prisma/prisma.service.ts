@@ -1,6 +1,8 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from 'generated/prisma/client';
 import { PrismaMariaDb } from '@prisma/adapter-mariadb';
+import { WaKeyring, setWaKeyring } from '../whatsapp/crypto/wa-keyring';
+import { waCryptoExtension } from '../whatsapp/crypto/wa-prisma-crypto';
 
 
 @Injectable()
@@ -28,6 +30,13 @@ export class PrismaService extends PrismaClient implements  OnModuleDestroy, OnM
         });
 
         super({ adapter });
+
+        // Mensagens e mídias do WhatsApp cifradas em repouso (src/whatsapp/crypto). A extensão
+        // devolve um client que cifra/decifra as tabelas do WhatsApp sozinho; o resto do sistema
+        // usa o PrismaService como sempre. O próprio `this` (sem extensão) guarda as chaves.
+        const keyring = new WaKeyring(this as any);
+        setWaKeyring(keyring);
+        return this.$extends(waCryptoExtension(keyring, this) as any) as unknown as PrismaService;
     }
 
     async onModuleInit() {

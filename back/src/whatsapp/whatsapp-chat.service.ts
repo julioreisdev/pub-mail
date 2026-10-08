@@ -427,7 +427,7 @@ export class WhatsAppChatService {
     try {
       r = dto.quoted_wa_id
         ? await this.openwa.reply(row.openwa_session_id!, chat.chat_id, dto.quoted_wa_id, text, dto.mentions)
-        : await this.openwa.sendText(row.openwa_session_id!, chat.chat_id, text, { mentions: dto.mentions?.length ? dto.mentions : undefined });
+        : await this.openwa.sendText(row.openwa_session_id!, chat.chat_id, text, { mentions: dto.mentions?.length ? dto.mentions : undefined, ...(/https?:\/\/\S/i.test(text) ? { linkPreview: true } : {}) });
     } catch (e) { this.translate(e); }
     return this.recordOut(row, chat.chat_id, r, { type: 'text', body: text, quoted: dto.quoted_wa_id || null, quoted_preview: await this.quotedPreview(orgId, row.id, dto.quoted_wa_id), extra: dto.mentions?.length ? { mentions: dto.mentions } : undefined, userId });
   }

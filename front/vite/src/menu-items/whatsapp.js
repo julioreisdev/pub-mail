@@ -13,7 +13,8 @@ import {
   IconReceipt2,
   IconLayoutKanban,
   IconChecklist,
-  IconChartBar
+  IconChartBar,
+  IconBellRinging
 } from '@tabler/icons-react';
 
 const icons = {
@@ -30,7 +31,8 @@ const icons = {
   IconReceipt2,
   IconLayoutKanban,
   IconChecklist,
-  IconChartBar
+  IconChartBar,
+  IconBellRinging
 };
 
 // ==============================|| WHATSAPP MENU ITEMS ||============================== //
@@ -48,6 +50,14 @@ const whatsapp = {
       type: 'item',
       url: '/whatsapp/settings',
       icon: icons.IconAdjustmentsHorizontal,
+      target: false
+    },
+    {
+      id: 'whatsapp-notifications',
+      title: 'Notificações',
+      type: 'item',
+      url: '/whatsapp/notifications',
+      icon: icons.IconBellRinging,
       target: false
     },
     { id: 'whatsapp-chat', title: 'Chat', type: 'item', url: '/whatsapp/chat', icon: icons.IconMessages, target: false },

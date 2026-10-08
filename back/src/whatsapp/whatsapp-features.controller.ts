@@ -19,6 +19,7 @@ import { WaAccessService } from './wa-access.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto } from './dto/whatsapp-crud.dto';
+import { serveWaFile } from './crypto/wa-file-serve';
 
 const MB = 1024 * 1024;
 
@@ -66,7 +67,7 @@ export class WhatsAppChatController {
     const p = await this.contactsSvc.photo(req.user.organizationId, { jid: String(jid || ''), sessionId: sessionId || null });
     if (!p) return res.status(404).end();
     res.setHeader('Content-Type', p.mime); res.setHeader('Cache-Control', 'private, max-age=86400');
-    return res.sendFile(p.path);
+    return serveWaFile(p.path, req, res);
   }
   @Get('chats/:chatId/photo')
   async chatPhoto(@Req() req: any, @Param('chatId') chatId: string, @Res() res: Response) {
@@ -75,7 +76,7 @@ export class WhatsAppChatController {
     const p = await this.contactsSvc.photo(req.user.organizationId, { chatUuid: chat.id });
     if (!p) return res.status(404).end();
     res.setHeader('Content-Type', p.mime); res.setHeader('Cache-Control', 'private, max-age=86400');
-    return res.sendFile(p.path);
+    return serveWaFile(p.path, req, res);
   }
   @Get('chats/:chatId') async get(@Req() req: any, @Param('chatId') chatId: string) { await this.guardChat(req, chatId); return this.chat.getChat(req.user.organizationId, chatId); }
   // etiquetas da conversa e atendimento (assumir / transferir / liberar / encerrar / reabrir)
@@ -175,7 +176,7 @@ export class WhatsAppContactsController {
     const p = await this.contacts.photo(req.user.organizationId, { contactId: id });
     if (!p) return res.status(404).end();
     res.setHeader('Content-Type', p.mime); res.setHeader('Cache-Control', 'private, max-age=86400');
-    return res.sendFile(p.path);
+    return serveWaFile(p.path, req, res);
   }
   @Patch(':id') async patch(@Req() req: any, @Param('id') id: string, @Body() dto: PatchContactDto) {
     const r = await this.contacts.patch(req.user.organizationId, id, dto);

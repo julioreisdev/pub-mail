@@ -81,6 +81,7 @@ export class WhatsAppRatingsService implements OnModuleInit {
       if (s.rating?.thanks) await this.sender.text(orgId, k.session_id, k.chat_id, s.rating.thanks, { rating_thanks: true });
       const chatUuid = await this.presenter.chatUuid(orgId, k.session_id, k.chat_id);
       this.presenter.emit(orgId, 'wa:rating', { chat_id: chatUuid, session_id: k.session_id, jid: k.chat_id, score, comment, user_id: row.user_id });
+      this.hooks.emit('rating', { orgId, sessionId: k.session_id, chatId: k.chat_id, chatUuid, score, comment, userId: row.user_id });
       this.presenter.chat(orgId, k.session_id, k.chat_id);
     } catch (e: any) {
       this.logger.warn(`salvar avaliação: ${e?.message || e}`);

@@ -62,6 +62,22 @@ export class RealtimeService {
     }
   }
 
+  /** Hashes de endpoint de push dos aparelhos deste usuário que estão com o painel aberto (vêm no handshake). */
+  onlinePushHashes(orgId: string, userId: string): Set<string> {
+    const out = new Set<string>();
+    try {
+      const ids = this.server?.sockets?.adapter?.rooms?.get(RealtimeService.userRoom(orgId, userId));
+      if (!ids) return out;
+      for (const sid of ids) {
+        const h = this.server?.sockets?.sockets?.get(sid)?.data?.user?.pushHash;
+        if (h) out.add(String(h));
+      }
+    } catch {
+      /* best-effort */
+    }
+    return out;
+  }
+
   toModule(orgId: string, module: string, event: string, payload: unknown) {
     if (!this.server || !orgId) return;
     try {

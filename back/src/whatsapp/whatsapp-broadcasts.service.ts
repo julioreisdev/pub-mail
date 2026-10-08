@@ -8,6 +8,7 @@ import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppPacingService, brtDayStart } from './whatsapp-pacing.service';
 import { WhatsAppChatService } from './whatsapp-chat.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppHooks } from './whatsapp-hooks.service';
 import { WhatsAppCrmService } from './whatsapp-crm.service';
 import { isLidJid, phoneFromJid } from './wa-jid.util';
 
@@ -83,6 +84,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     private readonly access: AccessService,
     private readonly presenter: WhatsAppPresenter,
     private readonly crm: WhatsAppCrmService,
+    private readonly hooks: WhatsAppHooks,
   ) {}
 
   // ---------------------------------------------------------------- presets / ritmo
@@ -712,6 +714,12 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       if (key) { s[key] += n; tot[key] += n; }
     }
     const open = tot.pending + tot.paced;
+    const prev = await this.prisma.whatsapp_broadcast_runs.findUnique({ where: { id: runId } });
     await this.prisma.whatsapp_broadcast_runs.update({ where: { id: runId }, data: { sent: tot.sent, failed: tot.failed, blocked: tot.blocked, by_session: by as any, status: open ? 'running' : 'done', ...(open ? {} : { finished_at: new Date() }) } });
+    // terminou agora → notificação
+    if (!open && prev && prev.status !== 'done') {
+      const b = await this.prisma.whatsapp_broadcasts.findUnique({ where: { id: prev.broadcast_id } }).catch(() => null);
+      this.hooks.emit('broadcast_done', { orgId: prev.organization_id, broadcast: b, run: prev, stats: tot });
+    }
   }
 }

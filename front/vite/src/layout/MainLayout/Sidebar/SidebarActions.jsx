@@ -11,9 +11,10 @@ import ListItemText from '@mui/material/ListItemText';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
-import { IconSun, IconMoon, IconLogout } from '@tabler/icons-react';
+import { IconSun, IconMoon, IconLogout, IconDeviceMobileDown, IconBellRinging } from '@tabler/icons-react';
 
 import { useAuth } from 'contexts/AuthContext';
+import { openPwaDialog, usePwa } from 'pwa/pwa';
 
 // ==============================|| SIDEBAR - RODAPÉ (perfil + tema + sair) ||============================== //
 
@@ -21,6 +22,7 @@ export default function SidebarActions({ drawerOpen }) {
   const { mode, setMode } = useColorScheme();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const pwa = usePwa();
 
   const name = user?.user?.name || 'Usuário';
   const email = user?.user?.email || '';
@@ -90,6 +92,36 @@ export default function SidebarActions({ drawerOpen }) {
           )}
         </Box>
       </Tooltip>
+
+      {/* PWA: instalar o app (fora do app instalado) ou ativar as notificações (dentro dele) */}
+      {pwa.showInstall || pwa.showEnableNotifications ? (
+        <Tooltip title={drawerOpen ? '' : pwa.showInstall ? 'Instalar app' : 'Ativar notificações'} placement="right">
+          <ListItemButton
+            onClick={() => openPwaDialog(pwa.showInstall ? 'install' : 'notify')}
+            aria-label={pwa.showInstall ? 'instalar app' : 'ativar notificações'}
+            sx={{
+              ...rowSx,
+              mb: 0.75,
+              color: 'primary.main',
+              bgcolor: (t) => `rgba(${t.vars.palette.primary.mainChannel} / 0.1)`,
+              '&:hover': { bgcolor: (t) => `rgba(${t.vars.palette.primary.mainChannel} / 0.18)` }
+            }}
+          >
+            <ListItemIcon sx={{ ...iconSx, color: 'primary.main' }}>
+              {pwa.showInstall ? <IconDeviceMobileDown size={20} stroke={1.8} /> : <IconBellRinging size={20} stroke={1.8} />}
+            </ListItemIcon>
+            {drawerOpen && (
+              <ListItemText
+                primary={
+                  <Typography variant="body1" sx={{ color: 'primary.main', fontWeight: 600 }}>
+                    {pwa.showInstall ? 'Instalar app' : 'Ativar notificações'}
+                  </Typography>
+                }
+              />
+            )}
+          </ListItemButton>
+        </Tooltip>
+      ) : null}
 
       {/* Alternar tema */}
       <Tooltip title={drawerOpen ? '' : isDark ? 'Modo claro' : 'Modo escuro'} placement="right">

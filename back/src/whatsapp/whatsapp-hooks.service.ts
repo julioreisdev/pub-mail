@@ -19,6 +19,9 @@ export class WhatsAppHooks {
   private readonly inboundHandlers: ((e: InboundEvent) => void | Promise<void>)[] = [];
   private readonly inboundFilters: ((e: InboundEvent) => boolean)[] = [];
   private readonly closedHandlers: ((e: ServiceClosedEvent) => void | Promise<void>)[] = [];
+  // eventos genéricos (notificações): 'message' | 'service' | 'task_due' | 'task_assigned' | 'charge_paid' |
+  // 'charge_overdue' | 'pipeline_moved' | 'session_connected' | 'session_disconnected' | 'rating' | 'broadcast_done'
+  private readonly generic = new Map<string, ((e: any) => void | Promise<void>)[]>();
 
   onInbound(fn: (e: InboundEvent) => void | Promise<void>) {
     this.inboundHandlers.push(fn);
@@ -44,6 +47,19 @@ export class WhatsAppHooks {
       Promise.resolve()
         .then(() => fn(e))
         .catch((err) => this.logger.warn(`hook inbound falhou: ${err?.message || err}`));
+    }
+  }
+
+  on(kind: string, fn: (e: any) => void | Promise<void>) {
+    this.generic.set(kind, [...(this.generic.get(kind) || []), fn]);
+  }
+
+  /** Evento genérico, assíncrono e best-effort (quem emite não espera nem falha). */
+  emit(kind: string, payload: any) {
+    for (const fn of this.generic.get(kind) || []) {
+      Promise.resolve()
+        .then(() => fn(payload))
+        .catch((err) => this.logger.warn(`hook ${kind} falhou: ${err?.message || err}`));
     }
   }
 

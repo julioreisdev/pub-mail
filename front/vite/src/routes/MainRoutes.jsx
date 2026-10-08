@@ -60,6 +60,7 @@ const WhatsAppCharges = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAp
 const WhatsAppPipeline = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppPipeline')));
 const WhatsAppTasks = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppTasks')));
 const WhatsAppMetrics = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppMetrics')));
+const WhatsAppNotifications = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppNotifications')));
 const TranslatorPlugin = Loadable(lazy(() => import('views/pages/wordpress/TranslatorPlugin')));
 
 // ==============================|| MAIN ROUTING (PROTECTED) ||============================== //
@@ -159,7 +160,8 @@ const MainRoutes = {
             { path: 'charges', element: <WhatsAppCharges /> },
             { path: 'pipeline', element: <WhatsAppPipeline /> },
             { path: 'tasks', element: <WhatsAppTasks /> },
-            { path: 'metrics', element: <WhatsAppMetrics /> }
+            { path: 'metrics', element: <WhatsAppMetrics /> },
+            { path: 'notifications', element: <WhatsAppNotifications /> }
           ]
         },
         {

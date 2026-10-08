@@ -120,6 +120,8 @@ WordPress plugin ("Tradutor Invisível") that shows every post and page in the l
 - **Integrations**: per-provider AI keys **masked** (add/remove per key, automatic rotation), Resend + webhook Signing Secret, edge IP and certbot email. **API Status** shows each key's runtime state; **AI Tutorial** explains how to get the keys.
 - **Account & Domains**: account data, webchat and quiz domains.
 - **UI**: **light/dark** theme, collapsible sidebar groups, account summary dashboard.
+- **Installable app (PWA)**: **Install app** button in the sidebar (Android/Chrome/Edge with the native prompt; iPhone/iPad with step-by-step instructions) — opens full screen from the home screen, asks for notification permission on install and shows its own offline page. The manifest and service worker are only added inside the logged-in panel (client domains never become an app).
+- **Notifications** (WhatsApp → Notifications; validated on Android, iPhone and Chrome): each agent picks what to receive — new message (all, only theirs, only chosen contacts/groups/numbers), group mention, queue, assignment, transfer, bot handoff, task due/assigned, payment confirmed, overdue charge, pipeline (per stage), deal won, number down/up, rating, broadcast finished, team message — as **push** on the device (Web Push) and/or **in-panel alerts**, with sound, vibration and quiet hours. **Custom alerts** (title/body/link, for yourself or the team, now or scheduled), send-test and a 30-day history.
 
 ## Architecture
 

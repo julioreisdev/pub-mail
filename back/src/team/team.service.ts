@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { WhatsAppMediaService, kindOfMime } from '../whatsapp/whatsapp-media.service';
 
 // ---------------------------------------------------------------- chat interno da equipe
@@ -15,7 +16,12 @@ const MAX_MEMBERS = 200;
 
 @Injectable()
 export class TeamService {
-  constructor(private readonly prisma: PrismaService, private readonly realtime: RealtimeService, private readonly media: WhatsAppMediaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+    private readonly media: WhatsAppMediaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   // ---------------------------------------------------------------- usuários da org
   async users(orgId: string, me: string) {
@@ -288,6 +294,15 @@ export class TeamService {
     await this.prisma.team_chat_members.update({ where: { chat_id_user_id: { chat_id: chatId, user_id: me } }, data: { last_read_at: row.created_at } }).catch(() => undefined);
     const shaped = (await this.shapeMessages(orgId, [row], me))[0];
     await this.emitMessage(orgId, chat.id, shaped);
+    // notificação (painel/push) para os outros membros
+    try {
+      const members = await this.prisma.team_chat_members.findMany({ where: { chat_id: chat.id }, select: { user_id: true } });
+      const senderName = shaped?.user?.name || 'Equipe';
+      const isGroup = chat.kind === 'group';
+      void this.notifications.notify(orgId, { kind: 'team_message', title: isGroup ? chat.name || 'Grupo da equipe' : senderName, body: isGroup ? `${senderName}: ${preview}` : preview, url: `/whatsapp/chat?team=${encodeURIComponent(chat.id)}`, tag: `team:${chat.id}`, to: members.map((m) => m.user_id), exclude: [me], data: { team_chat_id: chat.id } });
+    } catch {
+      /* best-effort */
+    }
     return shaped;
   }
 

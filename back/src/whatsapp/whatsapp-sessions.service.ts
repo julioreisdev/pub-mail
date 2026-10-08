@@ -5,6 +5,7 @@ import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { OpenWaClient, OpenWaError, WA_ENGINES, WaEngine } from './openwa.client';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
+import { WhatsAppHooks } from './whatsapp-hooks.service';
 
 // Números do WhatsApp da organização (N por org) por cima do OpenWA. Cada linha de
 // `whatsapp_sessions` = um número (sessão do gateway, nome interno, cor, aquecimento, fluxo do bot).
@@ -38,7 +39,7 @@ export class WhatsAppSessionsService {
   // cache curto do GET /sessions/:id (o front faz polling de 3 s)
   private readonly liveCache = new Map<string, { at: number; value: any }>();
 
-  constructor(private readonly prisma: PrismaService, private readonly openwa: OpenWaClient, private readonly presenter: WhatsAppPresenter) {}
+  constructor(private readonly prisma: PrismaService, private readonly openwa: OpenWaClient, private readonly presenter: WhatsAppPresenter, private readonly hooks: WhatsAppHooks) {}
 
   private webhookBase() {
     return String(process.env.OPENWA_WEBHOOK_BASE || 'http://host.docker.internal:8000').replace(/\/+$/, '');
@@ -569,6 +570,7 @@ export class WhatsAppSessionsService {
     const sid = data?.sessionId ? String(data.sessionId) : null;
     if (!current || (sid && sid !== current && sid !== fresh?.openwa_name)) return;
     row = fresh;
+    const prevStatus = String(row.status || '');
     const now = new Date();
     const patch: any = { last_event_at: now };
     const st = String(data?.status || '');
@@ -602,6 +604,11 @@ export class WhatsAppSessionsService {
     this.liveCache.delete(current);
     const r = await this.prisma.whatsapp_sessions.updateMany({ where: { id: row.id, openwa_session_id: current }, data: patch });
     if (!r.count) return; // encerrada enquanto isso
+    // notificações: só nas transições de verdade (pronto ↔ caiu)
+    if (patch.status && patch.status !== prevStatus) {
+      if (patch.status === 'ready' && prevStatus !== 'ready') this.hooks.emit('session_connected', { orgId: row.organization_id, row: { ...row, ...patch } });
+      if ((patch.status === 'disconnected' || patch.status === 'failed') && prevStatus === 'ready') this.hooks.emit('session_disconnected', { orgId: row.organization_id, row: { ...row, ...patch }, reason: patch.last_error || null });
+    }
     this.presenter.invalidateSessions(row.organization_id);
     // o front recarrega o estado da conexão (QR novo, conectado, caiu…)
     this.presenter.session(row.organization_id, row.id, { event, status: patch.status || row.status });

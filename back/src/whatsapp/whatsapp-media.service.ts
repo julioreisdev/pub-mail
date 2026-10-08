@@ -3,12 +3,13 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { execFile } from 'child_process';
 import { existsSync, mkdirSync, promises as fsp } from 'fs';
-import { tmpdir } from 'os';
 import { extname, join, resolve } from 'path';
 import { promisify } from 'util';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from 'generated/prisma/client';
 import { isOggOpus, repacketizeOggOpusToCode3 } from './opus-repacketize.util';
+import { waKeyring } from './crypto/wa-keyring';
+import { plainTmpDir } from './crypto/wa-file-serve';
 
 // Mídia do WhatsApp (recebida ou enviada) em pasta PROTEGIDA:
 // <cwd>/protected/whatsapp/<org>/<uuid>.<ext> — fora do /uploads (que o nginx serve
@@ -38,8 +39,8 @@ export function needsAudioConversion(mime: string, voice: boolean) {
 
 export async function toOggOpus(buf: Buffer): Promise<Buffer> {
   const id = randomUUID();
-  const inPath = join(tmpdir(), `wa-${id}.in`);
-  const outPath = join(tmpdir(), `wa-${id}.ogg`);
+  const inPath = join(plainTmpDir(), `wa-${id}.in`);
+  const outPath = join(plainTmpDir(), `wa-${id}.ogg`);
   await fsp.writeFile(inPath, buf);
   try {
     await execFileP('ffmpeg', ['-y', '-i', inPath, '-vn', '-map_metadata', '-1', '-c:a', 'libopus', '-b:a', '32k', '-ac', '1', '-ar', '48000', '-application', 'voip', '-f', 'ogg', outPath], { timeout: 60_000 });
@@ -55,7 +56,18 @@ export const WAVEFORM_BARS = 64;
  * Forma de onda de um áudio: decodifica com ffmpeg (mono, 8 kHz, PCM 16 bits, no máx. 10 min) e tira o
  * RMS de 64 blocos, normalizado para 0..100 (igual ao WhatsApp mostra). Também devolve a duração.
  */
-export async function audioWaveform(absPath: string): Promise<{ peaks: number[]; duration_ms: number }> {
+export async function audioWaveform(input: string | Buffer): Promise<{ peaks: number[]; duration_ms: number }> {
+  // Buffer (conteúdo já decifrado): vai para um temporário em memória e é apagado em seguida
+  if (Buffer.isBuffer(input)) {
+    const tmp = join(plainTmpDir(), `wa-wave-${randomUUID()}`);
+    await fsp.writeFile(tmp, input, { mode: 0o600 });
+    try {
+      return await audioWaveform(tmp);
+    } finally {
+      await fsp.unlink(tmp).catch(() => undefined);
+    }
+  }
+  const absPath = input;
   const { stdout } = await execFileP('ffmpeg', ['-v', 'error', '-t', '600', '-i', absPath, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], { timeout: 60_000, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 } as any);
   const pcm = stdout as unknown as Buffer;
   const samples = Math.floor(pcm.length / 2);
@@ -174,10 +186,10 @@ export class WhatsAppMediaService {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o750 });
     const id = randomUUID();
     const rel = join(orgId, `${id}.${ext}`);
-    await fsp.writeFile(join(this.root(), rel), buf, { mode: 0o640 });
+    await this.writeStored(orgId, rel, buf);
     const finalKind = kind || kindOfMime(mime);
     let wave: { peaks: number[]; duration_ms: number } | null = null;
-    if (finalKind === 'audio' || finalKind === 'voice') wave = await audioWaveform(join(this.root(), rel)).catch(() => null);
+    if (finalKind === 'audio' || finalKind === 'voice') wave = await audioWaveform(buf).catch(() => null);
     return this.prismaCreate({
       id,
       organization_id: orgId,
@@ -213,6 +225,20 @@ export class WhatsAppMediaService {
     return m;
   }
 
+  /** Grava o arquivo CIFRADO (quando a criptografia está ligada): escreve num temporário e troca de uma vez. */
+  async writeStored(orgId: string, rel: string, plain: Buffer) {
+    const out = await waKeyring().encryptFile(orgId, plain);
+    const abs = join(this.root(), rel);
+    const tmp = `${abs}.tmp-${randomUUID().slice(0, 8)}`;
+    await fsp.writeFile(tmp, out, { mode: 0o640 });
+    await fsp.rename(tmp, abs);
+  }
+
+  /** Conteúdo original do arquivo (decifra se estiver cifrado). */
+  async readFile(m: { storage_path: string }): Promise<Buffer> {
+    return waKeyring().decryptFileBuffer(await fsp.readFile(this.absPath(m)));
+  }
+
   absPath(m: { storage_path: string }) {
     const abs = resolve(this.root(), m.storage_path);
     if (!abs.startsWith(this.root())) throw new NotFoundException('Mídia não encontrada.');
@@ -221,14 +247,14 @@ export class WhatsAppMediaService {
 
   async readBase64(orgId: string, id: string) {
     let m = await this.get(orgId, id);
-    let buf: Buffer = await fsp.readFile(this.absPath(m));
+    let buf: Buffer = await this.readFile(m);
     // áudio guardado antes da conversão existir (ex.: gravado no navegador em WebM) ou voz
     // guardada antes do reempacotamento code 3: converte uma vez e passa a guardar o OGG certo
     if (this.needsNormalize(m.mime, m.kind === 'voice')) {
       const n = await this.normalizeAudio(buf, m.mime, m.kind === 'voice', m.filename);
       if (n.converted) {
         const rel = join(m.organization_id, `${m.id}.ogg`);
-        await fsp.writeFile(join(this.root(), rel), n.buffer, { mode: 0o640 });
+        await this.writeStored(m.organization_id, rel, n.buffer);
         if (rel !== m.storage_path) await fsp.unlink(this.absPath(m)).catch(() => undefined);
         m = await this.prisma.whatsapp_media.update({
           where: { id: m.id },
@@ -259,7 +285,7 @@ export class WhatsAppMediaService {
       const rows = await this.prisma.whatsapp_media.findMany({ where: { id: { in: todo }, kind: { in: ['audio', 'voice'] }, waveform: { equals: Prisma.DbNull } } });
       for (const m of rows) {
         try {
-          const wave = await audioWaveform(this.absPath(m));
+          const wave = await audioWaveform(await this.readFile(m));
           await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { waveform: wave.peaks, duration_ms: wave.duration_ms } });
           done.push(m.id);
         } catch (e: any) {

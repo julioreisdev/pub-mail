@@ -267,6 +267,7 @@ export class WhatsAppPipelineService implements OnModuleInit {
     if (Object.keys(data).length) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data });
     if (changed) {
       await this.attendance.event(orgId, key, 'stage_moved', userId, { from: from?.id || null, from_name: from?.name || null, to: stage?.id || null, to_name: stage?.name || null, auto: !userId });
+      this.hooks.emit('pipeline_moved', { orgId, chat, from, to: stage, by: userId });
       if (stage) this.runActions(orgId, userId, chat, stage).catch((e) => this.logger.warn(`ações da etapa ${stage.name}: ${e?.message || e}`));
     }
     const fresh = await this.prisma.whatsapp_chats.findUnique({ where: { id: chat.id } });

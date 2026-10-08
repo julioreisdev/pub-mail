@@ -1,3 +1,4 @@
+import { WhatsAppNotifyBridge } from './whatsapp-notify.bridge';
 import { Global, Module } from '@nestjs/common';
 import { OpenWaClient } from './openwa.client';
 import { WaAccessService } from './wa-access.service';
@@ -38,13 +39,16 @@ import { WhatsAppMetricsService } from './whatsapp-metrics.service';
 import { WhatsAppMetricsController } from './whatsapp-metrics.controller';
 import { WhatsAppChargesController } from './whatsapp-charges.controller';
 import { WhatsAppBroadcastsController, WhatsAppChatController, WhatsAppContactsController, WhatsAppFiltersController, WhatsAppMediaController, WhatsAppSchedulesController, WhatsAppStatusController, WhatsAppAttendanceController, WhatsAppContactStatusesController } from './whatsapp-features.controller';
+import { WhatsAppLinkPreviewController } from './whatsapp-link-preview.controller';
+import { WhatsAppLinkPreviewService } from './whatsapp-link-preview.service';
+import { WaEncryptionMigrator } from './crypto/wa-encryption.migrator';
 
 // Módulo WhatsApp (via OpenWA em Docker, só loopback). @Global p/ o admin apagar a
 // sessão ao remover uma organização sem importar o módulo.
 @Global()
 @Module({
-  controllers: [WhatsAppController, WhatsAppWebhookController, PublicWhatsAppMediaController, WhatsAppChatController, WhatsAppContactsController, WhatsAppMediaController, WhatsAppStatusController, WhatsAppBroadcastsController, WhatsAppFiltersController, WhatsAppSchedulesController, WhatsAppAttendanceController, WhatsAppBotController, WhatsAppContactStatusesController, WhatsAppCrmController, WhatsAppChargesController, WhatsAppPipelineController, WhatsAppTasksController, WhatsAppNotesController, WhatsAppMetricsController],
-  providers: [OpenWaClient, WaAccessService, WhatsAppPresenter, WhatsAppChatSyncRunner, WhatsAppAttendanceService, WhatsAppHooks, WhatsAppBotService, WhatsAppContactStatusesService, WhatsAppSessionsService, WhatsAppWatchdogRunner, WhatsAppMediaService, WhatsAppContactsService, WhatsAppInboundService, WhatsAppChatService, WhatsAppPacingService, WhatsAppStatusService, WhatsAppBroadcastsService, WhatsAppBootstrapService, WhatsAppFiltersService, WhatsAppSchedulesService, WhatsAppDataService, WhatsAppCrmService, WhatsAppChargesService, WhatsAppTasksService, WhatsAppNotesService, WhatsAppPipelineService, WhatsAppSystemSender, WhatsAppRatingsService, WhatsAppOptoutService, WhatsAppMetricsService],
+  controllers: [WhatsAppController, WhatsAppWebhookController, PublicWhatsAppMediaController, WhatsAppChatController, WhatsAppContactsController, WhatsAppMediaController, WhatsAppStatusController, WhatsAppBroadcastsController, WhatsAppFiltersController, WhatsAppSchedulesController, WhatsAppAttendanceController, WhatsAppBotController, WhatsAppContactStatusesController, WhatsAppCrmController, WhatsAppChargesController, WhatsAppPipelineController, WhatsAppTasksController, WhatsAppNotesController, WhatsAppMetricsController, WhatsAppLinkPreviewController],
+  providers: [OpenWaClient, WaAccessService, WhatsAppPresenter, WhatsAppChatSyncRunner, WhatsAppAttendanceService, WhatsAppHooks, WhatsAppBotService, WhatsAppContactStatusesService, WhatsAppSessionsService, WhatsAppWatchdogRunner, WhatsAppMediaService, WhatsAppContactsService, WhatsAppInboundService, WhatsAppChatService, WhatsAppPacingService, WhatsAppStatusService, WhatsAppBroadcastsService, WhatsAppBootstrapService, WhatsAppFiltersService, WhatsAppSchedulesService, WhatsAppDataService, WhatsAppCrmService, WhatsAppChargesService, WhatsAppTasksService, WhatsAppNotesService, WhatsAppPipelineService, WhatsAppSystemSender, WhatsAppRatingsService, WhatsAppOptoutService, WhatsAppMetricsService, WhatsAppLinkPreviewService, WaEncryptionMigrator, WhatsAppNotifyBridge],
   exports: [OpenWaClient, WaAccessService, WhatsAppSessionsService, WhatsAppMediaService, WhatsAppPresenter, WhatsAppAttendanceService, WhatsAppBotService, WhatsAppCrmService, WhatsAppChargesService, WhatsAppTasksService, WhatsAppPipelineService],
 })
 export class WhatsAppModule {}
