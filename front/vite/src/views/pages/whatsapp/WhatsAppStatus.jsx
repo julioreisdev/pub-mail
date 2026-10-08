@@ -384,6 +384,9 @@ function StatusComposer({ open, onClose, initial, sessions, byId }) {
           <Tabs
             value={form.tab}
             onChange={(_, v) => setF({ tab: v, media: null })}
+            variant="scrollable"
+            scrollButtons={false}
+            allowScrollButtonsMobile
             sx={{ minHeight: 40, '& .MuiTabs-indicator': { bgcolor: WA_GREEN }, '& .Mui-selected': { color: `${WA_DARK} !important` } }}
           >
             <Tab value="text" label="Texto" icon={<IconTypography size={16} />} iconPosition="start" sx={tabSx} />
@@ -474,7 +477,15 @@ function StatusComposer({ open, onClose, initial, sessions, byId }) {
               />
               <Box>
                 <Typography sx={{ fontWeight: 700, fontSize: 13.5, mb: 1 }}>Cor de fundo</Typography>
-                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(6, 40px)', gap: 1 }}>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: { xs: 'repeat(6, minmax(0, 1fr))', sm: 'repeat(6, 40px)' },
+                    justifyItems: 'center',
+                    gap: 1,
+                    maxWidth: 280
+                  }}
+                >
                   {PALETTE.map((c) => {
                     const on = c.toLowerCase() === String(form.bg_color).toLowerCase();
                     return (
@@ -483,8 +494,8 @@ function StatusComposer({ open, onClose, initial, sessions, byId }) {
                           role="button"
                           onClick={() => setF({ bg_color: c })}
                           sx={{
-                            width: 40,
-                            height: 40,
+                            width: { xs: 34, sm: 40 },
+                            height: { xs: 34, sm: 40 },
                             borderRadius: '50%',
                             bgcolor: c,
                             cursor: 'pointer',
@@ -640,7 +651,7 @@ function StatusComposer({ open, onClose, initial, sessions, byId }) {
         </Stack>
 
         {/* ---------- preview ---------- */}
-        <Box sx={{ justifySelf: 'center', position: { md: 'sticky' }, top: 8 }}>
+        <Box sx={{ justifySelf: 'center', position: { md: 'sticky' }, top: 8, maxWidth: '100%' }}>
           <StatusPhonePreview type={type} body={form.body} bgColor={form.bg_color} font={form.font} media={form.media} />
           <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', textAlign: 'center', mt: 1 }}>
             Pré-visualização
@@ -1034,7 +1045,7 @@ export default function WhatsAppStatus() {
       onChange={setSessionFilter}
       allowAll
       label="Número"
-      sx={{ minWidth: 200 }}
+      sx={{ minWidth: { sm: 200 }, width: { xs: '100%', sm: 'auto' } }}
       fullWidth={false}
     />
   ) : null;
@@ -1050,23 +1061,14 @@ export default function WhatsAppStatus() {
             : 'Veja e responda os status dos seus contatos e publique os seus — agora ou no horário que você marcar.'
         }
         action={
-          <Stack direction="row" spacing={1} alignItems="center">
+          // celular: o WaPageHeader põe as ações numa linha própria (botão cresce, ícone fica normal)
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Tooltip title="Recarregar a página">
-              <IconButton onClick={refreshEverything} sx={{ display: { xs: 'none', sm: 'inline-flex' } }}>
+              <IconButton onClick={refreshEverything} aria-label="Recarregar">
                 <IconRefresh size={20} />
               </IconButton>
             </Tooltip>
-            <Box sx={{ display: { xs: 'none', sm: 'block' } }}>{newBtn}</Box>
-            {/* celular: só o "+" (o título e a descrição ficam com a largura toda) */}
-            <Tooltip title="Novo status">
-              <IconButton
-                onClick={() => openNew()}
-                aria-label="Novo status"
-                sx={{ ...waButtonSx, display: { xs: 'inline-flex', sm: 'none' }, width: 42, height: 42, borderRadius: '50%' }}
-              >
-                <IconPlus size={20} />
-              </IconButton>
-            </Tooltip>
+            {newBtn}
           </Stack>
         }
       />
@@ -1102,6 +1104,7 @@ export default function WhatsAppStatus() {
             : 'O que você publicou, o que está agendado e o histórico.'
         }
         action={numberFilter}
+        stackAction
         sx={{ mb: 2.5 }}
       />
 

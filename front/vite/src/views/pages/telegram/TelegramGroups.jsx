@@ -126,7 +126,7 @@ export default function TelegramGroups({ kind = 'group' }) {
         : `${L.subtitle} ${filtered.length} ${filtered.length === 1 ? L.one : L.plural} · ${membersLabel} ${L.members} no total.`;
 
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <TgPageHeader
                 icon={L.icon}
                 title={L.title}

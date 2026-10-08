@@ -40,6 +40,7 @@ import {
   IconInfoCircle,
   IconMessage,
   IconMessagePlus,
+  IconPencil,
   IconPlus,
   IconRefresh,
   IconSearch,
@@ -52,8 +53,9 @@ import {
 } from '@tabler/icons-react';
 
 import { api, get, patch, post, remove } from 'api/api';
-import { TgCard, TgAvatar, TgFilterBar, TgModal, TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
+import { TgCard, TgAvatar, TgFilterBar, TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
 import { WaPageHeader } from './waKit';
+import { CrmModal, useXs } from './crm/crmKit';
 import {
   WA_GREEN,
   WA_DARK,
@@ -74,7 +76,7 @@ import {
 // WhatsApp → Contatos: agenda da ORGANIZAÇÃO (compartilhada entre os números)
 // + salvos na organização. Sincronizar (por número) / adicionar / importar CSV /
 // exportar / tags / salvar / abrir conversa (por número).
-// Multi-número: `?session=` filtra "contatos que têm conversa naquele número";
+// Multi-número: `?session=` filtra "contatos daquele número" (agenda dele ou conversa por ele);
 // cada contato traz `chats:[{id, session_id}]` (uma conversa por número).
 // ============================================================================
 
@@ -136,7 +138,7 @@ function NumbersCell({ chats, sessionOf, onOpen, max = 3 }) {
   const shown = list.slice(0, max);
   const rest = list.slice(max);
   return (
-    <Stack direction="row" spacing={0.5} alignItems="center">
+    <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
       {shown.map((x) => {
         const s = sessionOf(x.session_id);
         return s ? <WaNumberChip key={x.chat_id} session={s} onClick={() => onOpen(x.chat_id)} /> : null;
@@ -179,7 +181,7 @@ function Kpi({ icon: Icon, label, value, accent }) {
         <Typography sx={{ fontWeight: 800, fontSize: 20, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>
           {value == null ? '—' : value.toLocaleString('pt-BR')}
         </Typography>
-        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.25 }} display="block">
           {label}
         </Typography>
       </Box>
@@ -261,6 +263,7 @@ function TagsEditor({ value, onChange, suggestions = [], autoFocus }) {
 // ============================================================================
 export default function WhatsAppContacts() {
   const navigate = useNavigate();
+  const xs = useXs();
   const [searchParams, setSearchParams] = useSearchParams();
   const { session, sessions, loading: sessionLoading, connected } = useWaSession(20000);
   const byId = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
@@ -298,6 +301,8 @@ export default function WhatsAppContacts() {
   const [importDlg, setImportDlg] = useState(null); // {file, loading, result}
   const [bulkTagDlg, setBulkTagDlg] = useState(null); // {tags, loading}
   const [confirm, setConfirm] = useState(null); // {kind:'remove', contact} | {kind:'unsave-bulk'}
+  const [rename, setRename] = useState(null); // {contact, value}
+  const [renameBusy, setRenameBusy] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [openMenu, setOpenMenu] = useState(null); // {anchor, contact, options:[{chat_id?, session, openWith?}]}
   const [syncMenu, setSyncMenu] = useState(null); // anchor do menu "sincronizar qual número"
@@ -388,6 +393,23 @@ export default function WhatsAppContacts() {
       toast.error(errMsg(e, 'Não foi possível atualizar.'));
     } finally {
       setRowLoading(contact.id, false);
+    }
+  };
+
+  const saveRename = async () => {
+    const v = String(rename?.value || '').trim();
+    if (!rename?.contact) return;
+    if (!v) return toast.error('Informe um nome.');
+    setRenameBusy(true);
+    try {
+      const r = await patch(`/whatsapp/contacts/${rename.contact.id}`, { name: v });
+      if (r && typeof r === 'object') patchRow(rename.contact.id, r);
+      setRename(null);
+      toast.success('Nome atualizado.');
+    } catch (e) {
+      toast.error(errMsg(e, 'Não foi possível renomear.'));
+    } finally {
+      setRenameBusy(false);
     }
   };
 
@@ -612,7 +634,18 @@ export default function WhatsAppContacts() {
 
   const headerAction = useMemo(
     () => (
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+      <Stack
+        direction="row"
+        spacing={1}
+        flexWrap="wrap"
+        useFlexGap
+        justifyContent={{ xs: 'flex-start', md: 'flex-end' }}
+        sx={{
+          width: { xs: '100%', md: 'auto' },
+          '& .MuiButton-root': { minHeight: 40, width: { xs: '100%', md: 'auto' } },
+          '& > *': { flex: { xs: '1 1 45%', md: '0 0 auto' } }
+        }}
+      >
         <Tooltip
           title={
             connected
@@ -725,57 +758,66 @@ export default function WhatsAppContacts() {
             ) : null
           }}
         />
-        {manyNumbers ? (
-          <WaNumberSelect
-            sessions={sessions}
-            value={sessionFilter}
-            onChange={(v) => setSessionFilter(v || '')}
-            allowAll
-            label="Número"
-            fullWidth={false}
-            sx={{ minWidth: 220 }}
-          />
-        ) : null}
-        <TextField select size="small" label="Salvos" value={saved} onChange={(e) => setSaved(e.target.value)} sx={{ minWidth: 200 }}>
-          {SAVED_OPTIONS.map((o) => (
-            <MenuItem key={o.value} value={o.value}>
-              {o.label}
-            </MenuItem>
-          ))}
-        </TextField>
-        <TextField select size="small" label="LGPD" value={optout} onChange={(e) => setOptout(e.target.value)} sx={{ minWidth: 170 }}>
-          <MenuItem value="all">Todos</MenuItem>
-          <MenuItem value="1">Só descadastrados</MenuItem>
-        </TextField>
-        <TextField select size="small" label="Tag" value={tag} onChange={(e) => setTag(e.target.value)} sx={{ minWidth: 170 }}>
-          <MenuItem value="">Todas</MenuItem>
-          {data.tags.map((t) => (
-            <MenuItem key={t} value={t}>
-              {t}
-            </MenuItem>
-          ))}
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Por página"
-          value={pageSize}
-          onChange={(e) => setPageSize(Number(e.target.value))}
-          sx={{ minWidth: 120 }}
-        >
-          {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} value={n}>
-              {n}
-            </MenuItem>
-          ))}
-        </TextField>
-        <Box sx={{ flex: 1 }} />
+        <Box sx={{ display: { xs: 'grid', md: 'contents' }, gap: 1.25, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+          {manyNumbers ? (
+            <WaNumberSelect
+              sessions={sessions}
+              value={sessionFilter}
+              onChange={(v) => setSessionFilter(v || '')}
+              allowAll
+              label="Número"
+              fullWidth={false}
+              sx={{ minWidth: { md: 220 }, gridColumn: { xs: '1 / -1', md: 'auto' } }}
+            />
+          ) : null}
+          <TextField
+            select
+            size="small"
+            label="Salvos"
+            value={saved}
+            onChange={(e) => setSaved(e.target.value)}
+            sx={{ minWidth: { md: 200 } }}
+          >
+            {SAVED_OPTIONS.map((o) => (
+              <MenuItem key={o.value} value={o.value}>
+                {o.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField select size="small" label="LGPD" value={optout} onChange={(e) => setOptout(e.target.value)} sx={{ minWidth: 170 }}>
+            <MenuItem value="all">Todos</MenuItem>
+            <MenuItem value="1">Só descadastrados</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Tag" value={tag} onChange={(e) => setTag(e.target.value)} sx={{ minWidth: 170 }}>
+            <MenuItem value="">Todas</MenuItem>
+            {data.tags.map((t) => (
+              <MenuItem key={t} value={t}>
+                {t}
+              </MenuItem>
+            ))}
+          </TextField>
+          <TextField
+            select
+            size="small"
+            label="Por página"
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            sx={{ minWidth: 120 }}
+          >
+            {PAGE_SIZES.map((n) => (
+              <MenuItem key={n} value={n}>
+                {n}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
+        <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
         <Tooltip title="Atualizar">
-          <span>
+          <Box component="span" sx={{ alignSelf: { xs: 'flex-end', md: 'center' } }}>
             <IconButton onClick={() => load()} disabled={loading}>
               <IconRefresh size={18} />
             </IconButton>
-          </span>
+          </Box>
         </Tooltip>
       </TgFilterBar>
 
@@ -813,7 +855,7 @@ export default function WhatsAppContacts() {
           <Typography sx={{ fontWeight: 700, flex: 1 }}>
             {selected.size} contato{selected.size === 1 ? '' : 's'} selecionado{selected.size === 1 ? '' : 's'}
           </Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ '& .MuiButton-root': { minHeight: 36 } }}>
             <Button
               size="small"
               variant="contained"
@@ -854,160 +896,129 @@ export default function WhatsAppContacts() {
         </Stack>
       ) : null}
 
-      <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper' }}>
-        <Table size="small" sx={{ minWidth: 760 }}>
-          <TableHead>
-            <TableRow sx={{ '& th': { fontWeight: 800, bgcolor: 'action.hover', whiteSpace: 'nowrap' } }}>
-              <TableCell padding="checkbox">
-                <Checkbox
-                  size="small"
-                  checked={allSelected}
-                  indeterminate={!allSelected && someSelected}
-                  onChange={toggleAll}
-                  sx={{ '&.Mui-checked, &.MuiCheckbox-indeterminate': { color: WA_GREEN } }}
-                />
-              </TableCell>
-              <TableCell>Contato</TableCell>
-              <TableCell>Telefone</TableCell>
-              {manyNumbers ? (
-                <TableCell>
-                  <Tooltip title="Números em que este contato já tem conversa (clique para abrir)">
-                    <span>Números</span>
-                  </Tooltip>
-                </TableCell>
-              ) : null}
-              <TableCell>Tags</TableCell>
-              <TableCell align="center">Salvo na organização</TableCell>
-              <TableCell align="right">Ações</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {loading && !items.length ? (
-              <TableRow>
-                <TableCell colSpan={colCount} align="center" sx={{ py: 6 }}>
-                  <CircularProgress size={26} sx={{ color: WA_GREEN }} />
-                </TableCell>
-              </TableRow>
-            ) : items.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={colCount} sx={{ py: 3, border: 0 }}>
-                  <TgEmptyState
-                    dense
-                    icon={IconAddressBook}
-                    title={filtered ? 'Nenhum contato para este filtro' : 'Nenhum contato ainda'}
-                    description={
-                      filtered
-                        ? 'Ajuste a busca ou os filtros acima.'
-                        : connected
-                          ? 'Sincronize a agenda do celular, adicione um contato ou importe um CSV.'
-                          : 'Conecte o WhatsApp para sincronizar a agenda, ou adicione contatos manualmente.'
-                    }
-                    action={
-                      connected && !filtered ? (
-                        <Button
-                          variant="contained"
-                          disableElevation
-                          startIcon={<IconDeviceMobile size={18} />}
-                          onClick={syncClick}
-                          disabled={busy}
-                          sx={{ fontWeight: 700, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
-                        >
-                          Sincronizar do celular
-                        </Button>
-                      ) : null
-                    }
-                    sx={{ border: 'none' }}
-                  />
-                </TableCell>
-              </TableRow>
-            ) : (
-              items.map((c) => {
-                const name = c.display_name || c.name || c.push_name || fmtPhone(c.phone);
-                const secondary = c.push_name && c.push_name !== name ? c.push_name : null;
-                const isSel = selected.has(c.id);
-                const rb = Boolean(rowBusy[c.id]);
-                return (
-                  <TableRow key={c.id} hover selected={isSel} sx={{ opacity: loading ? 0.6 : 1, transition: 'opacity .15s' }}>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        size="small"
-                        checked={isSel}
-                        onChange={() => toggleOne(c.id)}
-                        sx={{ '&.Mui-checked': { color: WA_GREEN } }}
-                      />
-                    </TableCell>
-                    <TableCell sx={{ minWidth: 220 }}>
-                      <Stack direction="row" spacing={1.25} alignItems="center">
-                        <TgAvatar name={name} photoPath={`/whatsapp/contacts/${c.id}/photo`} size={38} kind="contact" />
-                        <Box sx={{ minWidth: 0 }}>
-                          <Stack direction="row" spacing={0.6} alignItems="center">
-                            <Typography sx={{ fontWeight: 700 }} noWrap>
-                              {name}
-                            </Typography>
-                            {c.is_business ? (
-                              <Tooltip title="Conta WhatsApp Business">
-                                <Chip
-                                  size="small"
-                                  icon={<IconBuildingStore size={12} />}
-                                  label="Business"
-                                  sx={{
-                                    height: 18,
-                                    fontSize: 10,
-                                    fontWeight: 700,
-                                    '& .MuiChip-icon': { ml: 0.5 },
-                                    color: WA_DARK,
-                                    bgcolor: (t) => tint(t, 'success', 0.14)
-                                  }}
-                                />
-                              </Tooltip>
-                            ) : null}
-                            {c.opted_out ? (
-                              <Tooltip
-                                title={`Pediu para não receber mensagens (LGPD) em ${fmtDateTime(c.opted_out_at)}. Não entra em disparos em massa.`}
-                              >
-                                <Chip
-                                  size="small"
-                                  icon={<IconHandStop size={12} />}
-                                  label="Descadastrado"
-                                  color="warning"
-                                  variant="outlined"
-                                  sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
-                                />
-                              </Tooltip>
-                            ) : null}
-                            {c.is_blocked ? (
-                              <Chip
-                                size="small"
-                                icon={<IconBan size={12} />}
-                                label="Bloqueado"
-                                color="error"
-                                variant="outlined"
-                                sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
-                              />
-                            ) : null}
-                          </Stack>
-                          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
-                            {secondary ? `${secondary} · ` : ''}
-                            {SOURCE_LABEL[c.source] || c.source || ''}
-                            {c.is_my_contact ? ' · na agenda' : ''}
-                          </Typography>
-                        </Box>
+      {xs ? (
+        <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper', overflow: 'hidden' }}>
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ px: 1, py: 0.5, bgcolor: 'action.hover' }}>
+            <Checkbox
+              size="small"
+              checked={allSelected}
+              indeterminate={!allSelected && someSelected}
+              onChange={toggleAll}
+              disabled={!items.length}
+              sx={{ '&.Mui-checked, &.MuiCheckbox-indeterminate': { color: WA_GREEN } }}
+            />
+            <Typography variant="caption" sx={{ fontWeight: 800, flex: 1 }}>
+              {allSelected && items.length ? 'Desmarcar a página' : 'Selecionar a página'}
+            </Typography>
+            <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+              {total ? `${from}–${to} de ${total}` : '0 contatos'}
+            </Typography>
+          </Stack>
+          {loading && !items.length ? (
+            <Box sx={{ py: 6, textAlign: 'center' }}>
+              <CircularProgress size={26} sx={{ color: WA_GREEN }} />
+            </Box>
+          ) : items.length === 0 ? (
+            <Box sx={{ p: 1.5 }}>
+              <TgEmptyState
+                dense
+                icon={IconAddressBook}
+                title={filtered ? 'Nenhum contato para este filtro' : 'Nenhum contato ainda'}
+                description={
+                  filtered
+                    ? 'Ajuste a busca ou os filtros acima.'
+                    : connected
+                      ? 'Sincronize a agenda do celular, adicione um contato ou importe um CSV.'
+                      : 'Conecte o WhatsApp para sincronizar a agenda, ou adicione contatos manualmente.'
+                }
+                sx={{ border: 'none' }}
+              />
+            </Box>
+          ) : (
+            items.map((c) => {
+              const name = c.display_name || c.name || c.push_name || fmtPhone(c.phone);
+              const secondary = c.push_name && c.push_name !== name ? c.push_name : null;
+              const isSel = selected.has(c.id);
+              const rb = Boolean(rowBusy[c.id]);
+              const chatList = chatsOf(c);
+              return (
+                <Box
+                  key={c.id}
+                  sx={{
+                    p: 1.25,
+                    pl: 0.75,
+                    borderTop: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: isSel ? (t) => tint(t, 'success', 0.06) : 'transparent',
+                    opacity: loading ? 0.6 : 1,
+                    transition: 'opacity .15s'
+                  }}
+                >
+                  <Stack direction="row" spacing={0.75} alignItems="flex-start">
+                    <Checkbox
+                      size="small"
+                      checked={isSel}
+                      onChange={() => toggleOne(c.id)}
+                      sx={{ mt: 0.25, '&.Mui-checked': { color: WA_GREEN } }}
+                    />
+                    <TgAvatar name={name} photoPath={`/whatsapp/contacts/${c.id}/photo`} size={42} kind="contact" />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <Typography sx={{ fontWeight: 700, minWidth: 0, maxWidth: '100%' }} noWrap>
+                          {name}
+                        </Typography>
+                        {c.is_business ? (
+                          <Chip
+                            size="small"
+                            icon={<IconBuildingStore size={12} />}
+                            label="Business"
+                            sx={{
+                              height: 18,
+                              fontSize: 10,
+                              fontWeight: 700,
+                              '& .MuiChip-icon': { ml: 0.5 },
+                              color: WA_DARK,
+                              bgcolor: (t) => tint(t, 'success', 0.14)
+                            }}
+                          />
+                        ) : null}
+                        {c.opted_out ? (
+                          <Chip
+                            size="small"
+                            icon={<IconHandStop size={12} />}
+                            label="Descadastrado"
+                            color="warning"
+                            variant="outlined"
+                            sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
+                          />
+                        ) : null}
+                        {c.is_blocked ? (
+                          <Chip
+                            size="small"
+                            icon={<IconBan size={12} />}
+                            label="Bloqueado"
+                            color="error"
+                            variant="outlined"
+                            sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
+                          />
+                        ) : null}
                       </Stack>
-                    </TableCell>
-                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                      <Stack direction="row" spacing={0.6} alignItems="center">
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
+                        {secondary ? `${secondary} · ` : ''}
+                        {SOURCE_LABEL[c.source] || c.source || ''}
+                        {c.is_my_contact ? ' · na agenda' : ''}
+                      </Typography>
+                      <Stack direction="row" spacing={0.6} alignItems="center" sx={{ mt: 0.5 }}>
                         <IconBrandWhatsapp size={15} color={WA_GREEN} />
                         <Typography sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: 13.5 }}>
                           {fmtPhone(c.phone)}
                         </Typography>
                       </Stack>
-                    </TableCell>
-                    {manyNumbers ? (
-                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                        <NumbersCell chats={chatsOf(c)} sessionOf={sessionOf} onOpen={goChat} />
-                      </TableCell>
-                    ) : null}
-                    <TableCell sx={{ minWidth: 180 }}>
+                      {manyNumbers ? (
+                        <Box sx={{ mt: 0.5 }}>
+                          <NumbersCell chats={chatList} sessionOf={sessionOf} onOpen={goChat} />
+                        </Box>
+                      ) : null}
                       <Stack
                         direction="row"
                         spacing={0.5}
@@ -1015,14 +1026,7 @@ export default function WhatsAppContacts() {
                         useFlexGap
                         alignItems="center"
                         onClick={(e) => setTagPop({ anchor: e.currentTarget, contact: c, tags: [...(c.tags || [])] })}
-                        sx={{
-                          cursor: 'pointer',
-                          minHeight: 26,
-                          borderRadius: 1.5,
-                          px: 0.5,
-                          mx: -0.5,
-                          '&:hover': { bgcolor: 'action.hover' }
-                        }}
+                        sx={{ cursor: 'pointer', minHeight: 32, borderRadius: 1.5, px: 0.5, mx: -0.5, mt: 0.5 }}
                       >
                         {(c.tags || []).slice(0, 4).map((t) => (
                           <Chip
@@ -1047,105 +1051,363 @@ export default function WhatsAppContacts() {
                             sx={{ height: 20, fontSize: 11, borderRadius: 1.5 }}
                           />
                         ) : null}
-                        {!(c.tags || []).length ? (
-                          <Typography
-                            variant="caption"
-                            sx={{ color: 'text.disabled', display: 'inline-flex', alignItems: 'center', gap: 0.4 }}
-                          >
-                            <IconPlus size={12} /> tag
-                          </Typography>
-                        ) : null}
+                        <Typography
+                          variant="caption"
+                          sx={{ color: 'text.disabled', display: 'inline-flex', alignItems: 'center', gap: 0.4 }}
+                        >
+                          <IconPlus size={12} /> tag
+                        </Typography>
                       </Stack>
-                    </TableCell>
-                    <TableCell align="center">
-                      <Tooltip
-                        title={
-                          c.saved
-                            ? 'Salvo: fica com a organização mesmo trocando de número'
-                            : 'Só da sessão: clique para salvar na organização'
-                        }
-                      >
-                        <Switch
+                      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mt: 0.25, ml: -1 }}>
+                        <Stack direction="row" alignItems="center" spacing={0.25} sx={{ minWidth: 0 }}>
+                          <Switch
+                            size="small"
+                            checked={Boolean(c.saved)}
+                            onChange={(e) => toggleSaved(c, e.target.checked)}
+                            disabled={rb}
+                            sx={{
+                              '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
+                              '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN }
+                            }}
+                          />
+                          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }} noWrap>
+                            {c.saved ? 'Salvo na org.' : 'Só da sessão'}
+                          </Typography>
+                        </Stack>
+                        <Stack direction="row" spacing={0} sx={{ mr: -0.5 }}>
+                          <IconButton
+                            onClick={(e) => openConversation(c, e)}
+                            disabled={rb || !connected}
+                            sx={{ color: WA_DARK }}
+                            aria-label="Abrir conversa"
+                          >
+                            {rb ? <CircularProgress size={16} /> : <IconMessage size={19} />}
+                          </IconButton>
+                          {c.opted_out ? (
+                            <IconButton color="warning" onClick={() => setOptedOut(c, false)} disabled={rb} aria-label="Reativar">
+                              <IconHandStop size={19} />
+                            </IconButton>
+                          ) : null}
+                          <IconButton onClick={() => setRename({ contact: c, value: c.name || '' })} disabled={rb} aria-label="Renomear">
+                            <IconPencil size={19} />
+                          </IconButton>
+                          <IconButton onClick={() => checkWhatsApp(c)} disabled={rb || !connected} aria-label="Verificar se tem WhatsApp">
+                            <IconCheck size={19} />
+                          </IconButton>
+                          {c.source === 'manual' || c.source === 'import' ? (
+                            <IconButton
+                              color="error"
+                              onClick={() => setConfirm({ kind: 'remove', contact: c })}
+                              disabled={rb}
+                              aria-label="Remover"
+                            >
+                              <IconTrash size={19} />
+                            </IconButton>
+                          ) : null}
+                        </Stack>
+                      </Stack>
+                    </Box>
+                  </Stack>
+                </Box>
+              );
+            })
+          )}
+        </Box>
+      ) : (
+        <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper' }}>
+          <Table size="small" sx={{ minWidth: 760 }}>
+            <TableHead>
+              <TableRow sx={{ '& th': { fontWeight: 800, bgcolor: 'action.hover', whiteSpace: 'nowrap' } }}>
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    size="small"
+                    checked={allSelected}
+                    indeterminate={!allSelected && someSelected}
+                    onChange={toggleAll}
+                    sx={{ '&.Mui-checked, &.MuiCheckbox-indeterminate': { color: WA_GREEN } }}
+                  />
+                </TableCell>
+                <TableCell>Contato</TableCell>
+                <TableCell>Telefone</TableCell>
+                {manyNumbers ? (
+                  <TableCell>
+                    <Tooltip title="Números em que este contato já tem conversa (clique para abrir)">
+                      <span>Números</span>
+                    </Tooltip>
+                  </TableCell>
+                ) : null}
+                <TableCell>Tags</TableCell>
+                <TableCell align="center">Salvo na organização</TableCell>
+                <TableCell align="right">Ações</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading && !items.length ? (
+                <TableRow>
+                  <TableCell colSpan={colCount} align="center" sx={{ py: 6 }}>
+                    <CircularProgress size={26} sx={{ color: WA_GREEN }} />
+                  </TableCell>
+                </TableRow>
+              ) : items.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={colCount} sx={{ py: 3, border: 0 }}>
+                    <TgEmptyState
+                      dense
+                      icon={IconAddressBook}
+                      title={filtered ? 'Nenhum contato para este filtro' : 'Nenhum contato ainda'}
+                      description={
+                        filtered
+                          ? 'Ajuste a busca ou os filtros acima.'
+                          : connected
+                            ? 'Sincronize a agenda do celular, adicione um contato ou importe um CSV.'
+                            : 'Conecte o WhatsApp para sincronizar a agenda, ou adicione contatos manualmente.'
+                      }
+                      action={
+                        connected && !filtered ? (
+                          <Button
+                            variant="contained"
+                            disableElevation
+                            startIcon={<IconDeviceMobile size={18} />}
+                            onClick={syncClick}
+                            disabled={busy}
+                            sx={{ fontWeight: 700, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } }}
+                          >
+                            Sincronizar do celular
+                          </Button>
+                        ) : null
+                      }
+                      sx={{ border: 'none' }}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : (
+                items.map((c) => {
+                  const name = c.display_name || c.name || c.push_name || fmtPhone(c.phone);
+                  const secondary = c.push_name && c.push_name !== name ? c.push_name : null;
+                  const isSel = selected.has(c.id);
+                  const rb = Boolean(rowBusy[c.id]);
+                  return (
+                    <TableRow key={c.id} hover selected={isSel} sx={{ opacity: loading ? 0.6 : 1, transition: 'opacity .15s' }}>
+                      <TableCell padding="checkbox">
+                        <Checkbox
                           size="small"
-                          checked={Boolean(c.saved)}
-                          onChange={(e) => toggleSaved(c, e.target.checked)}
-                          disabled={rb}
-                          sx={{
-                            '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
-                            '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN }
-                          }}
+                          checked={isSel}
+                          onChange={() => toggleOne(c.id)}
+                          sx={{ '&.Mui-checked': { color: WA_GREEN } }}
                         />
-                      </Tooltip>
-                    </TableCell>
-                    <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                      <Stack direction="row" spacing={0.25} justifyContent="flex-end">
+                      </TableCell>
+                      <TableCell sx={{ minWidth: 220 }}>
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <TgAvatar name={name} photoPath={`/whatsapp/contacts/${c.id}/photo`} size={38} kind="contact" />
+                          <Box sx={{ minWidth: 0 }}>
+                            <Stack direction="row" spacing={0.6} alignItems="center">
+                              <Typography sx={{ fontWeight: 700 }} noWrap>
+                                {name}
+                              </Typography>
+                              {c.is_business ? (
+                                <Tooltip title="Conta WhatsApp Business">
+                                  <Chip
+                                    size="small"
+                                    icon={<IconBuildingStore size={12} />}
+                                    label="Business"
+                                    sx={{
+                                      height: 18,
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      '& .MuiChip-icon': { ml: 0.5 },
+                                      color: WA_DARK,
+                                      bgcolor: (t) => tint(t, 'success', 0.14)
+                                    }}
+                                  />
+                                </Tooltip>
+                              ) : null}
+                              {c.opted_out ? (
+                                <Tooltip
+                                  title={`Pediu para não receber mensagens (LGPD) em ${fmtDateTime(c.opted_out_at)}. Não entra em disparos em massa.`}
+                                >
+                                  <Chip
+                                    size="small"
+                                    icon={<IconHandStop size={12} />}
+                                    label="Descadastrado"
+                                    color="warning"
+                                    variant="outlined"
+                                    sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
+                                  />
+                                </Tooltip>
+                              ) : null}
+                              {c.is_blocked ? (
+                                <Chip
+                                  size="small"
+                                  icon={<IconBan size={12} />}
+                                  label="Bloqueado"
+                                  color="error"
+                                  variant="outlined"
+                                  sx={{ height: 18, fontSize: 10, fontWeight: 700 }}
+                                />
+                              ) : null}
+                            </Stack>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
+                              {secondary ? `${secondary} · ` : ''}
+                              {SOURCE_LABEL[c.source] || c.source || ''}
+                              {c.is_my_contact ? ' · na agenda' : ''}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                      </TableCell>
+                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                        <Stack direction="row" spacing={0.6} alignItems="center">
+                          <IconBrandWhatsapp size={15} color={WA_GREEN} />
+                          <Typography sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontSize: 13.5 }}>
+                            {fmtPhone(c.phone)}
+                          </Typography>
+                        </Stack>
+                      </TableCell>
+                      {manyNumbers ? (
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                          <NumbersCell chats={chatsOf(c)} sessionOf={sessionOf} onOpen={goChat} />
+                        </TableCell>
+                      ) : null}
+                      <TableCell sx={{ minWidth: 180 }}>
+                        <Stack
+                          direction="row"
+                          spacing={0.5}
+                          flexWrap="wrap"
+                          useFlexGap
+                          alignItems="center"
+                          onClick={(e) => setTagPop({ anchor: e.currentTarget, contact: c, tags: [...(c.tags || [])] })}
+                          sx={{
+                            cursor: 'pointer',
+                            minHeight: 26,
+                            borderRadius: 1.5,
+                            px: 0.5,
+                            mx: -0.5,
+                            '&:hover': { bgcolor: 'action.hover' }
+                          }}
+                        >
+                          {(c.tags || []).slice(0, 4).map((t) => (
+                            <Chip
+                              key={t}
+                              label={t}
+                              size="small"
+                              sx={{
+                                height: 20,
+                                fontSize: 11,
+                                fontWeight: 600,
+                                borderRadius: 1.5,
+                                color: WA_DARK,
+                                bgcolor: (th) => tint(th, 'success', 0.14)
+                              }}
+                            />
+                          ))}
+                          {(c.tags || []).length > 4 ? (
+                            <Chip
+                              label={`+${c.tags.length - 4}`}
+                              size="small"
+                              variant="outlined"
+                              sx={{ height: 20, fontSize: 11, borderRadius: 1.5 }}
+                            />
+                          ) : null}
+                          {!(c.tags || []).length ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: 'text.disabled', display: 'inline-flex', alignItems: 'center', gap: 0.4 }}
+                            >
+                              <IconPlus size={12} /> tag
+                            </Typography>
+                          ) : null}
+                        </Stack>
+                      </TableCell>
+                      <TableCell align="center">
                         <Tooltip
                           title={
-                            manyNumbers && chatsOf(c).length > 1
-                              ? `Abrir conversa (${chatsOf(c).length} números — escolha qual)`
-                              : sessionFilter && !chatsOf(c).some((x) => x.session_id === sessionFilter)
-                                ? `Abrir conversa nova por ${sessionLabel(byId.get(sessionFilter))}`
-                                : 'Abrir conversa'
+                            c.saved
+                              ? 'Salvo: fica com a organização mesmo trocando de número'
+                              : 'Só da sessão: clique para salvar na organização'
                           }
                         >
-                          <span>
-                            <IconButton
-                              size="small"
-                              onClick={(e) => openConversation(c, e)}
-                              disabled={rb || !connected}
-                              sx={{ color: WA_DARK }}
-                            >
-                              {rb ? <CircularProgress size={16} /> : <IconMessage size={18} />}
-                            </IconButton>
-                          </span>
+                          <Switch
+                            size="small"
+                            checked={Boolean(c.saved)}
+                            onChange={(e) => toggleSaved(c, e.target.checked)}
+                            disabled={rb}
+                            sx={{
+                              '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
+                              '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN }
+                            }}
+                          />
                         </Tooltip>
-                        {c.opted_out ? (
-                          <Tooltip title="Reativar: volta a receber disparos (use só com consentimento do contato)">
-                            <span>
-                              <IconButton size="small" color="warning" onClick={() => setOptedOut(c, false)} disabled={rb}>
-                                <IconHandStop size={18} />
-                              </IconButton>
-                            </span>
-                          </Tooltip>
-                        ) : null}
-                        <Tooltip title="Verificar se tem WhatsApp">
-                          <span>
-                            <IconButton size="small" onClick={() => checkWhatsApp(c)} disabled={rb || !connected}>
-                              <IconCheck size={18} />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        {c.source === 'manual' || c.source === 'import' ? (
-                          <Tooltip title="Remover contato">
+                      </TableCell>
+                      <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                        <Stack direction="row" spacing={0.25} justifyContent="flex-end">
+                          <Tooltip
+                            title={
+                              manyNumbers && chatsOf(c).length > 1
+                                ? `Abrir conversa (${chatsOf(c).length} números — escolha qual)`
+                                : sessionFilter && !chatsOf(c).some((x) => x.session_id === sessionFilter)
+                                  ? `Abrir conversa nova por ${sessionLabel(byId.get(sessionFilter))}`
+                                  : 'Abrir conversa'
+                            }
+                          >
                             <span>
                               <IconButton
                                 size="small"
-                                color="error"
-                                onClick={() => setConfirm({ kind: 'remove', contact: c })}
-                                disabled={rb}
+                                onClick={(e) => openConversation(c, e)}
+                                disabled={rb || !connected}
+                                sx={{ color: WA_DARK }}
                               >
-                                <IconTrash size={18} />
+                                {rb ? <CircularProgress size={16} /> : <IconMessage size={18} />}
                               </IconButton>
                             </span>
                           </Tooltip>
-                        ) : null}
-                      </Stack>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+                          {c.opted_out ? (
+                            <Tooltip title="Reativar: volta a receber disparos (use só com consentimento do contato)">
+                              <span>
+                                <IconButton size="small" color="warning" onClick={() => setOptedOut(c, false)} disabled={rb}>
+                                  <IconHandStop size={18} />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                          <Tooltip title="Renomear contato">
+                            <span>
+                              <IconButton size="small" onClick={() => setRename({ contact: c, value: c.name || '' })} disabled={rb}>
+                                <IconPencil size={18} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <Tooltip title="Verificar se tem WhatsApp">
+                            <span>
+                              <IconButton size="small" onClick={() => checkWhatsApp(c)} disabled={rb || !connected}>
+                                <IconCheck size={18} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          {c.source === 'manual' || c.source === 'import' ? (
+                            <Tooltip title="Remover contato">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => setConfirm({ kind: 'remove', contact: c })}
+                                  disabled={rb}
+                                >
+                                  <IconTrash size={18} />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          ) : null}
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
 
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        spacing={1.5}
-        alignItems={{ xs: 'flex-start', sm: 'center' }}
-        justifyContent="space-between"
-        sx={{ mt: 2 }}
-      >
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems="center" justifyContent="space-between" sx={{ mt: 2 }}>
         <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
           {total > 0 ? `Mostrando ${from}–${to} de ${total} contato${total === 1 ? '' : 's'}` : 'Mostrando 0 de 0 contatos'}
         </Typography>
@@ -1156,6 +1418,7 @@ export default function WhatsAppContacts() {
           count={Math.max(1, data.pages)}
           disabled={loading}
           shape="rounded"
+          siblingCount={xs ? 0 : 1}
         />
       </Stack>
 
@@ -1223,7 +1486,7 @@ export default function WhatsAppContacts() {
         anchorEl={tagPop?.anchor}
         onClose={saveTags}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        slotProps={{ paper: { sx: { p: 1.75, width: 320, borderRadius: 2.5 } } }}
+        slotProps={{ paper: { sx: { p: 1.75, width: 'min(320px, calc(100vw - 32px))', borderRadius: 2.5 } } }}
       >
         {tagPop ? (
           <Stack spacing={1.25}>
@@ -1246,14 +1509,14 @@ export default function WhatsAppContacts() {
       </Popover>
 
       {/* ---------------- adicionar contato ---------------- */}
-      <TgModal
+      <CrmModal
         open={Boolean(addDlg)}
         onClose={() => !addDlg?.loading && setAddDlg(null)}
         title="Adicionar contato"
         subtitle="Fica salvo na organização, independente do celular conectado."
         maxWidth="xs"
         footer={
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <>
             <Button onClick={() => setAddDlg(null)} disabled={addDlg?.loading}>
               Cancelar
             </Button>
@@ -1267,7 +1530,7 @@ export default function WhatsAppContacts() {
             >
               Adicionar
             </Button>
-          </Stack>
+          </>
         }
       >
         {addDlg ? (
@@ -1298,17 +1561,17 @@ export default function WhatsAppContacts() {
             </Box>
           </Stack>
         ) : null}
-      </TgModal>
+      </CrmModal>
 
       {/* ---------------- importar CSV ---------------- */}
-      <TgModal
+      <CrmModal
         open={Boolean(importDlg)}
         onClose={() => !importDlg?.loading && setImportDlg(null)}
         title="Importar contatos (CSV)"
         subtitle="Colunas: phone, name, tags (tags separadas por |). Os contatos entram salvos na organização."
         maxWidth="sm"
         footer={
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <>
             <Button onClick={() => setImportDlg(null)} disabled={importDlg?.loading}>
               Fechar
             </Button>
@@ -1322,13 +1585,13 @@ export default function WhatsAppContacts() {
             >
               Importar
             </Button>
-          </Stack>
+          </>
         }
       >
         {importDlg ? (
           <Stack spacing={2}>
             <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: 'background.default', border: '1px dashed', borderColor: 'divider' }}>
-              <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.75 }}>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap sx={{ mb: 0.75 }}>
                 <Typography variant="caption" sx={{ fontWeight: 700 }}>
                   Exemplo do formato
                 </Typography>
@@ -1401,17 +1664,17 @@ export default function WhatsAppContacts() {
             ) : null}
           </Stack>
         ) : null}
-      </TgModal>
+      </CrmModal>
 
       {/* ---------------- tags em massa ---------------- */}
-      <TgModal
+      <CrmModal
         open={Boolean(bulkTagDlg)}
         onClose={() => !busy && setBulkTagDlg(null)}
         title={`Adicionar tags a ${selected.size} contato${selected.size === 1 ? '' : 's'}`}
         subtitle="As tags são acrescentadas, sem remover as existentes."
         maxWidth="xs"
         footer={
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
+          <>
             <Button onClick={() => setBulkTagDlg(null)} disabled={busy}>
               Cancelar
             </Button>
@@ -1425,7 +1688,7 @@ export default function WhatsAppContacts() {
             >
               Aplicar
             </Button>
-          </Stack>
+          </>
         }
       >
         {bulkTagDlg ? (
@@ -1436,7 +1699,53 @@ export default function WhatsAppContacts() {
             suggestions={data.tags}
           />
         ) : null}
-      </TgModal>
+      </CrmModal>
+
+      <CrmModal
+        open={Boolean(rename)}
+        onClose={() => !renameBusy && setRename(null)}
+        title="Renomear contato"
+        subtitle={
+          rename?.contact?.push_name
+            ? `No WhatsApp se apresenta como “${rename.contact.push_name}”`
+            : rename?.contact?.phone
+              ? fmtPhone(rename.contact.phone)
+              : ''
+        }
+        maxWidth="xs"
+        footer={
+          <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ width: '100%' }}>
+            <Button onClick={() => setRename(null)} disabled={renameBusy}>
+              Cancelar
+            </Button>
+            <Button
+              variant="contained"
+              disableElevation
+              onClick={saveRename}
+              disabled={renameBusy}
+              sx={{ bgcolor: WA_GREEN, fontWeight: 700, '&:hover': { bgcolor: WA_DARK } }}
+            >
+              {renameBusy ? 'Salvando…' : 'Salvar'}
+            </Button>
+          </Stack>
+        }
+      >
+        <TextField
+          autoFocus
+          fullWidth
+          label="Nome"
+          value={rename?.value || ''}
+          onChange={(e) => setRename((r) => (r ? { ...r, value: e.target.value } : r))}
+          inputProps={{ maxLength: 255 }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              saveRename();
+            }
+          }}
+          helperText="O nome vale para a organização inteira (lista de contatos, conversas e CRM). A agenda do celular não muda."
+        />
+      </CrmModal>
 
       <TgConfirmDialog
         open={confirm?.kind === 'remove'}

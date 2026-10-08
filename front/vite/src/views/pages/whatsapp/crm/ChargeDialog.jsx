@@ -16,10 +16,9 @@ import Typography from '@mui/material/Typography';
 import { IconBarcode, IconCash, IconQrcode, IconSend } from '@tabler/icons-react';
 
 import { get, post } from 'api/api';
-import { TgModal } from 'views/pages/telegram/ui';
 import { WaNumberChip, WaNumberSelect, useWaSessions } from '../waKit';
 import { errMsg, fmtPhone } from '../waShared';
-import { MoneyField, billingShort, formatBRL, todayIso, waPrimaryBtn } from './crmKit';
+import { CrmModal, MoneyField, billingShort, formatBRL, todayIso, waPrimaryBtn } from './crmKit';
 
 // ============================================================================
 // Nova cobrança (PIX e/ou boleto) — usada na tela Cobranças e no botão "Cobrar"
@@ -161,13 +160,13 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, c
   };
 
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose?.()}
       title="Nova cobrança"
       subtitle={
         customer ? (
-          <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex' }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex', flexWrap: 'wrap' }}>
             <span>
               {customer.name} · {fmtPhone(customer.phone)}
             </span>
@@ -309,7 +308,9 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, c
             value={f.kind}
             onChange={(_, v) => v && set('kind', v)}
             fullWidth
-            sx={{ '& .MuiToggleButton-root': { textTransform: 'none', fontWeight: 700, gap: 0.75 } }}
+            sx={{
+              '& .MuiToggleButton-root': { textTransform: 'none', fontWeight: 700, gap: 0.75, minHeight: 40, px: { xs: 0.5, sm: 1.5 } }
+            }}
           >
             <ToggleButton value="pix">
               <IconQrcode size={16} /> PIX
@@ -355,6 +356,6 @@ export default function ChargeDialog({ open, onClose, customer: fixedCustomer, c
           label={<Typography variant="body2">Enviar agora na conversa do WhatsApp</Typography>}
         />
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }

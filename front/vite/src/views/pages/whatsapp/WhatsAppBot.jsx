@@ -37,6 +37,8 @@ import {
   DialogActions,
   DialogContent,
   Divider,
+  Drawer,
+  Fab,
   IconButton,
   ListItemIcon,
   ListItemText,
@@ -69,7 +71,8 @@ import {
   IconPlus,
   IconRobot,
   IconSitemap,
-  IconTrash
+  IconTrash,
+  IconX
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
@@ -108,7 +111,7 @@ import {
   hexA
 } from './bot/botUi';
 import { BotFlowStyles, edgeTypes, nodeTypes } from './bot/nodes';
-import BotPalette, { DND_TYPE } from './bot/palette';
+import BotPalette, { DND_TYPE, PaletteList } from './bot/palette';
 import BotInspector from './bot/inspector';
 import BotSimulator from './bot/simulator';
 import BotSettingsTab from './bot/settingsTab';
@@ -417,6 +420,9 @@ function BotBuilder({
   const [selectedId, setSelectedId] = useState(null);
   const [simOpen, setSimOpen] = useState(false);
   const [simNodeId, setSimNodeId] = useState(null);
+  // celular: inspetor em tela cheia (fechar mantém o bloco selecionado) + gaveta de blocos
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [draggingBlock, setDraggingBlock] = useState(null);
   const [connectMenu, setConnectMenu] = useState(null);
   const [issuesEl, setIssuesEl] = useState(null);
@@ -602,19 +608,27 @@ function BotBuilder({
     const calc = () => {
       const el = frameRef.current;
       if (!el) return;
-      const top = el.getBoundingClientRect().top;
-      setFrameH(Math.max(440, Math.round(window.innerHeight - top - 74)));
+      if (downSm) {
+        // celular: a página rola até o canvas; ele ocupa quase a tela toda, nunca menos de 360
+        setFrameH(Math.max(360, Math.min(560, Math.round(window.innerHeight - 150))));
+        return;
+      }
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      setFrameH(Math.max(440, Math.round(window.innerHeight - top - 24)));
     };
     calc();
     const t1 = setTimeout(calc, 120);
     const t2 = setTimeout(calc, 450);
     window.addEventListener('resize', calc);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => calc()) : null;
+    ro?.observe(document.body);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
       window.removeEventListener('resize', calc);
+      ro?.disconnect();
     };
-  }, [tab, loadError, loading, bannerKey, flowSessions.length]);
+  }, [tab, loadError, loading, bannerKey, flowSessions.length, downSm]);
 
   // --------------------------------------------------------------- enquadramento inicial
   // Fluxo pequeno: centraliza. Fluxo grande: zoom legível (>= 0,62) alinhado à esquerda,
@@ -758,8 +772,26 @@ function BotBuilder({
 
   const clearSelection = useCallback(() => {
     setSelectedId(null);
+    setInspectorOpen(false);
     setNodes((nds) => unselect(nds));
   }, [setNodes]);
+
+  // bloco novo/selecionado → no celular abre o inspetor em tela cheia
+  useEffect(() => {
+    if (selectedId) setInspectorOpen(true);
+  }, [selectedId]);
+  // no celular, fechar o inspetor mantém o bloco selecionado (o próximo bloco da gaveta encaixa depois dele)
+  const closeInspector = useCallback(() => {
+    if (downSm) setInspectorOpen(false);
+    else clearSelection();
+  }, [downSm, clearSelection]);
+  const addFromDrawer = useCallback(
+    (type) => {
+      setPaletteOpen(false);
+      addFromPalette(type);
+    },
+    [addFromPalette]
+  );
 
   const onConnect = useCallback(
     (params) => {
@@ -951,6 +983,13 @@ function BotBuilder({
   const flowKey = useMemo(() => payloadSig(nodes, edges, settings), [nodes, edges, settings]);
 
   const selectedNode = useMemo(() => nodes.find((n) => n.id === selectedId) || null, [nodes, selectedId]);
+  // bloco selecionado com alguma saída livre → o próximo bloco da gaveta (celular) encaixa depois dele (mesma regra do addFromPalette)
+  const chainAfter = useMemo(() => {
+    if (!selectedNode || tab !== 'flow') return null;
+    const outs = outputsOf(selectedNode.type, selectedNode.data, settings);
+    const used = new Set(edges.filter((e) => e.source === selectedNode.id).map((e) => e.sourceHandle || 'out'));
+    return outs.some((o) => !used.has(o.id)) ? selectedNode : null;
+  }, [selectedNode, edges, settings, tab]);
   const paletteCompact = downLg || (simOpen && narrow);
   const stats = meta.stats || {};
 
@@ -978,9 +1017,16 @@ function BotBuilder({
         </Alert>
       ) : null}
 
-      {/* identidade do fluxo aberto: nome, status, números, ligar/desligar, menu */}
-      <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1.25, columnGap: 1.5, rowGap: 0.75 }}>
-        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flex: '1 1 280px', minWidth: 0 }}>
+      {/* identidade do fluxo aberto: nome, status, números, ligar/desligar, menu
+          (celular: empilhado — nome/status, números, e uma linha só para o toggle + ⋮) */}
+      <Stack
+        direction={downSm ? 'column' : 'row'}
+        alignItems={downSm ? 'stretch' : 'center'}
+        flexWrap={downSm ? 'nowrap' : 'wrap'}
+        useFlexGap
+        sx={{ mb: 1.25, columnGap: 1.5, rowGap: downSm ? 1 : 0.75, minWidth: 0 }}
+      >
+        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flex: downSm ? '0 0 auto' : '1 1 280px', minWidth: 0 }}>
           <Box
             sx={{
               width: 38,
@@ -1048,13 +1094,22 @@ function BotBuilder({
           </Box>
         </Stack>
 
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0, minWidth: 0 }}>
           <Tooltip title={canManage ? '' : 'Só administradores podem ligar ou desligar o bot.'}>
             <Stack
               direction="row"
               spacing={0.75}
               alignItems="center"
-              sx={{ pl: 1.25, pr: 0.5, py: 0.3, borderRadius: 3, border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
+              sx={{
+                pl: 1.25,
+                pr: 0.5,
+                py: 0.3,
+                borderRadius: 3,
+                border: '1px solid',
+                borderColor: 'divider',
+                bgcolor: 'background.paper',
+                flexShrink: 0
+              }}
             >
               {!canManage ? <IconLock size={15} style={{ opacity: 0.55 }} /> : null}
               <Typography sx={{ fontWeight: 700, fontSize: 13 }}>{meta.active ? 'Ligado' : 'Desligado'}</Typography>
@@ -1070,8 +1125,24 @@ function BotBuilder({
               />
             </Stack>
           </Tooltip>
+          {downSm ? (
+            <Box sx={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'center', overflow: 'hidden' }}>
+              <SaveIndicator
+                saving={saving}
+                dirty={dirty}
+                offline={Boolean(loadError)}
+                error={saveError && saveError.sig === sig ? saveError.message : null}
+                savedAt={savedAt}
+              />
+            </Box>
+          ) : null}
           <Tooltip title="Mais ações">
-            <IconButton size="small" onClick={(e) => setMenuEl(e.currentTarget)} aria-label="Mais ações do fluxo">
+            <IconButton
+              size="small"
+              onClick={(e) => setMenuEl(e.currentTarget)}
+              aria-label="Mais ações do fluxo"
+              sx={{ ml: downSm ? 'auto' : undefined, width: downSm ? 40 : undefined, height: downSm ? 40 : undefined }}
+            >
               <IconDotsVertical size={19} />
             </IconButton>
           </Tooltip>
@@ -1121,9 +1192,15 @@ function BotBuilder({
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
+          variant={downSm ? 'scrollable' : 'standard'}
+          scrollButtons={downSm ? 'auto' : false}
+          allowScrollButtonsMobile
           sx={{
             minHeight: 44,
             mr: 'auto',
+            minWidth: 0,
+            maxWidth: '100%',
+            width: downSm ? '100%' : undefined,
             '& .MuiTab-root': { minHeight: 44, textTransform: 'none', fontWeight: 700, fontSize: 14, px: 1.5 },
             '& .MuiTab-root.Mui-selected': { color: WA_ACCENT },
             '& .MuiTabs-indicator': { bgcolor: WA_GREEN, height: 3, borderRadius: 3 }
@@ -1169,7 +1246,17 @@ function BotBuilder({
           />
         </Tabs>
 
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ pb: 0.5 }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          sx={{
+            pb: downSm ? 1 : 0.5,
+            width: downSm ? '100%' : undefined,
+            minWidth: 0,
+            '& > *': downSm ? { flex: 1, minWidth: 0 } : undefined
+          }}
+        >
           <Button
             size="small"
             onClick={(e) => setIssuesEl(e.currentTarget)}
@@ -1181,6 +1268,7 @@ function BotBuilder({
               fontWeight: 700,
               borderRadius: 2,
               px: 1.25,
+              whiteSpace: 'nowrap',
               color: issueTone.fg,
               bgcolor: hexA(issueTone.bg, 0.12),
               '&:hover': {
@@ -1224,14 +1312,15 @@ function BotBuilder({
                   })
             }}
           >
-            Testar fluxo
+            {downSm ? 'Testar' : 'Testar fluxo'}
           </Button>
           <Tooltip title="Salvar agora (Ctrl/⌘ + S)">
-            <span>
+            <span style={downSm ? { display: 'flex' } : undefined}>
               <Button
                 size="small"
                 variant="contained"
                 disableElevation
+                fullWidth={downSm}
                 onClick={manualSave}
                 disabled={saving || loading}
                 startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconDeviceFloppy size={17} />}
@@ -1266,8 +1355,10 @@ function BotBuilder({
             ref={frameRef}
             sx={(t) => ({
               height: frameH ? `${frameH}px` : 'calc(100dvh - 280px)',
-              minHeight: 440,
+              minHeight: downSm ? 360 : 440,
               display: 'flex',
+              minWidth: 0,
+              maxWidth: '100%',
               border: '1px solid',
               borderColor: 'divider',
               borderRadius: 3,
@@ -1280,13 +1371,13 @@ function BotBuilder({
               '--wa-handle-border': t.vars.palette.background.paper
             })}
           >
-            <BotPalette compact={paletteCompact} onAdd={addFromPalette} onDragBlock={setDraggingBlock} />
+            {!downSm ? <BotPalette compact={paletteCompact} onAdd={addFromPalette} onDragBlock={setDraggingBlock} /> : null}
 
             <Box
               ref={wrapperRef}
               onDragOver={onDragOver}
               onDrop={onDrop}
-              sx={{ position: 'relative', flex: 1, minWidth: 0, overflow: 'hidden', display: simOpen && downSm ? 'none' : 'block' }}
+              sx={{ position: 'relative', flex: 1, minWidth: 0, overflow: 'hidden' }}
             >
               {loading ? (
                 <Stack alignItems="center" justifyContent="center" spacing={1.5} sx={{ height: '100%' }}>
@@ -1304,7 +1395,10 @@ function BotBuilder({
                   onConnect={onConnect}
                   onConnectStart={onConnectStart}
                   onConnectEnd={onConnectEnd}
-                  onNodeClick={(_, n) => setSelectedId(n.id)}
+                  onNodeClick={(_, n) => {
+                    setSelectedId(n.id);
+                    setInspectorOpen(true);
+                  }}
                   onPaneClick={clearSelection}
                   onNodesDelete={(del) => {
                     if (del.some((d) => d.id === selectedId)) setSelectedId(null);
@@ -1407,45 +1501,143 @@ function BotBuilder({
                 </Box>
               ) : null}
 
-              {/* inspetor */}
-              <Box
-                sx={{
-                  position: 'absolute',
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  width: { xs: '100%', sm: INSPECTOR_W },
-                  maxWidth: '100%',
-                  bgcolor: 'background.default',
-                  borderLeft: '1px solid',
-                  borderColor: 'divider',
-                  boxShadow: selectedNode ? '-8px 0 24px rgba(0,0,0,0.14)' : 'none',
-                  transform: selectedNode ? 'translateX(0)' : 'translateX(105%)',
-                  transition: 'transform .22s ease',
-                  zIndex: 5,
-                  pointerEvents: selectedNode ? 'auto' : 'none'
-                }}
-              >
-                {selectedNode ? (
-                  <BotInspector
-                    node={selectedNode}
-                    onChange={updateNodeData}
-                    onDelete={deleteNode}
-                    onDuplicate={duplicateNode}
-                    onClose={clearSelection}
-                    onOpenSettings={() => setTab('settings')}
-                  />
-                ) : null}
-              </Box>
+              {/* celular: botão flutuante que abre a gaveta de blocos */}
+              {downSm && !loading ? (
+                <Fab
+                  variant="extended"
+                  size="medium"
+                  onClick={() => setPaletteOpen(true)}
+                  aria-label="Adicionar bloco"
+                  sx={{
+                    position: 'absolute',
+                    right: 12,
+                    bottom: 12,
+                    zIndex: 4,
+                    textTransform: 'none',
+                    fontWeight: 800,
+                    fontSize: 14,
+                    gap: 0.75,
+                    color: '#fff',
+                    bgcolor: WA_GREEN,
+                    boxShadow: `0 8px 20px ${hexA(WA_DARK, 0.35)}`,
+                    '&:hover, &:active': { bgcolor: WA_DARK }
+                  }}
+                >
+                  <IconPlus size={19} />
+                  Blocos
+                </Fab>
+              ) : null}
+
+              {/* inspetor (desktop: painel lateral deslizante) */}
+              {!downSm ? (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                    width: INSPECTOR_W,
+                    maxWidth: '100%',
+                    bgcolor: 'background.default',
+                    borderLeft: '1px solid',
+                    borderColor: 'divider',
+                    boxShadow: selectedNode ? '-8px 0 24px rgba(0,0,0,0.14)' : 'none',
+                    transform: selectedNode ? 'translateX(0)' : 'translateX(105%)',
+                    transition: 'transform .22s ease',
+                    zIndex: 5,
+                    pointerEvents: selectedNode ? 'auto' : 'none'
+                  }}
+                >
+                  {selectedNode ? (
+                    <BotInspector
+                      node={selectedNode}
+                      onChange={updateNodeData}
+                      onDelete={deleteNode}
+                      onDuplicate={duplicateNode}
+                      onClose={closeInspector}
+                      onOpenSettings={() => setTab('settings')}
+                    />
+                  ) : null}
+                </Box>
+              ) : null}
             </Box>
 
-            {simOpen ? (
-              <Box sx={{ width: { xs: '100%', sm: 360 }, flexShrink: 0, borderLeft: '1px solid', borderColor: 'divider', minWidth: 0 }}>
+            {simOpen && !downSm ? (
+              <Box sx={{ width: 360, flexShrink: 0, borderLeft: '1px solid', borderColor: 'divider', minWidth: 0 }}>
                 <BotSimulator getPayload={getPayload} flowSig={flowKey} onClose={() => setSimOpen(false)} onCurrentNode={setSimNodeId} />
               </Box>
             ) : null}
           </Box>
         )}
+
+        {/* celular: inspetor do bloco em tela cheia */}
+        {downSm ? (
+          <Dialog
+            fullScreen
+            open={Boolean(selectedNode) && inspectorOpen && tab === 'flow'}
+            onClose={closeInspector}
+            slotProps={{ paper: { sx: { bgcolor: 'background.default' } } }}
+          >
+            {selectedNode ? (
+              <BotInspector
+                node={selectedNode}
+                onChange={updateNodeData}
+                onDelete={deleteNode}
+                onDuplicate={duplicateNode}
+                onClose={closeInspector}
+                onOpenSettings={() => {
+                  setInspectorOpen(false);
+                  setTab('settings');
+                }}
+              />
+            ) : null}
+          </Dialog>
+        ) : null}
+
+        {/* celular: simulador em tela cheia */}
+        {downSm && simOpen ? (
+          <Dialog fullScreen open onClose={() => setSimOpen(false)}>
+            <BotSimulator getPayload={getPayload} flowSig={flowKey} onClose={() => setSimOpen(false)} onCurrentNode={setSimNodeId} />
+          </Dialog>
+        ) : null}
+
+        {/* celular: gaveta inferior com os blocos */}
+        {downSm ? (
+          <Drawer
+            anchor="bottom"
+            open={paletteOpen}
+            onClose={() => setPaletteOpen(false)}
+            slotProps={{
+              paper: {
+                sx: {
+                  borderTopLeftRadius: 18,
+                  borderTopRightRadius: 18,
+                  maxHeight: '82dvh',
+                  bgcolor: 'background.default',
+                  backgroundImage: 'none'
+                }
+              }
+            }}
+          >
+            <Box sx={{ width: 40, height: 4, borderRadius: 2, bgcolor: 'divider', mx: 'auto', mt: 1 }} />
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ px: 2, pt: 1, pb: 0.75, flexShrink: 0 }}>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography sx={{ fontWeight: 800, fontSize: 15 }}>Adicionar bloco</Typography>
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.35 }}>
+                  {chainAfter
+                    ? `Entra logo depois de “${chainAfter.type === 'start' ? 'Início' : chainAfter.data?.title || NODE_META[chainAfter.type]?.label}”.`
+                    : 'Toque num bloco para colocá-lo no canvas.'}
+                </Typography>
+              </Box>
+              <IconButton size="small" onClick={() => setPaletteOpen(false)} aria-label="Fechar" sx={{ width: 40, height: 40 }}>
+                <IconX size={18} />
+              </IconButton>
+            </Stack>
+            <Box sx={{ overflowY: 'auto', overscrollBehavior: 'contain', px: 2, pb: 'calc(16px + env(safe-area-inset-bottom))' }}>
+              <PaletteList grid onAdd={addFromDrawer} />
+            </Box>
+          </Drawer>
+        ) : null}
       </BotProvider>
 
       {/* menu "criar próximo bloco" ao soltar a conexão no vazio */}

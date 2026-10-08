@@ -74,6 +74,30 @@ export class WhatsAppContactsService {
     return { id: s?.id || null, engine: String(s?.engine || 'wwjs'), sid: s?.openwa_session_id || null, phone: s?.phone ? digitsOf(s.phone) : null };
   }
 
+  // ---------------------------------------------------------------- contato × número
+  // `whatsapp_contact_sessions`: de qual número o contato veio (agenda daquele número ou mensagem por ele).
+  // Cache curto em memória evita 1 gravação por mensagem recebida; expira em 10 min para que um
+  // vínculo apagado (dados do número limpos) seja recriado na próxima mensagem.
+  private readonly linkSeen = new Map<string, number>();
+  private static readonly LINK_TTL_MS = 10 * 60_000;
+
+  /** Marca que estes contatos são conhecidos por este número (idempotente). */
+  async linkToSession(orgId: string, sessionId: string | null | undefined, contactIds: string[]) {
+    if (!sessionId || !contactIds.length) return;
+    const now = Date.now();
+    const fresh = [...new Set(contactIds)].filter((id) => id && (this.linkSeen.get(`${sessionId}|${id}`) || 0) < now);
+    if (!fresh.length) return;
+    try {
+      for (let i = 0; i < fresh.length; i += 1000) {
+        await this.prisma.whatsapp_contact_sessions.createMany({ data: fresh.slice(i, i + 1000).map((contact_id) => ({ contact_id, session_id: sessionId, organization_id: orgId })), skipDuplicates: true });
+      }
+      if (this.linkSeen.size > 100_000) this.linkSeen.clear();
+      for (const id of fresh) this.linkSeen.set(`${sessionId}|${id}`, now + WhatsAppContactsService.LINK_TTL_MS);
+    } catch (e: any) {
+      this.logger.debug(`link contato×número falhou: ${e?.message || e}`); // número/contato apagado no meio do caminho
+    }
+  }
+
   // Upsert leve usado pelo pipeline de entrada (nunca sobrescreve nome salvo manualmente).
   async touch(orgId: string, session: SessionLike, waId: string, info: { phone?: string; pushName?: string; name?: string; lid?: string; at?: Date }) {
     if (!waId || isGroupJid(waId)) return null;
@@ -93,6 +117,7 @@ export class WhatsAppContactsService {
         create: { organization_id: orgId, wa_id: waId, source: 'session', name: info.name && !isIdLikeName(info.name) ? String(info.name).slice(0, 255) : null, ...(isLidJid(waId) ? { lid: waId } : {}), ...data },
         update: { ...data, ...(isLidJid(waId) ? { lid: waId } : {}) },
       });
+      if (sess?.id) await this.linkToSession(orgId, sess.id, [c.id]);
       if (c.lid && c.phone && sess) await this.mergeChats(orgId, sess, c.phone, c.lid).catch(() => undefined);
       return c;
     } catch (e: any) {
@@ -344,6 +369,8 @@ export class WhatsAppContactsService {
       });
       const keepHasCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: keep.id }, select: { id: true } });
       if (!keepHasCustomer) await this.prisma.whatsapp_customers.updateMany({ where: { organization_id: orgId, contact_id: dupe.id }, data: { contact_id: keep.id } }).catch(() => undefined);
+      const dupeLinks = await this.prisma.whatsapp_contact_sessions.findMany({ where: { contact_id: dupe.id }, select: { session_id: true } }).catch(() => [] as Array<{ session_id: string }>);
+      for (const l of dupeLinks) await this.linkToSession(orgId, l.session_id, [keep.id]);
       const stillCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: dupe.id }, select: { id: true } });
       if (!stillCustomer) await this.prisma.whatsapp_contacts.delete({ where: { id: dupe.id } }).catch(() => undefined); // FK do cliente é CASCADE: só apaga sem cliente
       moved = true;
@@ -389,7 +416,7 @@ export class WhatsAppContactsService {
   }
 
   // ---------------------------------------------------------------- listagem / CRUD
-  /** `q.session_id` = só quem tem conversa naquele número; `allowed` restringe os números do usuário. */
+  /** `q.session_id` = contatos DAQUELE número (agenda dele ou conversa por ele); `allowed` restringe os números do usuário. */
   async list(orgId: string, q: any = {}, allowed: Set<string> | null = null) {
     const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
     const size = Math.min(500, Math.max(5, parseInt(String(q.page_size || 25), 10) || 25));
@@ -405,7 +432,7 @@ export class WhatsAppContactsService {
       if (allowed && !allowed.has(sid)) return { items: [], total: 0, page, page_size: size, pages: 1, tags: [], counts: { total: 0, saved: 0, session: 0, agenda: 0 } };
       const jids = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: sid, kind: 'individual' }, select: { chat_id: true } });
       const lids = jids.map((c) => c.chat_id).filter(isLidJid);
-      where.OR = [{ wa_id: { in: jids.map((c) => c.chat_id) } }, ...(lids.length ? [{ lid: { in: lids } }] : [])];
+      where.OR = [{ sessions: { some: { session_id: sid } } }, { wa_id: { in: jids.map((c) => c.chat_id) } }, ...(lids.length ? [{ lid: { in: lids } }] : [])];
     }
     if (q.q) {
       const s = String(q.q).trim();
@@ -454,7 +481,16 @@ export class WhatsAppContactsService {
     if (dto.name !== undefined) data.name = String(dto.name || '').trim().slice(0, 255) || null;
     if (dto.notes !== undefined) data.notes = String(dto.notes || '').trim().slice(0, 500) || null;
     const c = await this.prisma.whatsapp_contacts.update({ where: { id }, data });
-    return this.shape(c);
+    // Renomear vale também para as conversas da pessoa (em todos os números): a lista do chat mostra
+    // o nome da conversa antes do nome do contato. O controller emite `wa:chat` para cada uma.
+    let renamed: Array<{ session_id: string; chat_id: string }> = [];
+    if (dto.name !== undefined) {
+      const jids = [c.wa_id, c.phone ? `${c.phone}@c.us` : null, c.lid].filter(Boolean) as string[];
+      const where = { organization_id: orgId, kind: 'individual', chat_id: { in: jids } };
+      renamed = await this.prisma.whatsapp_chats.findMany({ where, select: { session_id: true, chat_id: true } });
+      if (renamed.length) await this.prisma.whatsapp_chats.updateMany({ where, data: { name: data.name } });
+    }
+    return { ...this.shape(c), renamed_chats: renamed };
   }
 
   async bulk(orgId: string, dto: { ids: string[]; saved?: boolean; add_tags?: unknown; remove_tags?: unknown }) {
@@ -547,6 +583,7 @@ export class WhatsAppContactsService {
     }
     let imported = 0, updated = 0;
     const now = new Date();
+    const linked: string[] = []; // contatos da agenda DESTE número
     for (const c of list) {
       const waId = normJid(String(c?.id?._serialized || c?.id || c?.jid || '').trim());
       if (!waId || isGroupJid(waId) || /@broadcast$/.test(waId) || /@newsletter$/.test(waId)) continue;
@@ -569,14 +606,19 @@ export class WhatsAppContactsService {
         // agenda é compartilhada: um número NÃO desmarca "na agenda" que outro número marcou
         const d = { ...data, is_my_contact: existing.is_my_contact || data.is_my_contact };
         await this.prisma.whatsapp_contacts.update({ where: { id: existing.id }, data: { ...d, ...(agendaName && !existing.name ? { name: agendaName } : {}) } });
+        linked.push(existing.id);
         updated++;
         if (isLidJid(waId) && phone) await this.mergeChats(orgId, row, phone, waId).catch(() => undefined);
       } else {
-        await this.prisma.whatsapp_contacts.create({ data: { organization_id: orgId, wa_id: waId, source: 'session', name: agendaName || null, ...data } });
+        const created = await this.prisma.whatsapp_contacts.create({ data: { organization_id: orgId, wa_id: waId, source: 'session', name: agendaName || null, ...data } });
+        linked.push(created.id);
         imported++;
         if (isLidJid(waId) && phone) await this.mergeChats(orgId, row, phone, waId).catch(() => undefined);
       }
     }
+    // a fusão @lid↔telefone pode ter apagado duplicados no caminho: vincula só os que ainda existem
+    const alive = linked.length ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, id: { in: [...new Set(linked)] } }, select: { id: true } }) : [];
+    await this.linkToSession(orgId, row.id, alive.map((x) => x.id));
     return { imported, updated, total: list.length, session_id: row.id };
   }
 

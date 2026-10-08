@@ -5,7 +5,7 @@ import { OpenWaClient } from './openwa.client';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppInboundService } from './whatsapp-inbound.service';
 import { WhatsAppContactsService } from './whatsapp-contacts.service';
-import { normJid, phoneFromJid } from './wa-jid.util';
+import { isIdLikeName, isLidJid, normJid, phoneFromJid } from './wa-jid.util';
 
 // Sincroniza "lidas/não lidas" e as marcações (arquivada, fixada, silenciada) com o celular,
 // NÚMERO A NÚMERO. O OpenWA não avisa quando o usuário lê uma conversa no celular, então
@@ -91,12 +91,15 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
     // telefone → @lid só no whatsapp-web.js (lá as conversas individuais ficam pelo @lid); no Baileys o canônico é o telefone
     const lids = localUnread ? [] : await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });
     const lidByPhone = new Map(lids.map((c) => [String(c.phone), String(c.lid)] as [string, string]));
-    const wanted = new Map<string, { unread: number; archived: boolean; pinned: boolean; muted: boolean }>();
+    const wanted = new Map<string, { unread: number; archived: boolean; pinned: boolean; muted: boolean; gw: any }>();
     for (const c of list) {
       const raw = normJid(String(c?.id || ''));
-      if (!raw || raw === 'status@broadcast') continue;
+      if (!raw || raw === 'status@broadcast' || /@newsletter$|@broadcast$/.test(raw)) continue;
       const phone = phoneFromJid(raw);
-      const id = phone && lidByPhone.get(phone) ? lidByPhone.get(phone)! : raw.replace(/@s\.whatsapp\.net$/, '@c.us');
+      let id = phone && lidByPhone.get(phone) ? lidByPhone.get(phone)! : raw.replace(/@s\.whatsapp\.net$/, '@c.us');
+      // Baileys lista algumas conversas pelo @lid; o canônico lá é o telefone (senão o runner criava
+      // a conversa pelo lid, o merge movia para o telefone e no tick seguinte criava de novo)
+      if (localUnread && isLidJid(id)) id = await this.contacts.canonicalChatId(orgId, row, id).catch(() => id);
       const prev = wanted.get(id);
       const unread = Math.max(0, Number(c?.unreadCount || 0));
       wanted.set(id, {
@@ -104,7 +107,33 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
         archived: Boolean(c?.archived),
         pinned: Boolean(c?.pinned),
         muted: Boolean(c?.muted),
+        gw: c,
       });
+    }
+    // Conversas que o celular tem e o painel ainda não (histórico que o gateway só entregou depois do
+    // bootstrap, ou conversa antiga sem mensagem nova): cria aqui — antes só apareciam quando chegava
+    // mensagem, e a busca por nome "não achava" a pessoa. No máx. 100 por rodada.
+    const known = new Set((await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: sessionId, chat_id: { in: [...wanted.keys()] } }, select: { chat_id: true } })).map((c) => c.chat_id));
+    let created = 0;
+    for (const [id, w] of wanted) {
+      if (known.has(id) || created >= 100) continue;
+      if (localUnread && isLidJid(id)) continue; // @lid sem telefone conhecido: espera o mapeamento (resolveLids)
+      const c = w.gw;
+      const kind = c?.kind && c.kind !== 'unknown' ? String(c.kind) : c?.isGroup || /@g\.us$/.test(id) ? 'group' : 'individual';
+      if (!['individual', 'group', 'channel'].includes(kind)) continue;
+      const gwName = c?.name && !isIdLikeName(c.name) ? String(c.name).slice(0, 255) : null;
+      const at = c?.timestamp ? new Date(Number(c.timestamp) * 1000) : null;
+      try {
+        await this.prisma.whatsapp_chats.create({ data: { organization_id: orgId, session_id: sessionId, chat_id: id, kind, name: gwName, unread_count: localUnread ? 0 : w.unread, last_message_at: at, last_message_preview: c?.lastMessage ? String(c.lastMessage).slice(0, 255) : null, archived: w.archived, pinned: w.pinned, muted: w.muted, synced_at: new Date() } });
+        if (kind === 'individual' && gwName) await this.contacts.touch(orgId, row, id, { name: gwName, at: at || undefined }).catch(() => undefined);
+        created++;
+      } catch (e: any) {
+        if (e?.code !== 'P2002') this.logger.debug(`criar conversa ${id}: ${e?.message || e}`);
+      }
+    }
+    if (created) {
+      this.logger.log(`${created} conversa(s) do celular criadas no painel (número ${sessionId})`);
+      this.presenter.sync(orgId, { session_id: sessionId, kind: 'chats' });
     }
     const ours = await this.prisma.whatsapp_chats.findMany({
       where: { organization_id: orgId, session_id: sessionId, chat_id: { in: [...wanted.keys()] } },

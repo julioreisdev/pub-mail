@@ -783,7 +783,7 @@ export default function TelegramSettings() {
             }. Cada bot é um remetente independente — distribua-os em contas diferentes para resistir a banimentos.`;
 
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <TgPageHeader
                 icon={IconBrandTelegram}
                 title="Configurações"

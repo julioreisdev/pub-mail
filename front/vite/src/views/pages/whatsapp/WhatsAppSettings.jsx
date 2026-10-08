@@ -447,7 +447,14 @@ function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTes
             ) : null}
           </Stack>
           <Divider />
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {/* celular: os botões crescem (lado a lado se couberem, senão um por linha) sem passar do card */}
+          <Stack
+            direction="row"
+            spacing={1}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ '& > .MuiButton-root': { flex: { xs: '1 1 auto', sm: '0 0 auto' }, minWidth: 0 } }}
+          >
             <Button
               variant="contained"
               disableElevation
@@ -482,7 +489,13 @@ function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTes
               ? 'O WhatsApp pediu uma ação no celular (por exemplo, confirmar o dispositivo). Abra o aplicativo e depois clique em Reconectar.'
               : `A sessão caiu${session?.last_error ? `: ${session.last_error}` : ''}. O Pub Mail tenta reconectar sozinho a cada 5 minutos; você também pode reconectar agora.`}
           </Alert>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Stack
+            direction="row"
+            spacing={1}
+            flexWrap="wrap"
+            useFlexGap
+            sx={{ '& > .MuiButton-root': { flex: { xs: '1 1 auto', sm: '0 0 auto' }, minWidth: 0 } }}
+          >
             <Button
               variant="contained"
               disableElevation
@@ -1847,7 +1860,8 @@ export default function WhatsAppSettings() {
 
   const headerAction = useMemo(
     () => (
-      <Stack direction="row" spacing={1} alignItems="center">
+      // celular: o WaPageHeader põe isto numa linha própria (o botão cresce, o ícone não)
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         {canEdit ? (
           <Button
             variant="contained"
@@ -1964,7 +1978,7 @@ export default function WhatsAppSettings() {
       )}
 
       {/* configurações da organização */}
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 4, mb: 1.5 }}>
+      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 4, mb: 1.5 }}>
         <IconDotsVertical size={18} style={{ opacity: 0.5 }} />
         <Typography sx={{ fontWeight: 800, fontSize: 16 }}>Configurações da organização</Typography>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>

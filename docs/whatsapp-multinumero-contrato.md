@@ -86,3 +86,10 @@ pacing.summary(row) · canSend(row, jid, dailyCap?) · limits(pairedAt) · sentT
 8. Envio: sempre `sessions.requireReady(orgId, sessionId)` → `row.openwa_session_id`; depois `chat.recordOut(row, jid, r, …)` ou gravação própria com `session_id`.
 9. `whatsapp_chat_filters.chat_ids` = uuids de conversa.
 10. Sem `import` circular novo: helpers de JID em `wa-jid.util.ts`; prévias em `wa-preview.util.ts`.
+
+## Adendo (06/10/2026) — divisão da audiência do broadcast e dono do contato
+
+- `whatsapp_broadcasts.distribution`: `shared` ("Usar em conjunto", padrão — audiência somada e dividida igualmente entre os números conectados no disparo) ou `own` ("Cada número dispara para seus contatos"). Vale só com 2+ números.
+- `whatsapp_contact_sessions (contact_id, session_id, organization_id)`: de qual número o contato veio (agenda sincronizada por ele ou mensagem por ele). Gravado por `contacts.linkToSession` em `sync` e `touch`. É o que define "contatos do número" no modo `own` e no filtro `GET /whatsapp/contacts?session_id`.
+- `POST /whatsapp/broadcasts/audience-estimate {targets, session_ids, distribution}` → `{contacts, groups, total, by_session[], warnings[], distribution, unassigned}`.
+- Regras completas no CLAUDE.md, seção "Broadcasts com vários números".

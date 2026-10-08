@@ -384,7 +384,7 @@ export default function BillingAccount() {
   const empty = !cardsLoading && !cardsError && orderedCards.length === 0;
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
+    <Box>
       <MainCard
         content={false}
         sx={{

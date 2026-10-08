@@ -1536,6 +1536,8 @@ model whatsapp_media {
   size_bytes      BigInt    @default(0)
   storage_path    String    @db.VarChar(512)
   sha1            String?   @db.Char(40)
+  waveform        Json?
+  duration_ms     Int?
   expires_at      DateTime? @db.DateTime(3)
   created_at      DateTime  @default(now()) @db.DateTime(3)
 
@@ -1565,11 +1567,26 @@ model whatsapp_contacts {
   synced_at            DateTime? @db.DateTime(3)
   created_at           DateTime  @default(now()) @db.DateTime(0)
   updated_at           DateTime  @updatedAt @db.DateTime(0)
+  sessions             whatsapp_contact_sessions[]
 
   @@unique([organization_id, wa_id], map: "uk_wacontact_org_wa")
   @@index([organization_id, phone], map: "idx_wacontact_org_phone")
   @@index([organization_id, saved], map: "idx_wacontact_org_saved")
   @@index([organization_id, opted_out_at], map: "idx_wacontact_org_optout")
+}
+
+// De qual NÚMERO o contato veio (agenda sincronizada por ele ou conversa/mensagem por ele).
+// FK para whatsapp_sessions só no banco (CASCADE).
+model whatsapp_contact_sessions {
+  contact_id      String            @db.Char(36)
+  session_id      String            @db.Char(36)
+  organization_id String            @db.Char(36)
+  created_at      DateTime          @default(now()) @db.DateTime(0)
+  contact         whatsapp_contacts @relation(fields: [contact_id], references: [id], onDelete: Cascade, map: "fk_wacontsess_contact")
+
+  @@id([contact_id, session_id])
+  @@index([organization_id, session_id], map: "idx_wacontsess_org_session")
+  @@index([session_id], map: "idx_wacontsess_session")
 }
 
 model whatsapp_chats {
@@ -1773,6 +1790,7 @@ model whatsapp_broadcasts {
   organization_id String    @db.Char(36)
   name            String    @db.VarChar(255)
   session_ids     Json?
+  distribution    String    @default("shared") @db.VarChar(16)
   pacing          Json?
   targets         Json?
   times           Json?

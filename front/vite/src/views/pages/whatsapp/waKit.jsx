@@ -5,7 +5,8 @@
 // =============================================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, Button, Chip, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Chip, MenuItem, Stack, TextField, Tooltip, Typography, useMediaQuery } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { IconBrandWhatsapp, IconPlugConnectedX, IconSettings } from '@tabler/icons-react';
 import { useAuth } from 'contexts/AuthContext';
 
@@ -124,26 +125,75 @@ export const fmtBytes = (n) => {
 };
 
 // ----------------------------------------------------------------------------
-// WaPageHeader — igual ao TgPageHeader, com o selo verde do WhatsApp
+// WaPageHeader — igual ao TgPageHeader, com o selo verde do WhatsApp.
+// Celular (< sm): empilha — linha 1 = selo + título (pode quebrar em 2 linhas),
+// linha 2 = descrição em largura total, linha 3 = ações em largura total (quebram
+// linha; botões principais crescem para ocupar o espaço). Desktop: layout de sempre.
 // ----------------------------------------------------------------------------
 export function WaPageHeader({ icon: Icon = IconBrandWhatsapp, title, subtitle, action, sx }) {
+  const theme = useTheme();
+  const xs = useMediaQuery(theme.breakpoints.down('sm'));
+  const badge = (
+    <Box
+      sx={{
+        width: 46,
+        height: 46,
+        flexShrink: 0,
+        borderRadius: 3,
+        display: 'grid',
+        placeItems: 'center',
+        color: '#fff',
+        background: WA_GRADIENT,
+        boxShadow: '0 8px 20px rgba(37, 211, 102, 0.28)'
+      }}
+    >
+      <Icon size={24} stroke={1.8} />
+    </Box>
+  );
+  if (xs) {
+    return (
+      <Box sx={{ mb: 3, minWidth: 0, maxWidth: '100%', ...sx }}>
+        <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
+          {badge}
+          <Typography
+            variant="h3"
+            sx={{ fontWeight: 700, lineHeight: 1.2, flex: 1, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+          >
+            {title}
+          </Typography>
+        </Stack>
+        {subtitle ? (
+          <Typography variant="body2" sx={{ color: 'text.secondary', mt: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
+            {subtitle}
+          </Typography>
+        ) : null}
+        {action ? (
+          <Box
+            sx={{
+              mt: 1.5,
+              minWidth: 0,
+              maxWidth: '100%',
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: 1,
+              // ações vindas das páginas (normalmente um <Stack direction="row">): quebram linha
+              // e os botões "cheios" crescem para preencher a largura; ícones ficam do tamanho normal
+              '& > .MuiStack-root': { flex: '1 1 100%', flexWrap: 'wrap', rowGap: 1, minWidth: 0, maxWidth: '100%' },
+              '& .MuiButton-root': { flex: '1 1 auto', minWidth: 0 },
+              '& .MuiFormControl-root': { flex: '1 1 160px', minWidth: 0 },
+              '& .MuiIconButton-root': { flex: '0 0 auto' }
+            }}
+          >
+            {action}
+          </Box>
+        ) : null}
+      </Box>
+    );
+  }
   return (
     <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 3, ...sx }}>
-      <Box
-        sx={{
-          width: 46,
-          height: 46,
-          flexShrink: 0,
-          borderRadius: 3,
-          display: 'grid',
-          placeItems: 'center',
-          color: '#fff',
-          background: WA_GRADIENT,
-          boxShadow: '0 8px 20px rgba(37, 211, 102, 0.28)'
-        }}
-      >
-        <Icon size={24} stroke={1.8} />
-      </Box>
+      {badge}
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography variant="h3" sx={{ fontWeight: 700, lineHeight: 1.2 }} noWrap>
           {title}

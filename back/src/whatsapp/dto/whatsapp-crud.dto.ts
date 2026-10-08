@@ -87,6 +87,8 @@ export class BroadcastDto {
   @IsString() @MinLength(1) @MaxLength(255) name: string;
   // números que disparam (1..N). Audiência "salvos/todos" é DISTRIBUÍDA entre eles; conversas/grupos escolhidos saem pelo número de cada um.
   @IsOptional() @IsArray() @ArrayMaxSize(50) session_ids?: string[];
+  // com 2+ números: 'shared' = usar em conjunto (audiência somada e dividida igualmente) | 'own' = cada número dispara para seus contatos
+  @IsOptional() @IsIn(['shared', 'own']) distribution?: string;
   // ritmo: { preset: 'fast'|'normal'|'safe'|'very_safe'|'custom', interval_ms, jitter_pct, daily_limit, pause_every, pause_minutes, window: { start, end } }
   @IsOptional() pacing?: any;
   @IsOptional() targets?: any;
@@ -103,6 +105,7 @@ export class CopiesDto {
 export class AudienceDto {
   @IsOptional() targets?: any;
   @IsOptional() @IsArray() session_ids?: string[];
+  @IsOptional() @IsIn(['shared', 'own']) distribution?: string;
 }
 export class RunsQueryDto {
   @IsOptional() @Type(() => Number) page?: number;

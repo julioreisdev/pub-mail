@@ -163,8 +163,9 @@ export class WhatsAppChatService {
     if (q.q) {
       const s = String(q.q).trim();
       const d = digitsOf(s);
-      const contactIds = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d ? [{ phone: { contains: d } }] : [])] }, select: { wa_id: true, lid: true }, take: 200 });
-      const jids = [...new Set(contactIds.flatMap((c) => [c.wa_id, c.lid].filter(Boolean) as string[]))];
+      const contactIds = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d ? [{ phone: { contains: d } }] : [])] }, select: { wa_id: true, lid: true, phone: true }, take: 200 });
+      // a conversa pode estar pelo @lid (whatsapp-web.js) OU pelo telefone (Baileys): casa pelos três
+      const jids = [...new Set(contactIds.flatMap((c) => [c.wa_id, c.lid, c.phone ? `${c.phone}@c.us` : null].filter(Boolean) as string[]))];
       and.push({ OR: [{ name: { contains: s } }, { chat_id: { in: jids } }, ...(d ? [{ chat_id: { startsWith: d } }] : [])] });
     }
     if (and.length) where.AND = and;
@@ -180,7 +181,31 @@ export class WhatsAppChatService {
       this.prisma.whatsapp_chats.count({ where }),
       this.prisma.whatsapp_chats.findMany({ where, orderBy: [{ pinned: 'desc' }, { last_message_at: 'desc' }], skip: (page - 1) * size, take: size }),
     ]);
-    return { items: await this.presenter.shapeChats(orgId, rows), total, page, pages: Math.max(1, Math.ceil(total / size)), server_time: new Date().toISOString() };
+    const items = await this.presenter.shapeChats(orgId, rows);
+    // busca por nome: contatos da agenda que ainda NÃO têm conversa no painel (o atendente inicia na hora)
+    let contacts: any[] = [];
+    if (q.q && page === 1) {
+      const s = String(q.q).trim();
+      const d = digitsOf(s);
+      if (s.length >= 2) {
+        const found = await this.prisma.whatsapp_contacts.findMany({
+          where: { organization_id: orgId, is_blocked: false, phone: { not: null }, OR: [{ name: { contains: s } }, { push_name: { contains: s } }, ...(d.length >= 4 ? [{ phone: { contains: d } }] : [])] },
+          select: { id: true, name: true, push_name: true, phone: true, wa_id: true, lid: true, is_my_contact: true, saved: true },
+          orderBy: [{ is_my_contact: 'desc' }, { name: 'asc' }],
+          take: 40,
+        });
+        if (found.length) {
+          const jids = [...new Set(found.flatMap((c) => [c.wa_id, c.lid, `${c.phone}@c.us`].filter(Boolean) as string[]))];
+          const withChat = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, chat_id: { in: jids }, kind: 'individual', ...(sess || {}) }, select: { chat_id: true } });
+          const has = new Set(withChat.map((c) => c.chat_id));
+          contacts = found
+            .filter((c) => ![c.wa_id, c.lid, `${c.phone}@c.us`].some((j) => j && has.has(j)))
+            .slice(0, 8)
+            .map((c) => ({ id: c.id, name: c.name || c.push_name || null, phone: c.phone, agenda: c.is_my_contact, saved: c.saved }));
+        }
+      }
+    }
+    return { items, contacts, total, page, pages: Math.max(1, Math.ceil(total / size)), server_time: new Date().toISOString() };
   }
 
   /** Contagens para os chips de filtro (por número ou todos os permitidos). */

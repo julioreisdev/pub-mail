@@ -292,7 +292,7 @@ export default function Analytics() {
   ];
 
   return (
-    <Box sx={{ p: { xs: 1, md: 1.5 } }}>
+    <Box>
       {/* Header + filtros */}
       <MainCard content={false} sx={{ borderRadius: 3, mb: 2, overflow: 'visible' }}>
         <Box sx={{ p: { xs: 2, md: 2.5 } }}>

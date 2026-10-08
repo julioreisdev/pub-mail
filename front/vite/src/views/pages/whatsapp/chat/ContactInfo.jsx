@@ -7,11 +7,12 @@ import Divider from '@mui/material/Divider';
 import Drawer from '@mui/material/Drawer';
 import IconButton from '@mui/material/IconButton';
 import Stack from '@mui/material/Stack';
+import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import { IconAddressBook, IconCopy, IconMessages, IconUserDollar, IconX } from '@tabler/icons-react';
+import { IconAddressBook, IconCheck, IconCopy, IconMessages, IconPencil, IconUserDollar, IconX } from '@tabler/icons-react';
 
-import { get, post } from 'api/api';
+import { get, patch, post } from 'api/api';
 import { TgAvatar, TgListSkeleton } from 'views/pages/telegram/ui';
 import { WA_DARK, fmtPhone, WaNumberChip } from '../waShared';
 
@@ -19,14 +20,19 @@ import { WA_DARK, fmtPhone, WaNumberChip } from '../waShared';
 // Detalhes de uma pessoa (clique na foto na DM, no nome dentro do grupo, na menção @ ou na lista de participantes).
 // target = { jid, name?, chat_id? } → GET /whatsapp/contacts/lookup. "Conversar" abre/cria a DM.
 // ----------------------------------------------------------------------------
-export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenCustomer }) {
+export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenCustomer, onRenamed }) {
   const [state, setState] = useState({ loading: true, info: null, error: null });
   const [opening, setOpening] = useState(false);
+  // renomear: lápis ao lado do nome → campo inline (Enter salva, Esc cancela)
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
   const open = Boolean(target);
 
   useEffect(() => {
     if (!target?.jid) return undefined;
     let alive = true;
+    setEditing(false);
     setState({ loading: true, info: null, error: null });
     const params = new URLSearchParams({ jid: target.jid });
     if (target.chat_id) params.set('chat_id', target.chat_id);
@@ -55,12 +61,43 @@ export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenC
     }
   };
 
+  const canRename = Boolean(info?.contact?.id) && !info?.is_me;
+  const startEdit = () => {
+    setDraft(info?.contact?.name || info?.name || '');
+    setEditing(true);
+  };
+  const saveName = async () => {
+    const v = draft.trim();
+    if (!v) return toast.error('Informe um nome.');
+    if (saving) return undefined;
+    setSaving(true);
+    try {
+      const r = await patch(`/whatsapp/contacts/${info.contact.id}`, { name: v });
+      const nm = r?.name || v;
+      setState((st) => (st.info ? { ...st, info: { ...st.info, name: nm, contact: { ...st.info.contact, name: nm } } } : st));
+      setEditing(false);
+      toast.success('Nome atualizado.');
+      onRenamed?.({ name: nm, contact_id: info.contact.id, chats: r?.renamed_chats || [] });
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Não foi possível renomear.');
+    } finally {
+      setSaving(false);
+    }
+    return undefined;
+  };
+
   const openChat = async () => {
     if (!info) return;
     setOpening(true);
     try {
       let chat = info.chat?.chat_id
-        ? { chat_id: info.chat.chat_id, kind: 'individual', name: info.chat.name || name, phone: info.phone, session_id: info.chat.session_id }
+        ? {
+            chat_id: info.chat.chat_id,
+            kind: 'individual',
+            name: info.chat.name || name,
+            phone: info.phone,
+            session_id: info.chat.session_id
+          }
         : null;
       if (!chat) {
         if (!info.phone) throw new Error('sem telefone');
@@ -98,7 +135,53 @@ export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenC
         <Box sx={{ overflowY: 'auto' }}>
           <Stack alignItems="center" spacing={1} sx={{ p: 3, textAlign: 'center' }}>
             <TgAvatar name={name} photoPath={info.photo_path} size={96} kind="contact" />
-            <Typography sx={{ fontWeight: 800, fontSize: 18, lineHeight: 1.2 }}>{info.is_me ? 'Você' : name}</Typography>
+            {editing ? (
+              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: '100%' }}>
+                <TextField
+                  size="small"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  autoFocus
+                  fullWidth
+                  placeholder="Nome do contato"
+                  inputProps={{ maxLength: 255 }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      saveName();
+                    }
+                    if (e.key === 'Escape') setEditing(false);
+                  }}
+                />
+                <Tooltip title="Salvar">
+                  <span>
+                    <IconButton size="small" onClick={saveName} disabled={saving} sx={{ color: WA_DARK }}>
+                      <IconCheck size={16} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Cancelar">
+                  <span>
+                    <IconButton size="small" onClick={() => setEditing(false)} disabled={saving}>
+                      <IconX size={16} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Stack>
+            ) : (
+              <Stack direction="row" spacing={0.25} alignItems="center" justifyContent="center" sx={{ maxWidth: '100%' }}>
+                <Typography sx={{ fontWeight: 800, fontSize: 18, lineHeight: 1.2, overflowWrap: 'anywhere' }}>
+                  {info.is_me ? 'Você' : name}
+                </Typography>
+                {canRename ? (
+                  <Tooltip title="Renomear contato">
+                    <IconButton size="small" onClick={startEdit} aria-label="Renomear contato">
+                      <IconPencil size={15} />
+                    </IconButton>
+                  </Tooltip>
+                ) : null}
+              </Stack>
+            )}
             {phone ? (
               <Stack direction="row" spacing={0.5} alignItems="center">
                 <Typography variant="body2" sx={{ color: 'text.secondary' }}>
@@ -180,7 +263,13 @@ export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenC
                       session={c.session}
                       showPhone
                       onClick={() => {
-                        onOpenChat?.({ chat_id: c.chat_id, kind: 'individual', name: c.name || name, phone: info.phone, session_id: c.session_id });
+                        onOpenChat?.({
+                          chat_id: c.chat_id,
+                          kind: 'individual',
+                          name: c.name || name,
+                          phone: info.phone,
+                          session_id: c.session_id
+                        });
                         onClose?.();
                       }}
                     />

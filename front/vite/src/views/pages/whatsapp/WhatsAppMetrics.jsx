@@ -207,31 +207,44 @@ export default function WhatsAppMetrics() {
         subtitle="Atendimento, satisfação, funil e cobranças do WhatsApp no período."
         sx={{ mb: 2.5 }}
         action={
-          <Tooltip title="Atualizar">
-            <span>
-              <IconButton onClick={load} disabled={loading} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
-                <IconRefresh size={18} />
-              </IconButton>
-            </span>
-          </Tooltip>
+          // celular: o botão vai para a barra de filtros (ao lado dos períodos), não sozinho numa linha
+          <Box sx={{ display: { xs: 'none', sm: 'block' } }}>
+            <Tooltip title="Atualizar">
+              <span>
+                <IconButton onClick={load} disabled={loading} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                  <IconRefresh size={18} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
         }
       />
 
       <TgFilterBar>
-        {PRESETS.map(([k, l]) => (
-          <Chip
-            key={k}
-            label={l}
-            size="small"
-            clickable
-            onClick={() => applyPreset(k)}
-            color={preset === k ? 'success' : 'default'}
-            variant={preset === k ? 'filled' : 'outlined'}
-            sx={{ fontWeight: 700 }}
-          />
-        ))}
+        {/* período: chips em linha que quebram no celular (o TgFilterBar empilha os filhos diretos em xs) */}
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center" sx={{ minWidth: 0 }}>
+          <Tooltip title="Atualizar">
+            <span style={{ display: 'contents' }}>
+              <IconButton size="small" onClick={load} disabled={loading} sx={{ display: { xs: 'inline-flex', sm: 'none' } }}>
+                <IconRefresh size={18} />
+              </IconButton>
+            </span>
+          </Tooltip>
+          {PRESETS.map(([k, l]) => (
+            <Chip
+              key={k}
+              label={l}
+              size="small"
+              clickable
+              onClick={() => applyPreset(k)}
+              color={preset === k ? 'success' : 'default'}
+              variant={preset === k ? 'filled' : 'outlined'}
+              sx={{ fontWeight: 700 }}
+            />
+          ))}
+        </Stack>
         {preset === 'custom' ? (
-          <>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
             <TextField
               size="small"
               type="date"
@@ -239,7 +252,7 @@ export default function WhatsAppMetrics() {
               value={from}
               onChange={(e) => setFrom(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              sx={{ width: 160 }}
+              sx={{ width: { xs: 'calc(50% - 4px)', sm: 160 }, minWidth: 0 }}
             />
             <TextField
               size="small"
@@ -248,16 +261,16 @@ export default function WhatsAppMetrics() {
               value={to}
               onChange={(e) => setTo(e.target.value)}
               InputLabelProps={{ shrink: true }}
-              sx={{ width: 160 }}
+              sx={{ width: { xs: 'calc(50% - 4px)', sm: 160 }, minWidth: 0 }}
             />
-          </>
+          </Stack>
         ) : (
-          <Typography variant="caption" sx={{ color: 'text.secondary', ml: 1 }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary', ml: { md: 1 } }}>
             {from.split('-').reverse().join('/')} – {to.split('-').reverse().join('/')}
           </Typography>
         )}
-        <Box sx={{ flex: 1 }} />
-        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
+        <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
+        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} sx={{ width: { xs: '100%', md: 'auto' } }} />
       </TgFilterBar>
 
       {loading && !data ? (
@@ -274,7 +287,16 @@ export default function WhatsAppMetrics() {
               Período muito grande: os números consideram as primeiras 100 mil mensagens/eventos. Reduza o período para precisão total.
             </Typography>
           ) : null}
-          <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: 'repeat(2, minmax(0,1fr))', md: 'repeat(4, minmax(0,1fr))' } }}>
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1.5,
+              gridTemplateColumns: { xs: 'repeat(2, minmax(0,1fr))', md: 'repeat(4, minmax(0,1fr))' },
+              // celular: o rótulo do KPI quebra em quantas linhas precisar (sem clamp — o
+              // line-clamp cortava com reticências e ainda vazava do card)
+              '& .MuiTypography-caption': { whiteSpace: 'normal', overflowWrap: 'break-word', hyphens: 'auto', lineHeight: 1.3 }
+            }}
+          >
             <CrmKpi icon={IconUsers} label={`Conversas ativas · ${n(t.new_chats)} novas`} value={t.chats_active} accent />
             <CrmKpi
               icon={IconMessage2}
@@ -382,7 +404,7 @@ export default function WhatsAppMetrics() {
             </Section>
           ) : null}
           {multi && sessionId ? (
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                 Mostrando só o número
               </Typography>

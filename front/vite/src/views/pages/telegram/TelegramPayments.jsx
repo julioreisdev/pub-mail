@@ -670,7 +670,7 @@ export default function TelegramPayments() {
     }, []);
 
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <TgPageHeader icon={IconCreditCard} title="Pagamentos / VIP" subtitle="Planos, gateway PIX e vendas — o lead paga no bot e recebe acesso exclusivo." />
 
             <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2.5, borderBottom: '1px solid', borderColor: 'divider' }}>

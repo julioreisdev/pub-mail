@@ -318,6 +318,7 @@ export class AdminService {
           await tx.whatsapp_statuses.deleteMany(where);
           await tx.whatsapp_messages.deleteMany(where);
           await tx.whatsapp_chats.deleteMany(where);
+          await tx.whatsapp_contact_sessions.deleteMany(where);
           await tx.whatsapp_contacts.deleteMany(where);
           await tx.whatsapp_media.deleteMany(where); // metadados; arquivos em protected/whatsapp/<org> ficam p/ limpeza
           await tx.whatsapp_session_events.deleteMany(where);

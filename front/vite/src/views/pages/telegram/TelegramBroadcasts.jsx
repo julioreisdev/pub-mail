@@ -1075,7 +1075,7 @@ export default function TelegramBroadcasts() {
     const fireAud = firingFor ? audienceOf(firingFor) : null;
 
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <TgPageHeader
                 icon={IconSpeakerphone}
                 title="Broadcasts"

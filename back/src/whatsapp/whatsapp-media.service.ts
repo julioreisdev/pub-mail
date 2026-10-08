@@ -7,6 +7,8 @@ import { tmpdir } from 'os';
 import { extname, join, resolve } from 'path';
 import { promisify } from 'util';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from 'generated/prisma/client';
+import { isOggOpus, repacketizeOggOpusToCode3 } from './opus-repacketize.util';
 
 // Mídia do WhatsApp (recebida ou enviada) em pasta PROTEGIDA:
 // <cwd>/protected/whatsapp/<org>/<uuid>.<ext> — fora do /uploads (que o nginx serve
@@ -46,6 +48,32 @@ export async function toOggOpus(buf: Buffer): Promise<Buffer> {
     await fsp.unlink(inPath).catch(() => undefined);
     await fsp.unlink(outPath).catch(() => undefined);
   }
+}
+
+export const WAVEFORM_BARS = 64;
+/**
+ * Forma de onda de um áudio: decodifica com ffmpeg (mono, 8 kHz, PCM 16 bits, no máx. 10 min) e tira o
+ * RMS de 64 blocos, normalizado para 0..100 (igual ao WhatsApp mostra). Também devolve a duração.
+ */
+export async function audioWaveform(absPath: string): Promise<{ peaks: number[]; duration_ms: number }> {
+  const { stdout } = await execFileP('ffmpeg', ['-v', 'error', '-t', '600', '-i', absPath, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], { timeout: 60_000, encoding: 'buffer', maxBuffer: 32 * 1024 * 1024 } as any);
+  const pcm = stdout as unknown as Buffer;
+  const samples = Math.floor(pcm.length / 2);
+  if (samples < 80) throw new Error('áudio vazio');
+  const block = Math.max(1, Math.floor(samples / WAVEFORM_BARS));
+  const rms: number[] = [];
+  for (let b = 0; b < WAVEFORM_BARS; b++) {
+    const start = b * block;
+    const end = b === WAVEFORM_BARS - 1 ? samples : Math.min(samples, start + block);
+    if (start >= samples) { rms.push(0); continue; }
+    let acc = 0;
+    for (let i = start; i < end; i++) { const v = pcm.readInt16LE(i * 2) / 32768; acc += v * v; }
+    rms.push(Math.sqrt(acc / Math.max(1, end - start)));
+  }
+  const max = Math.max(...rms, 1e-6);
+  // raiz quadrada da proporção: valoriza os trechos baixos (fala) sem achatar os picos
+  const peaks = rms.map((v) => Math.max(0, Math.min(100, Math.round(Math.sqrt(v / max) * 100))));
+  return { peaks, duration_ms: Math.round((samples / 8000) * 1000) };
 }
 
 export function kindOfMime(mime: string, ptt = false): string {
@@ -96,20 +124,48 @@ export class WhatsAppMediaService {
 
   // Áudio em formato que o WhatsApp aceita (ver needsAudioConversion). Falha na conversão
   // devolve o original (o envio segue; melhor tentar do que perder a mensagem).
+  //
+  // Mensagem de VOZ (ptt) ainda passa pelo reempacotamento Opus "code 3" (opus-repacketize.util):
+  // o WhatsApp do iOS recusa voz em pacotes de 1 quadro, que é o que o ffmpeg gera —
+  // "Este áudio não está mais disponível" no celular mesmo com ✓✓. `converted:true` sempre
+  // que os bytes mudaram (quem guarda o arquivo regrava).
   async normalizeAudio(buf: Buffer, mime: string, voice: boolean, filename?: string | null) {
-    if (!needsAudioConversion(mime, voice)) return { buffer: buf, mime, filename: filename || null, converted: false };
-    try {
-      const out = await toOggOpus(buf);
-      const name = filename ? `${String(filename).replace(/\.[a-z0-9]{1,8}$/i, '')}.ogg` : null;
-      return { buffer: out, mime: VOICE_MIME, filename: name, converted: true };
-    } catch (e: any) {
-      this.logger.warn(`conversão de áudio p/ OGG falhou (${mime}): ${String(e?.message || e).slice(0, 200)}`);
-      return { buffer: buf, mime, filename: filename || null, converted: false };
+    let out = buf;
+    let outMime = mime;
+    let name: string | null = filename || null;
+    let converted = false;
+    if (needsAudioConversion(mime, voice)) {
+      try {
+        out = await toOggOpus(buf);
+        outMime = VOICE_MIME;
+        name = filename ? `${String(filename).replace(/\.[a-z0-9]{1,8}$/i, '')}.ogg` : null;
+        converted = true;
+      } catch (e: any) {
+        this.logger.warn(`conversão de áudio p/ OGG falhou (${mime}): ${String(e?.message || e).slice(0, 200)}`);
+        return { buffer: buf, mime, filename: filename || null, converted: false };
+      }
     }
+    if (voice && isOggOpus(out)) {
+      try {
+        const re = repacketizeOggOpusToCode3(out);
+        if (re !== out) {
+          out = re;
+          converted = true;
+        }
+      } catch (e: any) {
+        this.logger.warn(`reempacotamento Opus da voz falhou: ${String(e?.message || e).slice(0, 200)}`);
+      }
+    }
+    return { buffer: out, mime: outMime, filename: name, converted };
+  }
+
+  /** Voz precisa passar pelo normalizeAudio (conversão e/ou reempacotamento); outros áudios só se o formato exigir. */
+  private needsNormalize(mime: string, voice: boolean) {
+    return voice || needsAudioConversion(mime, voice);
   }
 
   async store(orgId: string, buf: Buffer, mime: string, filename?: string | null, kind?: string) {
-    if (needsAudioConversion(mime, kind === 'voice')) ({ buffer: buf, mime, filename } = await this.normalizeAudio(buf, mime, kind === 'voice', filename));
+    if (this.needsNormalize(mime, kind === 'voice')) ({ buffer: buf, mime, filename } = await this.normalizeAudio(buf, mime, kind === 'voice', filename));
     if (buf.length > 1024 && (await this.usage(orgId)) + buf.length > MEDIA_QUOTA_BYTES) {
       throw new Error(`Cota de mídia da organização atingida (${Math.round(MEDIA_QUOTA_BYTES / 1024 / 1024)} MB).`);
     }
@@ -119,15 +175,19 @@ export class WhatsAppMediaService {
     const id = randomUUID();
     const rel = join(orgId, `${id}.${ext}`);
     await fsp.writeFile(join(this.root(), rel), buf, { mode: 0o640 });
+    const finalKind = kind || kindOfMime(mime);
+    let wave: { peaks: number[]; duration_ms: number } | null = null;
+    if (finalKind === 'audio' || finalKind === 'voice') wave = await audioWaveform(join(this.root(), rel)).catch(() => null);
     return this.prismaCreate({
       id,
       organization_id: orgId,
-      kind: kind || kindOfMime(mime),
+      kind: finalKind,
       mime: String(mime || 'application/octet-stream').slice(0, 128),
       filename: filename ? String(filename).slice(0, 255) : null,
       size_bytes: BigInt(buf.length),
       storage_path: rel,
       sha1: createHash('sha1').update(buf).digest('hex'),
+      ...(wave ? { waveform: wave.peaks, duration_ms: wave.duration_ms } : {}),
       expires_at: new Date(Date.now() + MEDIA_RETENTION_DAYS * 86_400_000),
     });
   }
@@ -162,9 +222,9 @@ export class WhatsAppMediaService {
   async readBase64(orgId: string, id: string) {
     let m = await this.get(orgId, id);
     let buf: Buffer = await fsp.readFile(this.absPath(m));
-    // áudio guardado antes da conversão existir (ex.: gravado no navegador em WebM):
-    // converte uma vez e passa a guardar o OGG no lugar
-    if (needsAudioConversion(m.mime, m.kind === 'voice')) {
+    // áudio guardado antes da conversão existir (ex.: gravado no navegador em WebM) ou voz
+    // guardada antes do reempacotamento code 3: converte uma vez e passa a guardar o OGG certo
+    if (this.needsNormalize(m.mime, m.kind === 'voice')) {
       const n = await this.normalizeAudio(buf, m.mime, m.kind === 'voice', m.filename);
       if (n.converted) {
         const rel = join(m.organization_id, `${m.id}.ogg`);
@@ -182,8 +242,51 @@ export class WhatsAppMediaService {
 
   toPublic(m: any) {
     if (!m) return null;
-    return { id: m.id, kind: m.kind, mime: m.mime, filename: m.filename, size: Number(m.size_bytes), url: this.signedUrl(m.id) };
+    const wf = Array.isArray(m.waveform) && m.waveform.length ? (m.waveform as number[]) : null;
+    return { id: m.id, kind: m.kind, mime: m.mime, filename: m.filename, size: Number(m.size_bytes), url: this.signedUrl(m.id), waveform: wf, duration_ms: m.duration_ms ?? null };
   }
+
+  // ---------------------------------------------------------------- forma de onda (áudios antigos)
+  private readonly waveBusy = new Set<string>();
+
+  /** Calcula a forma de onda das mídias de áudio que ainda não têm (best-effort). Devolve os ids que mudaram. */
+  async ensureWaveforms(ids: string[]): Promise<string[]> {
+    const todo = [...new Set(ids)].filter((id) => id && !this.waveBusy.has(id)).slice(0, 25);
+    if (!todo.length) return [];
+    todo.forEach((id) => this.waveBusy.add(id));
+    const done: string[] = [];
+    try {
+      const rows = await this.prisma.whatsapp_media.findMany({ where: { id: { in: todo }, kind: { in: ['audio', 'voice'] }, waveform: { equals: Prisma.DbNull } } });
+      for (const m of rows) {
+        try {
+          const wave = await audioWaveform(this.absPath(m));
+          await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { waveform: wave.peaks, duration_ms: wave.duration_ms } });
+          done.push(m.id);
+        } catch (e: any) {
+          // marca "tentou" ([]) para não ficar refazendo um arquivo que o ffmpeg não lê
+          await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { waveform: [] } }).catch(() => undefined);
+          this.logger.debug(`waveform ${m.id}: ${String(e?.message || e).slice(0, 120)}`);
+        }
+      }
+    } finally {
+      todo.forEach((id) => this.waveBusy.delete(id));
+    }
+    return done;
+  }
+
+  /** Backfill dos áudios anteriores a esta versão: 40 por rodada, a cada 5 min (e 30 s depois do boot). */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async backfillWaveforms() {
+    try {
+      const rows = await this.prisma.whatsapp_media.findMany({ where: { kind: { in: ['audio', 'voice'] }, waveform: { equals: Prisma.DbNull } }, select: { id: true }, orderBy: { created_at: 'desc' }, take: 40 });
+      if (!rows.length) return;
+      const done = await this.ensureWaveforms(rows.map((r) => r.id));
+      if (done.length) this.logger.log(`Forma de onda calculada para ${done.length} áudio(s)`);
+    } catch (e: any) {
+      this.logger.debug(`backfill waveform: ${e?.message || e}`);
+    }
+  }
+  onModuleInit() { setTimeout(() => this.backfillWaveforms().catch(() => undefined), 30_000); }
 
   constructor(private readonly prisma: PrismaService) {}
 

@@ -192,6 +192,15 @@ export class WhatsAppPresenter {
       const [sid, jid] = k.split('|');
       uuids.set(k, await this.chatUuid(orgId, sid, jid));
     }
+    // áudios anteriores à forma de onda: calcula em segundo plano e reemite a mensagem quando ficar pronta
+    const pendingWave = rows.filter((m: any) => m.media_id && ['audio', 'voice'].includes(m.type) && mmap.get(m.media_id) && mmap.get(m.media_id)!.waveform == null).map((m: any) => ({ id: m.id, media_id: m.media_id as string }));
+    if (pendingWave.length) {
+      this.media.ensureWaveforms(pendingWave.map((x) => x.media_id)).then((done) => {
+        if (!done.length) return;
+        const ok = new Set(done);
+        for (const x of pendingWave) if (ok.has(x.media_id)) this.message(orgId, { id: x.id });
+      }).catch(() => undefined);
+    }
     return rows.map((m) => {
       const extra: any = m.extra || {};
       return {

@@ -16,7 +16,9 @@ import {
     Skeleton,
     Stack,
     Tooltip,
-    Typography
+    Typography,
+    useMediaQuery,
+    useTheme
 } from '@mui/material';
 import { IconX, IconAlertTriangle, IconBrandTelegram } from '@tabler/icons-react';
 
@@ -262,13 +264,17 @@ export const TgGhostButton = forwardRef(function TgGhostButton(props, ref) {
 // TgModal — shell de dialog com header sticky (título/subtítulo/tabs/X) e footer sticky
 // -----------------------------------------------------------------------------
 export function TgModal({ open, onClose, title, subtitle, tabs, footer, maxWidth = 'sm', children, disableClose }) {
+    // celular: modal em tela cheia (sem a margem de 32 px do MUI, que deixava o conteúdo com ~278 px)
+    const theme = useTheme();
+    const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
     return (
         <Dialog
             open={open}
             onClose={() => !disableClose && onClose?.()}
             maxWidth={maxWidth}
             fullWidth
-            PaperProps={{ sx: { borderRadius: 3, overflow: 'hidden' } }}
+            fullScreen={fullScreen}
+            PaperProps={{ sx: { borderRadius: fullScreen ? 0 : 3, overflow: 'hidden' } }}
         >
             <Box
                 sx={{

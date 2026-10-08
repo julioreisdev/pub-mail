@@ -28,12 +28,13 @@ import {
 } from '@tabler/icons-react';
 
 import { get } from 'api/api';
-import { TgCard, TgModal } from 'views/pages/telegram/ui';
+import { TgCard } from 'views/pages/telegram/ui';
 import WaChatPicker from '../WaChatPicker';
 import { WaNumberChip, fmtPhone } from '../waShared';
 import { BH_PRESETS, DAY_LABEL, DAY_ORDER, cleanKeyword } from './botModel';
 import {
   BOT_STATUS,
+  BotModal,
   BotStatusPill,
   IntField,
   KeywordsInput,
@@ -44,7 +45,8 @@ import {
   WA_ACCENT,
   WA_DARK,
   WA_GREEN,
-  hexA
+  hexA,
+  useXs
 } from './botUi';
 
 const switchSx = {
@@ -428,6 +430,7 @@ export default function BotSettingsTab({
   flowSessions = [],
   onManageSessions
 }) {
+  const xs = useXs();
   const s = settings;
   const set = (patch) => onChange({ ...s, ...patch });
   const setAud = (patch) => set({ audience: { ...s.audience, ...patch } });
@@ -880,7 +883,7 @@ export default function BotSettingsTab({
         </Box>
       </Grid>
 
-      <TgModal
+      <BotModal
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         title="Contatos de teste"
@@ -907,11 +910,11 @@ export default function BotSettingsTab({
             value={draft}
             onChange={setDraft}
             connected={connected}
-            listHeight={320}
+            listHeight={xs ? 400 : 320}
             initialSessionId={flowSessions.length === 1 ? flowSessions[0].id : undefined}
           />
         ) : null}
-      </TgModal>
+      </BotModal>
     </Grid>
   );
 }

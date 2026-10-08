@@ -1028,6 +1028,11 @@ export function BotFlowStyles() {
       .react-flow__controls-button { background: var(--wa-ctrl-bg); color: var(--wa-ctrl-fg); border-bottom: 1px solid var(--wa-ctrl-border); }
       .react-flow__controls-button:hover { background: var(--wa-ctrl-hover); }
       .react-flow__controls-button svg { fill: currentColor; }
+      @media (max-width: 599.95px) {
+        .react-flow__controls { bottom: 12px; left: 12px; }
+        .react-flow__controls-button { width: 42px; height: 42px; }
+        .react-flow__controls-button svg { max-width: 18px; max-height: 18px; width: 18px; height: 18px; }
+      }
       .react-flow__connectionline path, .react-flow__connection-path { stroke: ${WA_GREEN}; stroke-width: 2.4; stroke-dasharray: 6 5; }
     `}</style>
   );

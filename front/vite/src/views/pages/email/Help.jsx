@@ -5,7 +5,7 @@ import MainCard from 'ui-component/cards/MainCard';
 
 export default function EmailHelp() {
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <MainCard
                 content={false}
                 sx={{

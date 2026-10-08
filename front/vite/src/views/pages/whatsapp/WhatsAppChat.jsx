@@ -89,7 +89,7 @@ import {
 
 import { get, post, put, remove } from 'api/api';
 import { TgEmptyState, TgAvatar, TgModal, TgListSkeleton, TgConfirmDialog } from 'views/pages/telegram/ui';
-import { WaPageHeader, WaSessionBanner } from './waKit';
+import { WaSessionBanner } from './waKit';
 import WaChatPicker from './WaChatPicker';
 import { useRealtimeEvent, useRealtimeStatus } from 'realtime/useRealtime';
 import { useAuth } from 'contexts/AuthContext';
@@ -663,7 +663,13 @@ function AudioBody({ msg }) {
   if (!url) return <MediaOmitted msg={msg} label={voice ? 'Áudio de voz' : 'Áudio'} />;
   return (
     <Box sx={{ mb: msg.body ? 0.5 : 0 }}>
-      <AudioPlayer url={url} voice={voice} out={msg.direction === 'OUT'} />
+      <AudioPlayer
+        url={url}
+        voice={voice}
+        out={msg.direction === 'OUT'}
+        waveform={msg.media?.waveform}
+        durationMs={msg.media?.duration_ms}
+      />
     </Box>
   );
 }
@@ -951,7 +957,11 @@ const MessageBubble = memo(function MessageBubble({
 }) {
   const out = msg.direction === 'OUT';
   const revoked = msg.revoked || msg.type === 'revoked';
-  const sticker = msg.type === 'sticker' && !revoked;
+  // "apagar para todos" do CONTATO não some para o atendente: o conteúdo fica, com o aviso.
+  // Só o que NÓS apagamos (ou chegou sem conteúdo) vira o balão "Mensagem apagada".
+  const hiddenRevoked =
+    revoked && (out || (!msg.body && !msg.media && !msg.media_omitted && !msg.extra?.location && !msg.extra?.poll && !msg.extra?.contact));
+  const sticker = msg.type === 'sticker' && !hiddenRevoked;
   const reactions = summarizeReactions(msg.reactions);
   const pressRef = useRef(null);
 
@@ -969,12 +979,12 @@ const MessageBubble = memo(function MessageBubble({
   };
 
   let body;
-  if (revoked) {
+  if (hiddenRevoked) {
     body = (
       <Stack direction="row" spacing={0.5} alignItems="center" sx={{ opacity: 0.7 }}>
         <IconTrash size={14} />
         <Typography variant="body2" sx={{ fontStyle: 'italic' }}>
-          Mensagem apagada
+          {out ? 'Você apagou esta mensagem' : 'Mensagem apagada'}
         </Typography>
       </Stack>
     );
@@ -1019,9 +1029,42 @@ const MessageBubble = memo(function MessageBubble({
         );
     }
   }
+  if (revoked && !hiddenRevoked) {
+    // aviso em cima do conteúdo original (igual ao WhatsApp Business mostra para o dono do número)
+    body = (
+      <>
+        <Stack
+          direction="row"
+          spacing={0.5}
+          alignItems="center"
+          sx={{
+            mb: 0.5,
+            px: 0.75,
+            py: 0.35,
+            borderRadius: 1.5,
+            bgcolor: 'rgba(244,67,54,.12)',
+            color: 'error.main',
+            width: 'fit-content',
+            maxWidth: '100%'
+          }}
+        >
+          <IconTrash size={13} style={{ flexShrink: 0 }} />
+          <Typography variant="caption" sx={{ fontWeight: 700, lineHeight: 1.3 }}>
+            {msg.sender_name && !out ? `${msg.sender_name} apagou esta mensagem para todos` : 'O contato apagou esta mensagem para todos'} ·
+            só você ainda vê
+          </Typography>
+        </Stack>
+        {body}
+      </>
+    );
+  }
   const showCaption =
-    !revoked && msg.type !== 'text' && msg.body && !['poll', 'location', 'contact'].includes(msg.type) && msg.body !== msg.media?.filename;
-  const showText = !revoked && msg.type === 'text';
+    !hiddenRevoked &&
+    msg.type !== 'text' &&
+    msg.body &&
+    !['poll', 'location', 'contact'].includes(msg.type) &&
+    msg.body !== msg.media?.filename;
+  const showText = !hiddenRevoked && msg.type === 'text';
   const scheduled = Boolean(msg.extra?.scheduled);
   const byBot = out && Boolean(msg.extra?.bot);
   const metaTail = (msg.edited ? 48 : 0) + (scheduled ? 16 : 0) + 40 + (out ? 20 : 0);
@@ -1113,7 +1156,7 @@ const MessageBubble = memo(function MessageBubble({
             </Typography>
           ) : null}
 
-          {byBot && !revoked ? (
+          {byBot && !hiddenRevoked ? (
             <Stack
               direction="row"
               spacing={0.4}
@@ -1127,7 +1170,7 @@ const MessageBubble = memo(function MessageBubble({
             </Stack>
           ) : null}
 
-          {msg.forwarded && !revoked ? (
+          {msg.forwarded && !hiddenRevoked ? (
             <Stack direction="row" spacing={0.4} alignItems="center" sx={{ opacity: 0.6, mb: 0.25, pr: 2.5 }}>
               <IconArrowForwardUp size={13} />
               <Typography variant="caption" sx={{ fontStyle: 'italic', fontSize: 11 }}>
@@ -1136,7 +1179,7 @@ const MessageBubble = memo(function MessageBubble({
             </Stack>
           ) : null}
 
-          {msg.quoted && !revoked ? (
+          {msg.quoted && !hiddenRevoked ? (
             <Box
               role="button"
               tabIndex={0}
@@ -1292,6 +1335,59 @@ function LazyAvatar({ name, photoPath, size = 38, kind = 'contact' }) {
   return (
     <Box ref={ref} sx={{ display: 'flex', flexShrink: 0 }}>
       <TgAvatar name={name} photoPath={seen ? photoPath : undefined} size={size} kind={kind} />
+    </Box>
+  );
+}
+
+// Contatos da agenda que casaram com a busca mas ainda não têm conversa no painel.
+function ContactSuggestions({ contacts, onStart, startingId, hasChats }) {
+  if (!contacts?.length) return null;
+  return (
+    <Box sx={{ mt: hasChats ? 1 : 0.5 }}>
+      <Typography variant="overline" sx={{ px: 1, color: 'text.secondary', fontWeight: 800, letterSpacing: 0.6, lineHeight: 2 }}>
+        Contatos sem conversa aqui
+      </Typography>
+      <Stack spacing={0.25}>
+        {contacts.map((c) => (
+          <ButtonBase
+            key={c.id}
+            onClick={() => onStart(c)}
+            disabled={startingId === c.id}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.25,
+              textAlign: 'left',
+              width: '100%',
+              px: 1,
+              py: 0.9,
+              borderRadius: 2.5,
+              '&:hover': { bgcolor: 'action.hover' }
+            }}
+          >
+            <TgAvatar kind="contact" name={c.name || c.phone} size={40} />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={{ fontWeight: 700, fontSize: 14 }} noWrap>
+                {c.name || fmtPhone(c.phone)}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }} noWrap>
+                {fmtPhone(c.phone)}
+                {c.agenda ? ' · agenda do celular' : c.saved ? ' · salvo na organização' : ''}
+              </Typography>
+            </Box>
+            {startingId === c.id ? (
+              <CircularProgress size={16} sx={{ color: WA_DARK }} />
+            ) : (
+              <Chip
+                size="small"
+                icon={<IconMessagePlus size={13} />}
+                label="Conversar"
+                sx={{ height: 24, fontWeight: 700, bgcolor: `${WA_GREEN}22`, color: WA_DARK, '& .MuiChip-icon': { color: WA_DARK } }}
+              />
+            )}
+          </ButtonBase>
+        ))}
+      </Stack>
     </Box>
   );
 }
@@ -1597,7 +1693,7 @@ export default function WhatsAppChat() {
   // ---------------- lista ----------------
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState(() => filterFromParams(searchParams));
-  const [list, setList] = useState({ items: [], total: 0, page: 1, pages: 1 });
+  const [list, setList] = useState({ items: [], contacts: [], total: 0, page: 1, pages: 1 });
   const [listLoading, setListLoading] = useState(false);
   const listSeq = useRef(0);
 
@@ -1856,6 +1952,23 @@ export default function WhatsAppChat() {
     [setSearchParams]
   );
   const openPerson = useCallback((t) => setPerson(t), []);
+  // contato da agenda que apareceu na busca mas ainda não tem conversa aqui → abre/cria pelo telefone
+  const [startingWith, setStartingWith] = useState(null);
+  const startWithContact = useCallback(
+    async (c) => {
+      if (!c?.phone) return;
+      setStartingWith(c.id);
+      try {
+        const chat = await post('/whatsapp/chats/open', { phone: c.phone, session_id: sessionFilterValid || undefined });
+        openNewChat(chat);
+      } catch (e) {
+        toast.error(errMsg(e, 'Não foi possível abrir a conversa.'));
+      } finally {
+        setStartingWith(null);
+      }
+    },
+    [sessionFilterValid, openNewChat]
+  );
   const [customerOpen, setCustomerOpen] = useState(false); // painel "Cliente" (CRM)
   const [charge, setCharge] = useState(null); // {customer, products} → diálogo "Cobrar"
   const [chargeBusy, setChargeBusy] = useState(false);
@@ -1913,10 +2026,12 @@ export default function WhatsAppChat() {
         const r = await get('/whatsapp/chats', { params });
         if (seq !== listSeq.current) return;
         setList((prev) => {
-          if (!append) return { items: r.items || [], total: r.total || 0, page: r.page || 1, pages: r.pages || 1 };
+          if (!append)
+            return { items: r.items || [], contacts: r.contacts || [], total: r.total || 0, page: r.page || 1, pages: r.pages || 1 };
           const seen = new Set(prev.items.map((c) => c.chat_id));
           return {
             items: [...prev.items, ...(r.items || []).filter((c) => !seen.has(c.chat_id))],
+            contacts: prev.contacts || [],
             total: r.total || 0,
             page: r.page || page,
             pages: r.pages || 1
@@ -3299,6 +3414,9 @@ export default function WhatsAppChat() {
   const canSend = !offline && (Boolean(text.trim()) || Boolean(attachment) || Boolean(qrMedia));
   const showList = !isNarrow || !active;
   const showChat = !isNarrow || Boolean(active);
+  // celular com conversa aberta (WhatsApp ou equipe): a conversa toma a tela inteira, por cima do
+  // cabeçalho da página e do botão do menu — o "voltar" do cabeçalho da conversa devolve a lista
+  const fullScreenChat = isNarrow && Boolean(teamMode ? teamChat : active);
 
   // altura exata (mede o topo do bloco e desconta o rodapé) — evita scroll de página
   const shellRef = useRef(null);
@@ -3307,17 +3425,20 @@ export default function WhatsAppChat() {
     const calc = () => {
       const el = shellRef.current;
       if (!el) return;
-      const top = el.getBoundingClientRect().top;
-      setShellH(Math.max(440, Math.round(window.innerHeight - top - 74)));
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      setShellH(Math.max(440, Math.round(window.innerHeight - top - 24)));
     };
     calc();
     const t1 = window.setTimeout(calc, 120);
     const t2 = window.setTimeout(calc, 400);
     window.addEventListener('resize', calc);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => calc()) : null;
+    ro?.observe(document.body);
     return () => {
       window.clearTimeout(t1);
       window.clearTimeout(t2);
       window.removeEventListener('resize', calc);
+      ro?.disconnect();
     };
   }, [connected]);
 
@@ -3369,7 +3490,6 @@ export default function WhatsAppChat() {
   if (sessionLoading && !sessions.length) {
     return (
       <Box>
-        <WaPageHeader icon={IconMessages} title="Chat" subtitle="Converse com pessoas e grupos do seu WhatsApp." sx={{ mb: 2 }} />
         <Stack alignItems="center" sx={{ py: 8 }}>
           <CircularProgress sx={{ color: WA_GREEN }} />
         </Stack>
@@ -3380,44 +3500,45 @@ export default function WhatsAppChat() {
   return (
     <Box
       ref={shellRef}
-      sx={{ display: 'flex', flexDirection: 'column', height: shellH ? `${shellH}px` : 'calc(100dvh - 176px)', minHeight: 440 }}
+      sx={
+        fullScreenChat
+          ? {
+              position: 'fixed',
+              inset: 0,
+              zIndex: 1250,
+              display: 'flex',
+              flexDirection: 'column',
+              height: '100dvh',
+              bgcolor: 'background.paper'
+            }
+          : {
+              display: 'flex',
+              flexDirection: 'column',
+              height: shellH ? `${shellH}px` : 'calc(100dvh - 176px)',
+              minHeight: 440
+            }
+      }
     >
-      <WaPageHeader
-        icon={IconMessages}
-        title="Chat"
-        subtitle={
-          manyNumbers
-            ? `${sessions.length} números · ${sessions.filter((x) => x.connected).length} conectado${sessions.filter((x) => x.connected).length === 1 ? '' : 's'}`
-            : connected && sessions[0]?.push_name
-              ? `${sessions[0].push_name} · ${fmtPhone(sessions[0].phone)}`
-              : (connected && fmtPhone(sessions[0]?.phone)) || 'Converse com pessoas e grupos do seu WhatsApp.'
-        }
-        sx={{ mb: 2 }}
-        action={
-          <Tooltip title="Atualizar lista">
-            <IconButton onClick={() => loadList()}>
-              <IconRefresh size={18} />
-            </IconButton>
-          </Tooltip>
-        }
-      />
-
+      {/* sem cabeçalho de página (pedido do Júlio, 07/10): a área toda é do chat; o botão de atualizar
+          foi para a barra da lista. No celular o MainLayout já afasta o conteúdo do botão fixo do menu. */}
       {/* sessão fora: aviso slim; lista/histórico continuam legíveis */}
-      <WaSessionBanner
-        session={{ status: sessions[0]?.status || 'none', sessions }}
-        loading={sessionLoading}
-        connected={connected}
-        what="enviar e responder mensagens"
-      />
+      {fullScreenChat && connected ? null : (
+        <WaSessionBanner
+          session={{ status: sessions[0]?.status || 'none', sessions }}
+          loading={sessionLoading}
+          connected={connected}
+          what="enviar e responder mensagens"
+        />
+      )}
 
       <Box
         sx={{
           flex: 1,
           minHeight: 0,
           display: 'flex',
-          border: '1px solid',
+          border: fullScreenChat ? 0 : '1px solid',
           borderColor: 'divider',
-          borderRadius: 3,
+          borderRadius: fullScreenChat ? 0 : 3,
           overflow: 'hidden',
           bgcolor: 'background.paper'
         }}
@@ -3538,6 +3659,15 @@ export default function WhatsAppChat() {
                     >
                       <IconAdjustmentsHorizontal size={18} />
                     </Badge>
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Atualizar lista">
+                  <IconButton
+                    onClick={() => loadList()}
+                    aria-label="Atualizar lista"
+                    sx={{ width: 40, height: 40, flexShrink: 0, borderRadius: 2.5, border: '1px solid', borderColor: 'divider' }}
+                  >
+                    <IconRefresh size={18} />
                   </IconButton>
                 </Tooltip>
                 <Tooltip title="Nova conversa com um número">
@@ -3694,6 +3824,8 @@ export default function WhatsAppChat() {
                 <Box sx={{ p: 1 }}>
                   <TgListSkeleton rows={7} />
                 </Box>
+              ) : visibleChats.length === 0 && list.contacts?.length ? (
+                <ContactSuggestions contacts={list.contacts} onStart={startWithContact} startingId={startingWith} hasChats={false} />
               ) : visibleChats.length === 0 ? (
                 <TgEmptyState
                   dense
@@ -3736,6 +3868,9 @@ export default function WhatsAppChat() {
                       session={manyNumbers && !sessionFilterValid ? sessionOf(c) : null}
                     />
                   ))}
+                  {q.trim() ? (
+                    <ContactSuggestions contacts={list.contacts} onStart={startWithContact} startingId={startingWith} hasChats />
+                  ) : null}
                   {list.page < list.pages ? (
                     <Box sx={{ textAlign: 'center', py: 1 }}>
                       <Typography
@@ -3849,7 +3984,8 @@ export default function WhatsAppChat() {
                         <Typography sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                           {chatLabel(active)}
                         </Typography>
-                        {manyNumbers ? <WaNumberChip session={sessionOf(active)} showPhone={!isNarrow} sx={{ flexShrink: 0 }} /> : null}
+                        {manyNumbers && !isNarrow ? <WaNumberChip session={sessionOf(active)} showPhone sx={{ flexShrink: 0 }} /> : null}
+                        {manyNumbers && isNarrow ? <WaNumberDot session={sessionOf(active)} size={9} sx={{ flexShrink: 0 }} /> : null}
                         {activeSvc && !isNarrow ? <ServiceTag info={activeSvc} sx={{ maxWidth: 240 }} /> : null}
                         {active.muted ? <IconVolumeOff size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
                         {active.pinned ? <IconPinned size={14} style={{ opacity: 0.5, flexShrink: 0 }} /> : null}
@@ -3940,7 +4076,7 @@ export default function WhatsAppChat() {
                       ))}
                     </Stack>
                   ) : null}
-                  {canTag ? (
+                  {canTag && !isNarrow ? (
                     <Tooltip title="Etiquetas da conversa">
                       <IconButton size="small" onClick={(e) => setTagsAnchor(e.currentTarget)} aria-label="Etiquetas da conversa">
                         <Badge
@@ -3965,14 +4101,14 @@ export default function WhatsAppChat() {
                       </IconButton>
                     </Tooltip>
                   ) : null}
-                  {isIndividual ? (
+                  {isIndividual && !isNarrow ? (
                     <Tooltip title="Cliente (cadastro, assinaturas, vencimentos)">
                       <IconButton size="small" onClick={() => setCustomerOpen(true)} aria-label="Cliente">
                         <IconUserDollar size={20} />
                       </IconButton>
                     </Tooltip>
                   ) : null}
-                  {isIndividual ? (
+                  {isIndividual && !isNarrow ? (
                     <Tooltip title="Cobrar (PIX / boleto na conversa)">
                       <span>
                         <IconButton size="small" onClick={openCharge} aria-label="Cobrar" disabled={chargeBusy}>
@@ -3981,7 +4117,7 @@ export default function WhatsAppChat() {
                       </span>
                     </Tooltip>
                   ) : null}
-                  {isIndividual ? (
+                  {isIndividual && !isNarrow ? (
                     <Tooltip title="Atendimento">
                       <IconButton
                         size="small"
@@ -3993,7 +4129,12 @@ export default function WhatsAppChat() {
                       </IconButton>
                     </Tooltip>
                   ) : null}
-                  <IconButton size="small" onClick={(e) => setHdrAnchor(e.currentTarget)}>
+                  <IconButton
+                    size={isNarrow ? 'medium' : 'small'}
+                    onClick={(e) => setHdrAnchor(e.currentTarget)}
+                    aria-label="Mais ações"
+                    sx={isNarrow && activeSvc && activeSvc.key !== 'closed' ? ACTIVE_FG : undefined}
+                  >
                     <IconDotsVertical size={20} />
                   </IconButton>
                 </Stack>
@@ -4584,6 +4725,63 @@ export default function WhatsAppChat() {
             <ListItemText>Participantes</ListItemText>
           </MenuItem>
         ) : null}
+        {/* no celular os ícones do cabeçalho viram itens aqui (o botão ⋮ fica como âncora dos popovers) */}
+        {isNarrow && isIndividual ? (
+          <MenuItem
+            onClick={() => {
+              const anchor = hdrAnchor;
+              setHdrAnchor(null);
+              window.setTimeout(() => setSvcAnchor(anchor), 120);
+            }}
+          >
+            <ListItemIcon>
+              <IconHeadset size={18} />
+            </ListItemIcon>
+            <ListItemText>Atendimento{activeSvc && activeSvc.key !== 'closed' ? ` · ${activeSvc.label || ''}` : ''}</ListItemText>
+          </MenuItem>
+        ) : null}
+        {isNarrow && canTag ? (
+          <MenuItem
+            onClick={() => {
+              const anchor = hdrAnchor;
+              setHdrAnchor(null);
+              window.setTimeout(() => setTagsAnchor(anchor), 120);
+            }}
+          >
+            <ListItemIcon>
+              <IconTag size={18} />
+            </ListItemIcon>
+            <ListItemText>Etiquetas{activeTags.length ? ` (${activeTags.length})` : ''}</ListItemText>
+          </MenuItem>
+        ) : null}
+        {isNarrow && isIndividual ? (
+          <MenuItem
+            onClick={() => {
+              setHdrAnchor(null);
+              setCustomerOpen(true);
+            }}
+          >
+            <ListItemIcon>
+              <IconUserDollar size={18} />
+            </ListItemIcon>
+            <ListItemText>Cliente (cadastro e assinaturas)</ListItemText>
+          </MenuItem>
+        ) : null}
+        {isNarrow && isIndividual ? (
+          <MenuItem
+            disabled={chargeBusy}
+            onClick={() => {
+              setHdrAnchor(null);
+              openCharge();
+            }}
+          >
+            <ListItemIcon>
+              <IconReceipt2 size={18} />
+            </ListItemIcon>
+            <ListItemText>Cobrar (PIX / boleto)</ListItemText>
+          </MenuItem>
+        ) : null}
+        {isNarrow ? <Divider /> : null}
         <MenuItem onClick={() => chatAction('read')}>
           <ListItemIcon>
             <IconMailOpened size={18} />
@@ -5268,6 +5466,12 @@ export default function WhatsAppChat() {
           });
         }}
         onOpenCustomer={() => navigate('/whatsapp/customers')}
+        onRenamed={({ name, chats }) => {
+          // o servidor também emite `wa:chat`; aqui o cabeçalho e a lista mudam na hora
+          const hit = (c) => (chats || []).some((r) => r.chat_id === c.jid && r.session_id === c.session_id);
+          setActive((prev) => (prev && hit(prev) ? { ...prev, name } : prev));
+          setList((prev) => ({ ...prev, items: prev.items.map((c) => (hit(c) ? { ...c, name } : c)) }));
+        }}
       />
     </Box>
   );

@@ -98,6 +98,7 @@ Módulo por organização (1 número), sobre o gateway open source **OpenWA** (D
 - **Agendamentos**: mensagem pontual para contatos/grupos em dia e hora; some da lista depois de enviada.
 - **Broadcasts**: audiência por contatos/tags/grupos, copies com rotação, horários diários, aquecimento por organização, histórico por envio.
 - **Vários números por organização** (06/10/2026): cada empresa conecta quantos números quiser, cada um com **nome interno, cor e fluxo do bot próprios** (abas em Configurações + "Novo número"). O **Chat** mostra todos os números juntos ou filtrados, com o chip do número em cada conversa; **Status** e **Agendamentos** podem ser criados para 1+ números (cada número para todos os alvos, ou alvos divididos); **Broadcasts** dividem a audiência entre os números escolhidos (contato com conversa vai pelo número dela) com **ritmo anti-bloqueio** por presets (rápido/normal/seguro/muito seguro/personalizado: intervalo, variação, pausas, limite diário, janela) e aquecimento **por número**; Contatos, Funil, Tarefas, Clientes, Cobranças e Métricas filtram/identificam por número; em **Administração → Usuários** o admin escolhe **quais números** cada usuário acessa (donos/admins veem todos). Plano: `docs/plano-whatsapp-multinumero.md`.
+- **Broadcast com vários números** (06/10/2026): ao marcar dois ou mais números, escolha **Usar em conjunto** (soma os contatos e divide igualmente — um número com 1.000 contatos e outro com 100 enviam 550 cada) ou **Cada número dispara para seus contatos** (cada contato recebe pelo número de cuja agenda ou conversa ele veio). A estimativa mostra quanto sai por número antes de disparar.
 - **Chat da equipe** (06/10/2026): dentro do Chat, o filtro **Equipe** abre a comunicação interna entre os usuários da organização — conversas diretas e **grupos** (criar, adicionar/remover membros, administrador), com texto, imagem, vídeo, áudio e arquivos, resposta com citação, editar/apagar e tempo real; independe dos números conectados; clicar em qualquer chip de número volta ao WhatsApp. As prévias de mídia usam ícones (sem emojis).
 - **CRM de atendimento** (02/10/2026): **Produtos** (preço, cobrança única/mensal/trimestral/anual) e **Clientes** (contato promovido, CPF/CNPJ, e-mail, endereço, campos personalizados, assinaturas com vencimento, importar/exportar CSV) com painel lateral na conversa e variáveis `{{cliente.*}}` em qualquer mensagem; **Cobranças** PIX e/ou boleto (Mercado Pago) enviadas na conversa, recorrência automática antes do vencimento, régua de lembretes, confirmação automática, recibo e etiqueta "Inadimplente"; **Funil** Kanban (etapas com ações: mensagem, etiquetas, tarefa; entrada automática e "pago → etapa"), **Tarefas** com aviso no prazo e **Notas internas**; **Métricas** (1ª resposta, resolução, por atendente/etiqueta, satisfação, cobranças), **pesquisa de satisfação** ao encerrar, **distribuição automática** da fila (rodízio / menos ocupado entre quem está online) e **LGPD** (palavra de descadastro tira o contato dos envios em massa). Plano: `docs/plano-whatsapp-crm.md`; tutorial do cliente: `WhatsApp - CRM e Cobranças.pdf`.
 Ban é um risco real de qualquer cliente não-oficial: número dedicado + aquecimento. Plano e decisões: `docs/plano-modulo-whatsapp.md` e `docs/plano-whatsapp-v2.md`; tutorial do cliente: `WhatsApp - Como conectar.pdf`.
@@ -182,35 +183,40 @@ pub-mail/
 ├── front/vite/                # SPA React
 │   └── src/views/pages/       # webchat, quiz, email, leads, telegram, admin…
 ├── docs/images/               # imagens deste README
-├── docker-compose.yml         # MySQL + Redis + phpMyAdmin para dev local
+├── docker-compose.yml         # dev local: MySQL + Redis (+ perfil "app" com o sistema todo)
+├── Rodar-Local.md             # guia para rodar na sua máquina
 └── CLAUDE.md                  # notas operacionais detalhadas (deploy, gotchas, histórico)
 ```
 
 ## Rodando localmente
 
-### Pré-requisitos
+> **Guia completo, testado do zero: [`Rodar-Local.md`](Rodar-Local.md)** — versões, os dois jeitos de rodar, o conteúdo de cada `.env` local e os problemas comuns.
 
-Node 20, Yarn 4 (corepack), Docker (para MySQL/Redis), `ffmpeg` (áudio do Telegram) e `libvips` (sharp) — ambos opcionais em dev.
+### Versões
 
-### Setup
+**Node 22 LTS** (produção: 22.23.3; Node 20 não funciona com o Prisma 7) e **Yarn 4.10.3** pelo Corepack (`corepack enable`). O npm (10.9.x, vem com o Node) **não** é usado para instalar: os `package-lock.json` antigos não valem, o que vale é o `yarn.lock`. Há um `.nvmrc` na raiz (`nvm use`).
+
+### Tudo no Docker (um comando)
 
 ```bash
-# 1. Dependências de infra
-docker compose up -d            # MySQL :3306, Redis :6379, phpMyAdmin :8081
+docker compose --profile app up -d --build   # MySQL, Redis, back :8000, micros, front :3000
+# login: admin@pubmail.local / admin12345 (criado na 1ª subida)
+```
 
-# 2. Back
-cd back && yarn install
+### Node na máquina (para desenvolver)
+
+```bash
+docker compose up -d                          # só MySQL :3306 e Redis :6379
+
+cd back && yarn install                       # crie back/.env (ver Rodar-Local.md)
 yarn prisma migrate deploy && yarn prisma generate
-yarn start:dev                  # :8000
+SEED_ADMIN_EMAIL=admin@pubmail.local SEED_ADMIN_PASSWORD=admin12345 \
+  node scripts/seed-platform.mjs | docker exec -i pub-mail-mysql mysql -upubmail -ppubmail pubmail
+yarn start:dev                                # :8000
 
-# 3. AI micro (outro terminal)
-cd ai-micro-services && yarn install && yarn dev   # :4000
-
-# 4. Email micro (outro terminal)
-cd email-micro-services && yarn install && yarn dev   # :9999
-
-# 5. Front (outro terminal)
-cd front/vite && yarn install && yarn dev   # :3000
+cd ai-micro-services && yarn install && yarn dev       # :4000
+cd email-micro-services && yarn install && yarn start  # :9999
+cd front/vite && yarn install && yarn start            # :3000
 ```
 
 > Webhooks (Telegram, Resend, gateways) precisam de uma URL pública — em dev use um túnel (ex.: `ngrok http 8000`) e aponte `PUBLIC_API_URL` para ele.

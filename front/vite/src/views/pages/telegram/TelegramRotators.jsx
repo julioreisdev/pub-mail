@@ -240,7 +240,7 @@ export default function TelegramRotators() {
     }, [list, q]);
 
     return (
-        <Box sx={{ p: { xs: 2, md: 3 } }}>
+        <Box>
             <TgPageHeader
                 icon={IconRotateClockwise2}
                 title="Mensagem rotativa"

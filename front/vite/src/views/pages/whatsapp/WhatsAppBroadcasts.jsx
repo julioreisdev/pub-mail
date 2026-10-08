@@ -64,21 +64,15 @@ import {
   IconShieldCheck,
   IconAdjustments,
   IconArrowsSplit,
-  IconCircleCheck
+  IconCircleCheck,
+  IconUsersGroup,
+  IconAddressBook
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 
 import { get, post, put, remove } from 'api/api';
-import {
-  TgEmptyState,
-  TgCard,
-  TgStatusPill,
-  TgFilterBar,
-  TgModal,
-  TgConfirmDialog,
-  TgGhostButton,
-  TgListSkeleton
-} from 'views/pages/telegram/ui';
+import { TgEmptyState, TgCard, TgStatusPill, TgFilterBar, TgConfirmDialog, TgGhostButton, TgListSkeleton } from 'views/pages/telegram/ui';
+import { CrmModal } from './crm/crmKit';
 import WhatsAppMediaField from './WhatsAppMediaField';
 import WhatsAppMessagesPreview from './WhatsAppMessagesPreview';
 import {
@@ -105,10 +99,11 @@ import {
 // WhatsApp → Broadcasts: disparos em massa para contatos e grupos com rotação
 // de copies, horários diários (BRT), fila com ritmo e aquecimento por número.
 //
-// Multi-número: cada campanha escolhe 1..N números (`session_ids`). Contato que
-// já tem conversa num dos números escolhidos sai por ele; os demais são
-// divididos (round-robin) entre os números conectados; grupos saem pelo número
-// da conversa do grupo. O ritmo (`pacing`) vem de presets do back
+// Multi-número: cada campanha escolhe 1..N números (`session_ids`) e, com 2+,
+// a `distribution`: 'shared' = "Usar em conjunto" (audiência somada e dividida
+// igualmente entre os números conectados) | 'own' = "Cada número dispara para
+// seus contatos" (o contato sai pelo número de cuja agenda/conversa veio). Grupos saem
+// pelo número da conversa do grupo. O ritmo (`pacing`) vem de presets do back
 // (GET /whatsapp/broadcasts/presets) ou é personalizado.
 // ============================================================================
 
@@ -363,7 +358,7 @@ function WarmupRow({ session, warmup, many }) {
       alignItems={{ md: 'center' }}
       sx={{ opacity: ready ? 1 : 0.7 }}
     >
-      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flexShrink: 0, minWidth: { md: 300 } }}>
+      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ flexShrink: 0, minWidth: { md: 300 }, maxWidth: { md: 360 } }}>
         <Box
           sx={{
             width: 38,
@@ -378,10 +373,10 @@ function WarmupRow({ session, warmup, many }) {
         >
           <IconFlame size={20} />
         </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
             {many ? <WaNumberChip session={session} /> : null}
-            <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15 }} noWrap>
+            <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15, minWidth: 0 }}>
               {!ready
                 ? 'Não conectado'
                 : hot
@@ -391,7 +386,7 @@ function WarmupRow({ session, warmup, many }) {
                     : 'Aquecimento · dia 1 de 7'}
             </Typography>
           </Stack>
-          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.3 }}>
             {!ready
               ? 'Conecte o número nas Configurações para ele disparar.'
               : paced
@@ -571,7 +566,7 @@ function MessagesEditor({ messages, onChange }) {
             label="Atraso antes desta (s)"
             value={m.delay_seconds || 0}
             onChange={(e) => setMsg(m.id, { delay_seconds: Math.min(30, Math.max(0, Number(e.target.value) || 0)) })}
-            sx={{ width: 190, mt: 1.25 }}
+            sx={{ width: { xs: '100%', sm: 190 }, mt: 1.25 }}
             inputProps={{ min: 0, max: 30 }}
             helperText="Mostra “digitando…”."
           />
@@ -645,7 +640,7 @@ function CopiesModal({ broadcast, open, onClose }) {
   };
 
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !saving && onClose(false)}
       disableClose={saving}
@@ -764,7 +759,7 @@ function CopiesModal({ broadcast, open, onClose }) {
           </Button>
         </Stack>
       )}
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -781,6 +776,7 @@ const DEFAULT_PACING = {
 const EMPTY = {
   name: 'Novo broadcast',
   session_ids: [],
+  distribution: 'shared',
   targets: { contacts: 'saved', contact_ids: [], tags: [], groups: [] },
   times: [],
   mode: 'sequential',
@@ -789,6 +785,91 @@ const EMPTY = {
   active: true
 };
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+// como os CONTATOS são repartidos quando a campanha usa 2+ números
+const DISTRIBUTIONS = [
+  {
+    key: 'shared',
+    label: 'Usar em conjunto',
+    short: 'em conjunto',
+    Icon: IconUsersGroup,
+    description:
+      'Soma os contatos de todos os números e divide igualmente entre eles. Ex.: um número com 1.000 contatos e outro com 100 enviam 550 cada.'
+  },
+  {
+    key: 'own',
+    label: 'Cada número dispara para seus contatos',
+    short: 'cada número os seus',
+    Icon: IconAddressBook,
+    description:
+      'Cada contato recebe pelo número dele: o da agenda de onde veio ou o da conversa. Quem não é de nenhum dos números escolhidos fica de fora.'
+  }
+];
+const distributionOf = (key) => DISTRIBUTIONS.find((d) => d.key === key) || DISTRIBUTIONS[0];
+
+function DistributionPicker({ value, onChange }) {
+  return (
+    <Box
+      role="radiogroup"
+      aria-label="Como dividir os contatos entre os números"
+      sx={{ display: 'grid', gap: 1, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' } }}
+    >
+      {DISTRIBUTIONS.map((d) => {
+        const selected = value === d.key;
+        return (
+          <Box
+            key={d.key}
+            role="radio"
+            aria-checked={selected}
+            tabIndex={0}
+            onClick={() => onChange(d.key)}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? onChange(d.key) : null)}
+            sx={{
+              p: 1.5,
+              borderRadius: 2.5,
+              border: '2px solid',
+              cursor: 'pointer',
+              borderColor: selected ? WA_DARK : 'divider',
+              bgcolor: selected ? `${WA_GREEN}14` : 'background.paper',
+              transition: 'border-color .12s ease, background-color .12s ease',
+              '&:hover': { borderColor: selected ? WA_DARK : `${WA_GREEN}99` },
+              outline: 'none',
+              '&:focus-visible': { boxShadow: `0 0 0 3px ${WA_GREEN}55` }
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+              <Box
+                sx={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 2,
+                  display: 'grid',
+                  placeItems: 'center',
+                  flexShrink: 0,
+                  color: WA_DARK,
+                  bgcolor: `${WA_GREEN}24`
+                }}
+              >
+                <d.Icon size={17} />
+              </Box>
+              <Typography sx={{ fontWeight: 800, fontSize: 13.5, flex: 1, minWidth: 0, lineHeight: 1.25 }}>{d.label}</Typography>
+              <Radio
+                size="small"
+                checked={selected}
+                onChange={() => onChange(d.key)}
+                tabIndex={-1}
+                sx={{ p: 0, color: WA_DARK, '&.Mui-checked': { color: WA_DARK } }}
+              />
+            </Stack>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.35 }}>
+              {d.description}
+            </Typography>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
 
 // card clicável de um preset de ritmo
 function PresetCard({ preset, selected, onSelect }) {
@@ -883,7 +964,7 @@ function CustomPacingFields({ pacing, limits, onChange }) {
   };
   return (
     <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px dashed', borderColor: 'divider', bgcolor: 'background.default' }}>
-      <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, minmax(0, 1fr))' } }}>
+      <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0, 1fr))' } }}>
         <TextField
           type="number"
           size="small"
@@ -1008,10 +1089,19 @@ function EstimateBox({ estimate, loading, many }) {
           ))}
         </Stack>
       ) : null}
-      {warnings.map((w) => (
-        <Typography key={w} variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
-          ⚠ {w}
+      {many && by.length > 1 && estimate?.distribution ? (
+        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.75 }}>
+          Contatos divididos <b>{distributionOf(estimate.distribution).short}</b>
+          {(estimate?.groups || 0) > 0 ? '; grupos saem pelo número que está em cada grupo.' : '.'}
         </Typography>
+      ) : null}
+      {warnings.map((w) => (
+        <Stack key={w} direction="row" spacing={0.5} alignItems="flex-start" sx={{ color: 'warning.main', mt: 0.5 }}>
+          <IconAlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+          <Typography variant="caption" sx={{ fontWeight: 600 }}>
+            {w}
+          </Typography>
+        </Stack>
       ))}
     </Box>
   );
@@ -1087,6 +1177,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
         ...EMPTY,
         ...initial,
         session_ids: Array.isArray(initial.session_ids) ? initial.session_ids : [],
+        distribution: initial.distribution === 'own' ? 'own' : 'shared',
         targets: { ...EMPTY.targets, ...(initial.targets || {}) },
         pacing: {
           ...DEFAULT_PACING,
@@ -1112,13 +1203,17 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
     const seq = ++estSeq.current;
     setEstimating(true);
     const t = setTimeout(() => {
-      post('/whatsapp/broadcasts/audience-estimate', { targets: form.targets, session_ids: form.session_ids })
+      post('/whatsapp/broadcasts/audience-estimate', {
+        targets: form.targets,
+        session_ids: form.session_ids,
+        distribution: form.distribution
+      })
         .then((r) => seq === estSeq.current && setEstimate(r))
         .catch(() => seq === estSeq.current && setEstimate(null))
         .finally(() => seq === estSeq.current && setEstimating(false));
     }, 400);
     return () => clearTimeout(t);
-  }, [open, form.targets, form.session_ids]);
+  }, [open, form.targets, form.session_ids, form.distribution]);
 
   const setF = (p) => setForm((f) => ({ ...f, ...p }));
   const setT = (p) => setForm((f) => ({ ...f, targets: { ...f.targets, ...p } }));
@@ -1172,6 +1267,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
       const payload = {
         name: form.name.trim(),
         session_ids: form.session_ids,
+        distribution: form.distribution === 'own' ? 'own' : 'shared',
         targets: form.targets,
         pacing,
         times: form.times,
@@ -1212,34 +1308,33 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
   );
 
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !saving && onClose(false)}
       disableClose={saving}
       maxWidth="md"
       title={initial?.id ? 'Editar broadcast' : 'Novo broadcast'}
       footer={
-        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
+        <>
           <FormControlLabel
             control={<Switch checked={form.active} onChange={(e) => setF({ active: e.target.checked })} />}
             label={form.active ? 'Ativo' : 'Inativo'}
+            sx={{ mr: 'auto', flex: { xs: '1 1 100%', sm: '0 0 auto' } }}
           />
-          <Stack direction="row" spacing={1}>
-            <Button color="inherit" onClick={() => onClose(false)} disabled={saving} sx={{ textTransform: 'none' }}>
-              Cancelar
-            </Button>
-            <Button
-              variant="contained"
-              disableElevation
-              onClick={save}
-              disabled={saving || (fastPreset && !riskAck)}
-              startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconDeviceFloppy size={18} />}
-              sx={waButtonSx}
-            >
-              Salvar
-            </Button>
-          </Stack>
-        </Stack>
+          <Button color="inherit" onClick={() => onClose(false)} disabled={saving} sx={{ textTransform: 'none' }}>
+            Cancelar
+          </Button>
+          <Button
+            variant="contained"
+            disableElevation
+            onClick={save}
+            disabled={saving || (fastPreset && !riskAck)}
+            startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconDeviceFloppy size={18} />}
+            sx={waButtonSx}
+          >
+            Salvar
+          </Button>
+        </>
       }
     >
       <Stack spacing={2.5}>
@@ -1251,13 +1346,25 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
           {many ? (
             <>
               <WaNumberMultiSelect sessions={sessions} value={form.session_ids} onChange={(ids) => setF({ session_ids: ids })} />
-              <Stack direction="row" spacing={0.75} alignItems="flex-start" sx={{ mt: 1, color: 'text.secondary' }}>
-                <IconArrowsSplit size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-                <Typography variant="caption">
-                  Contato que já tem conversa com um dos números escolhidos recebe por ele; os demais são divididos entre os números
-                  conectados. Grupos saem pelo número que está no grupo.
+              {form.session_ids.length > 1 ? (
+                <Box sx={{ mt: 1.5 }}>
+                  <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.75 }}>Como dividir os contatos entre os números</Typography>
+                  <DistributionPicker value={form.distribution} onChange={(v) => setF({ distribution: v })} />
+                  <Stack direction="row" spacing={0.75} alignItems="flex-start" sx={{ mt: 1, color: 'text.secondary' }}>
+                    <IconArrowsSplit size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <Typography variant="caption">
+                      {form.distribution === 'own'
+                        ? 'Se o contato é de mais de um número, recebe uma vez só, pelo da conversa mais recente. '
+                        : 'Cada número fica primeiro com os contatos dele; o que passar da parte dele vai para os outros, até igualar. Só os números conectados na hora do disparo entram na divisão. '}
+                      Grupos saem sempre pelo número que está no grupo.
+                    </Typography>
+                  </Stack>
+                </Box>
+              ) : (
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1 }}>
+                  Com um número só, todos os contatos saem por ele. Escolha dois ou mais para dividir o envio.
                 </Typography>
-              </Stack>
+              )}
               {form.session_ids.length && !chosenReady ? (
                 <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
                   Nenhum dos números escolhidos está conectado — a campanha só dispara quando um deles reconectar.
@@ -1334,13 +1441,13 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
         {/* ---------- horários ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 1 }}>Horários (todo dia, Brasília)</Typography>
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <TextField type="time" size="small" value={timeInput} onChange={(e) => setTimeInput(e.target.value)} sx={{ width: 130 }} />
             <Button
               variant="outlined"
               startIcon={<IconPlus size={15} />}
               onClick={addTime}
-              sx={{ borderRadius: 2, borderColor: 'divider', color: 'text.primary', textTransform: 'none' }}
+              sx={{ borderRadius: 2, borderColor: 'divider', color: 'text.primary', textTransform: 'none', minHeight: 40 }}
             >
               Adicionar
             </Button>
@@ -1456,7 +1563,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
           </Box>
         ) : null}
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -1607,7 +1714,7 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
             <IconX size={18} />
           </IconButton>
         </Stack>
-        <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1.5 }}>
           <FormControl size="small" fullWidth>
             <InputLabel id="wa-sends-status-label">Status</InputLabel>
             <Select labelId="wa-sends-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -1729,7 +1836,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
   }, [open, running, load]);
 
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={onClose}
       maxWidth="md"
@@ -1742,7 +1849,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
       }
     >
       <Stack direction="row" spacing={1.25} sx={{ mb: 1.5 }} flexWrap="wrap" useFlexGap alignItems="center">
-        <FormControl size="small" sx={{ minWidth: 170 }}>
+        <FormControl size="small" sx={{ minWidth: 170, flex: { xs: '1 1 100%', sm: '0 0 auto' } }}>
           <InputLabel id="wa-runs-status-label">Status</InputLabel>
           <Select labelId="wa-runs-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
             <MenuItem value="all">Todos os status</MenuItem>
@@ -1752,7 +1859,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
             <MenuItem value="done">Concluídos</MenuItem>
           </Select>
         </FormControl>
-        <FormControl size="small" sx={{ minWidth: 150 }}>
+        <FormControl size="small" sx={{ minWidth: 150, flex: { xs: '1 1 calc(100% - 48px)', sm: '0 0 auto' } }}>
           <InputLabel id="wa-runs-period-label">Período</InputLabel>
           <Select labelId="wa-runs-period-label" label="Período" value={period} onChange={(e) => setPeriod(e.target.value)}>
             <MenuItem value="all">Todo o período</MenuItem>
@@ -1875,7 +1982,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
       )}
 
       <SendsDrawer broadcast={broadcast} run={sendsFor} onClose={() => setSendsFor(null)} sessions={sessions} byId={byId} />
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -1887,7 +1994,7 @@ function FireResultModal({ result, onClose, onRuns, byId }) {
   const firstAt = result?.first_at ? new Date(result.first_at) : null;
   const delayed = firstAt && firstAt.getTime() - Date.now() > 90_000;
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={onClose}
       maxWidth="xs"
@@ -1939,7 +2046,7 @@ function FireResultModal({ result, onClose, onRuns, byId }) {
           Os envios seguem o ritmo e o aquecimento de cada número; o que passar do limite do dia fica para amanhã.
         </Typography>
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -1954,7 +2061,20 @@ function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, o
     { key: 'del', label: 'Excluir', icon: <IconTrash size={17} />, run: () => onDelete(b), danger: true }
   ];
   return (
-    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+    <Stack
+      direction="row"
+      spacing={0.5}
+      alignItems="center"
+      flexWrap="wrap"
+      useFlexGap
+      sx={{
+        flexShrink: 0,
+        width: { xs: '100%', md: 'auto' },
+        pt: { xs: 1, md: 0 },
+        borderTop: { xs: '1px dashed', md: 0 },
+        borderColor: 'divider'
+      }}
+    >
       <Tooltip title={b.active ? 'Ativo — clique p/ pausar' : 'Inativo — clique p/ ativar'}>
         <Switch
           size="small"
@@ -1964,7 +2084,7 @@ function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, o
         />
       </Tooltip>
       <Tooltip title={fireTip}>
-        <span>
+        <Box component="span" sx={{ flex: { xs: '1 1 auto', md: '0 0 auto' } }}>
           <Button
             size="small"
             variant="contained"
@@ -1972,21 +2092,21 @@ function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, o
             startIcon={<IconPlayerPlay size={15} />}
             onClick={() => onFire(b)}
             disabled={noCopies || !connected}
-            sx={waButtonSx}
+            sx={{ ...waButtonSx, minHeight: 36, width: '100%' }}
           >
             Disparar
           </Button>
-        </span>
+        </Box>
       </Tooltip>
       <Tooltip title="Copies">
-        <IconButton size="small" onClick={() => onCopies(b)}>
+        <IconButton size="small" onClick={() => onCopies(b)} sx={{ p: 1 }}>
           <IconMessage2 size={17} />
         </IconButton>
       </Tooltip>
       {compact ? (
         <>
           <Tooltip title="Mais ações">
-            <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)}>
+            <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)} sx={{ p: 1 }}>
               <IconDotsVertical size={17} />
             </IconButton>
           </Tooltip>
@@ -2252,7 +2372,7 @@ export default function WhatsAppBroadcasts() {
               value={fName}
               onChange={(e) => setFName(e.target.value)}
               InputProps={{ startAdornment: <IconSearch size={16} style={{ marginRight: 6, opacity: 0.6 }} /> }}
-              sx={{ flex: '1 1 220px', minWidth: 180 }}
+              sx={{ flex: { xs: '0 0 auto', md: '1 1 220px' }, minWidth: { xs: 0, md: 180 }, width: { xs: '100%', md: 'auto' } }}
             />
             {compact ? (
               <>
@@ -2269,7 +2389,7 @@ export default function WhatsAppBroadcasts() {
                   anchorEl={filterAnchor}
                   onClose={() => setFilterAnchor(null)}
                   anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-                  slotProps={{ paper: { sx: { borderRadius: 3, mt: 1, width: 300 } } }}
+                  slotProps={{ paper: { sx: { borderRadius: 3, mt: 1, width: 'min(300px, calc(100vw - 32px))' } } }}
                 >
                   <Stack spacing={1.5} sx={{ p: 2 }}>
                     <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
@@ -2335,12 +2455,18 @@ export default function WhatsAppBroadcasts() {
                   <TgCard
                     key={b.id}
                     accent={b.active ? WA_GREEN : 'divider'}
-                    sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, alignItems: { md: 'center' }, gap: 2, p: 2 }}
+                    sx={{
+                      display: 'flex',
+                      flexDirection: { xs: 'column', md: 'row' },
+                      alignItems: { md: 'center' },
+                      gap: { xs: 1.25, md: 2 },
+                      p: { xs: 1.5, md: 2 }
+                    }}
                   >
-                    <WaBadge icon={IconSpeakerphone} />
+                    <WaBadge icon={IconSpeakerphone} sx={{ display: { xs: 'none', md: 'grid' } }} />
                     <Box sx={{ flex: 1, minWidth: 0 }}>
                       <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 0.5 }}>
-                        <Typography sx={{ fontWeight: 700, fontSize: 15.5 }} noWrap>
+                        <Typography sx={{ fontWeight: 700, fontSize: 15.5, minWidth: 0, maxWidth: '100%' }} noWrap>
                           {b.name}
                         </Typography>
                         <TgStatusPill status={b.active ? 'active' : 'inactive'} />
@@ -2357,20 +2483,27 @@ export default function WhatsAppBroadcasts() {
                           />
                         ) : null}
                       </Stack>
-                      <Stack direction="row" spacing={0.75} alignItems="center" sx={{ color: 'text.secondary', mb: 0.75 }}>
+                      <Stack
+                        direction="row"
+                        spacing={0.75}
+                        alignItems="center"
+                        flexWrap="wrap"
+                        useFlexGap
+                        sx={{ color: 'text.secondary', mb: 0.75 }}
+                      >
                         <IconUsers size={14} />
                         <Typography variant="caption" sx={{ fontWeight: 700 }}>
                           Audiência ≈ {aud.total.toLocaleString('pt-BR')}
                         </Typography>
-                        <Typography variant="caption" sx={{ color: 'text.disabled' }} noWrap>
+                        <Typography variant="caption" sx={{ color: 'text.disabled', minWidth: 0, overflowWrap: 'anywhere' }}>
                           ({[...aud.parts, CONTACT_MODE_LABEL[mode]].filter(Boolean).join(' · ')}
                           {(b.targets?.tags || []).length ? ` · tags: ${b.targets.tags.join(', ')}` : ''})
                         </Typography>
                         {many && aud.by_session.length > 1 ? (
                           <Tooltip
-                            title={aud.by_session
+                            title={`${distributionOf(b.distribution).label} — ${aud.by_session
                               .map((s) => `${s.label}: ${(s.contacts || 0) + (s.groups || 0)}${s.connected ? '' : ' (não conectado)'}`)
-                              .join(' · ')}
+                              .join(' · ')}`}
                           >
                             <Box sx={{ display: 'inline-flex', color: 'text.disabled', cursor: 'help' }}>
                               <IconArrowsSplit size={14} />
@@ -2521,7 +2654,7 @@ export default function WhatsAppBroadcasts() {
               {firePacing.length ? ` (${firePacing.join(', ')})` : ''}. O que passar do limite do dia de cada número fica para amanhã.
               <Box component="span" sx={{ display: 'block', mt: 1.25 }}>
                 <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', display: 'block', mb: 0.5 }}>
-                  {fireSessions.length === 1 ? 'Sai pelo número' : 'Sai pelos números'}
+                  {fireSessions.length === 1 ? 'Sai pelo número' : `Sai pelos números · ${distributionOf(firingFor.distribution).short}`}
                 </Typography>
                 {/* só <span>: a mensagem do TgConfirmDialog vive dentro de um <p> */}
                 <Box component="span" sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, alignItems: 'center' }}>

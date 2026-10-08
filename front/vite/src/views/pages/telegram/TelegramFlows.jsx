@@ -101,17 +101,20 @@ function FlowCanvas() {
         const calc = () => {
             const el = frameRef.current;
             if (!el) return;
-            const top = el.getBoundingClientRect().top;
-            setFrameH(Math.max(360, Math.round(window.innerHeight - top - 96)));
+            const top = el.getBoundingClientRect().top + window.scrollY;
+            setFrameH(Math.max(360, Math.round(window.innerHeight - top - 46)));
         };
         calc();
         const t1 = setTimeout(calc, 120);
         const t2 = setTimeout(calc, 400);
         window.addEventListener('resize', calc);
+        const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => calc()) : null;
+        ro?.observe(document.body);
         return () => {
             clearTimeout(t1);
             clearTimeout(t2);
             window.removeEventListener('resize', calc);
+            ro?.disconnect();
         };
     }, [botId]);
 

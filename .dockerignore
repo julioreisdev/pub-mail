@@ -1,0 +1,24 @@
+# Contexto de build das imagens de DESENVOLVIMENTO (docker-compose.yml, perfil "app").
+# Nada de segredo, dependência instalada ou build antigo vai para dentro da imagem.
+.git
+servers.json
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/dist_new
+**/dist_prev
+**/uploads
+**/protected
+back/generated
+**/.yarn/cache
+**/.yarn/install-state.gz
+**/.yarn/unplugged
+**/.pnp.*
+**/*.log
+*.pdf
+*.zip
+front/remix
+wordpress/tradutor-invisivel-dev
+docs/images

@@ -3,12 +3,18 @@ import { useSearchParams } from 'react-router-dom';
 
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import { IconAlertTriangle, IconCircleCheck, IconCircleDashed, IconUserOff } from '@tabler/icons-react';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
+import { IconAlertTriangle, IconCircleCheck, IconCircleDashed, IconUserOff, IconX } from '@tabler/icons-react';
 
 import { TgCard } from 'views/pages/telegram/ui';
 import { WA_DARK, WA_GREEN, tint } from '../waShared';
@@ -154,7 +160,7 @@ export function CrmKpi({ icon: Icon, label, value, accent, hint }) {
         <Typography sx={{ fontWeight: 800, fontSize: 20, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }} noWrap>
           {value == null ? '—' : typeof value === 'number' ? value.toLocaleString('pt-BR') : value}
         </Typography>
-        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block" title={hint}>
+        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.25 }} display="block" title={hint}>
           {label}
         </Typography>
       </Box>
@@ -163,6 +169,90 @@ export function CrmKpi({ icon: Icon, label, value, accent, hint }) {
 }
 
 export const waPrimaryBtn = { fontWeight: 700, textTransform: 'none', borderRadius: 2, bgcolor: WA_GREEN, '&:hover': { bgcolor: WA_DARK } };
+
+/** `true` em celular (abaixo de `sm`): tabelas viram cards, diálogos viram tela cheia. */
+export function useXs() {
+  const theme = useTheme();
+  return useMediaQuery(theme.breakpoints.down('sm'));
+}
+
+// ----------------------------------------------------------------------------
+// CrmModal — mesmo desenho do TgModal (header/footer sticky), mas em CELULAR vira
+// tela cheia e os botões do rodapé ocupam a largura toda (2 por linha; o 3º/único
+// ocupa a linha inteira). Usado em todos os diálogos do módulo WhatsApp.
+// ----------------------------------------------------------------------------
+export function CrmModal({ open, onClose, title, subtitle, tabs, footer, maxWidth = 'sm', children, disableClose, contentSx }) {
+  const xs = useXs();
+  return (
+    <Dialog
+      open={open}
+      onClose={() => !disableClose && onClose?.()}
+      maxWidth={maxWidth}
+      fullWidth
+      fullScreen={xs}
+      PaperProps={{ sx: { borderRadius: xs ? 0 : 3, overflow: 'hidden' } }}
+    >
+      <Box
+        sx={{
+          px: { xs: 2, sm: 3 },
+          pt: { xs: 1.75, sm: 2.25 },
+          pb: tabs ? 0 : { xs: 1.5, sm: 2 },
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          position: 'sticky',
+          top: 0,
+          zIndex: 2,
+          bgcolor: 'background.paper'
+        }}
+      >
+        <Stack direction="row" alignItems="flex-start" spacing={1}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="h4" sx={{ fontWeight: 700 }} noWrap>
+              {title}
+            </Typography>
+            {subtitle ? (
+              <Typography variant="caption" component="div" sx={{ color: 'text.secondary', mt: 0.25 }}>
+                {subtitle}
+              </Typography>
+            ) : null}
+          </Box>
+          <IconButton size="small" onClick={() => onClose?.()} disabled={disableClose} sx={{ mt: -0.5, mr: -0.5, p: 1 }}>
+            <IconX size={18} />
+          </IconButton>
+        </Stack>
+        {tabs ? <Box sx={{ mt: 1 }}>{tabs}</Box> : null}
+      </Box>
+
+      <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: { xs: 2, sm: 2.5 }, ...contentSx }}>{children}</DialogContent>
+
+      {footer ? (
+        <DialogActions
+          sx={{
+            px: { xs: 2, sm: 3 },
+            py: { xs: 1.5, sm: 1.75 },
+            gap: 1,
+            flexWrap: 'wrap',
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            position: 'sticky',
+            bottom: 0,
+            bgcolor: 'background.paper',
+            '& > :not(style) ~ :not(style)': { ml: 0 },
+            ...(xs
+              ? {
+                  pb: 'calc(12px + env(safe-area-inset-bottom))',
+                  '& > .MuiButton-root': { flex: '1 1 calc(50% - 8px)', minHeight: 44, mr: '0 !important', ml: '0 !important' },
+                  '& > .MuiButton-root:nth-of-type(3)': { flexBasis: '100%' }
+                }
+              : {})
+          }}
+        >
+          {footer}
+        </DialogActions>
+      ) : null}
+    </Dialog>
+  );
+}
 
 // ----------------------------------------------------------------------------
 // Multi-número (CRM): filtro "Número" persistido em ?session=, chips e links.
@@ -209,7 +299,7 @@ export function WaNumberFilter({ sessions = [], value, onChange, label = 'Númer
       label={label}
       size={size}
       fullWidth={false}
-      sx={{ minWidth: 200, ...sx }}
+      sx={{ minWidth: { xs: 0, md: 200 }, width: { xs: '100%', md: 'auto' }, ...sx }}
     />
   );
 }

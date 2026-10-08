@@ -280,6 +280,7 @@ export default function WhatsAppTasks() {
                   direction="row"
                   alignItems="center"
                   spacing={1}
+                  useFlexGap
                   sx={{
                     px: 1.5,
                     py: 0.75,
@@ -287,7 +288,9 @@ export default function WhatsAppTasks() {
                     borderColor: 'divider',
                     '&:last-of-type': { borderBottom: 0 },
                     '&:hover': { bgcolor: 'action.hover' },
-                    opacity: t.done ? 0.65 : 1
+                    opacity: t.done ? 0.65 : 1,
+                    // celular: a conversa (chips) desce para uma 2ª linha, alinhada ao título
+                    flexWrap: { xs: 'wrap', sm: 'nowrap' }
                   }}
                 >
                   <Checkbox
@@ -325,7 +328,20 @@ export default function WhatsAppTasks() {
                     </Stack>
                   </Box>
                   {t.chat ? (
-                    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
+                    <Stack
+                      direction="row"
+                      spacing={0.5}
+                      alignItems="center"
+                      flexWrap="wrap"
+                      useFlexGap
+                      sx={{
+                        flexShrink: 0,
+                        minWidth: 0,
+                        order: { xs: 1, sm: 0 },
+                        flexBasis: { xs: '100%', sm: 'auto' },
+                        pl: { xs: 5.25, sm: 0 }
+                      }}
+                    >
                       {multi && t.chat.session ? <WaNumberChip session={t.chat.session} /> : null}
                       <Tooltip
                         title={
@@ -342,7 +358,7 @@ export default function WhatsAppTasks() {
                           icon={undefined}
                           deleteIcon={<IconMessage size={14} />}
                           onDelete={t.chat.chat_id ? () => navigate(chatUrl(t.chat.chat_id)) : undefined}
-                          sx={{ maxWidth: 220, height: 24, borderRadius: 1.5, opacity: t.chat.chat_id ? 1 : 0.6 }}
+                          sx={{ maxWidth: { xs: '100%', sm: 220 }, height: 24, borderRadius: 1.5, opacity: t.chat.chat_id ? 1 : 0.6 }}
                         />
                       </Tooltip>
                     </Stack>

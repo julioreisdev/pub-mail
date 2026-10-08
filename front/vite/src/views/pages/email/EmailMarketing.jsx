@@ -1055,7 +1055,7 @@ export default function EmailMarketing() {
   };
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
+    <Box>
       <MainCard
         content={false}
         sx={{

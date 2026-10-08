@@ -21,7 +21,7 @@ export default function FlowsPage() {
   const selected = projects.find((p) => p.id === projectId) || null;
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
+    <Box>
       <MainCard content={false} sx={{ borderRadius: 3, p: { xs: 2, md: 3 } }}>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }} justifyContent="space-between" sx={{ mb: 2 }}>
           <Box>

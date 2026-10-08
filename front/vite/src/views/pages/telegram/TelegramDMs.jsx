@@ -579,17 +579,20 @@ export default function TelegramDMs() {
         const calc = () => {
             const el = shellRef.current;
             if (!el) return;
-            const top = el.getBoundingClientRect().top;
-            setShellH(Math.max(420, Math.round(window.innerHeight - top - 74)));
+            const top = el.getBoundingClientRect().top + window.scrollY;
+            setShellH(Math.max(420, Math.round(window.innerHeight - top - 24)));
         };
         calc();
         const t1 = setTimeout(calc, 120);
         const t2 = setTimeout(calc, 400);
         window.addEventListener('resize', calc);
+        const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => calc()) : null;
+        ro?.observe(document.body);
         return () => {
             clearTimeout(t1);
             clearTimeout(t2);
             window.removeEventListener('resize', calc);
+            ro?.disconnect();
         };
     }, []);
 

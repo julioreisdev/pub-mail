@@ -51,11 +51,11 @@ import {
 
 import { get, post, put } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
-import { TgAvatar, TgCard, TgConfirmDialog, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
+import { TgAvatar, TgCard, TgConfirmDialog, TgEmptyState, TgFilterBar, TgListSkeleton } from 'views/pages/telegram/ui';
 import { WaNumberChip, WaPageHeader, useWaSessions } from './waKit';
 import { WA_DARK, errMsg, fmtDateTime, fmtPhone, tint } from './waShared';
 import ChargeDialog from './crm/ChargeDialog';
-import { CrmKpi, StatusChip, WaNumberFilter, chatUrl, dueText, useSessionFilter, waPrimaryBtn } from './crm/crmKit';
+import { CrmKpi, CrmModal, StatusChip, WaNumberFilter, chatUrl, dueText, useSessionFilter, useXs, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Cobranças: PIX/boleto enviados na conversa (manuais e recorrentes),
@@ -145,7 +145,7 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
     />
   );
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Configurações de cobrança"
@@ -201,7 +201,7 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
             control={<Switch size="small" checked={s.auto_recurring} onChange={(e) => set('auto_recurring', e.target.checked)} />}
             label={<Typography variant="body2">Gerar e enviar sozinho</Typography>}
           />
-          <Box sx={{ width: { sm: 220 } }}>{num('days_before_due', 'Dias antes do vencimento', 0, 30, '')}</Box>
+          <Box sx={{ width: { xs: '100%', sm: 220 } }}>{num('days_before_due', 'Dias antes do vencimento', 0, 30, '')}</Box>
           <FormControlLabel
             control={<Switch size="small" checked={s.send_qr} onChange={(e) => set('send_qr', e.target.checked)} />}
             label={<Typography variant="body2">Enviar imagem do QR Code</Typography>}
@@ -240,7 +240,7 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
                   type="number"
                   value={s.reminders[k].days}
                   onChange={(e) => setRem(k, { days: Math.max(1, parseInt(e.target.value || '1', 10) || 1) })}
-                  sx={{ width: 168, flexShrink: 0 }}
+                  sx={{ width: { xs: 132, sm: 168 }, flexShrink: 0 }}
                   inputProps={{ min: 1, style: { minWidth: 36 } }}
                   InputProps={{ endAdornment: <InputAdornment position="end">{unit}</InputAdornment> }}
                 />
@@ -268,7 +268,7 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
           />
         ))}
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -277,6 +277,7 @@ export default function WhatsAppCharges() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canAdmin = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
+  const xs = useXs();
   const { sessions } = useWaSessions(30000);
   const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
   const [q, setQ] = useState('');
@@ -395,7 +396,18 @@ export default function WhatsAppCharges() {
         subtitle="PIX e boleto enviados na conversa, com lembretes e confirmação automática."
         sx={{ mb: 2.5 }}
         action={
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+          <Stack
+            direction="row"
+            spacing={1}
+            flexWrap="wrap"
+            useFlexGap
+            justifyContent={{ xs: 'flex-start', md: 'flex-end' }}
+            sx={{
+              width: { xs: '100%', md: 'auto' },
+              '& .MuiButton-root': { minHeight: 40, width: { xs: '100%', md: 'auto' } },
+              '& > *': { flex: { xs: '1 1 45%', md: '0 0 auto' } }
+            }}
+          >
             {canAdmin ? (
               <>
                 <Tooltip title="Gera as cobranças recorrentes que vencem nos próximos dias e manda os lembretes de hoje (roda sozinho todo dia às 09:00).">
@@ -470,49 +482,51 @@ export default function WhatsAppCharges() {
             ) : null
           }}
         />
-        <TextField select size="small" label="Situação" value={status} onChange={(e) => setStatus(e.target.value)} sx={{ minWidth: 150 }}>
-          <MenuItem value="all">Todas</MenuItem>
-          <MenuItem value="PENDING">Em aberto</MenuItem>
-          <MenuItem value="OVERDUE">Em atraso</MenuItem>
-          <MenuItem value="PAID">Pagas</MenuItem>
-          <MenuItem value="EXPIRED">Expiradas</MenuItem>
-          <MenuItem value="CANCELED">Canceladas</MenuItem>
-          <MenuItem value="FAILED">Falharam</MenuItem>
-        </TextField>
-        <TextField select size="small" label="Meio" value={kind} onChange={(e) => setKind(e.target.value)} sx={{ minWidth: 130 }}>
-          <MenuItem value="all">Todos</MenuItem>
-          <MenuItem value="pix">PIX</MenuItem>
-          <MenuItem value="boleto">Boleto</MenuItem>
-          <MenuItem value="both">PIX + Boleto</MenuItem>
-        </TextField>
-        <TextField select size="small" label="Origem" value={origin} onChange={(e) => setOrigin(e.target.value)} sx={{ minWidth: 140 }}>
-          <MenuItem value="all">Todas</MenuItem>
-          <MenuItem value="manual">Manual</MenuItem>
-          <MenuItem value="recurring">Recorrente</MenuItem>
-          <MenuItem value="bot">Bot</MenuItem>
-        </TextField>
-        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
-        <TextField
-          select
-          size="small"
-          label="Por página"
-          value={pageSize}
-          onChange={(e) => setPageSize(Number(e.target.value))}
-          sx={{ minWidth: 110 }}
-        >
-          {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} value={n}>
-              {n}
-            </MenuItem>
-          ))}
-        </TextField>
-        <Box sx={{ flex: 1 }} />
+        <Box sx={{ display: { xs: 'grid', md: 'contents' }, gap: 1.25, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+          <TextField select size="small" label="Situação" value={status} onChange={(e) => setStatus(e.target.value)} sx={{ minWidth: 150 }}>
+            <MenuItem value="all">Todas</MenuItem>
+            <MenuItem value="PENDING">Em aberto</MenuItem>
+            <MenuItem value="OVERDUE">Em atraso</MenuItem>
+            <MenuItem value="PAID">Pagas</MenuItem>
+            <MenuItem value="EXPIRED">Expiradas</MenuItem>
+            <MenuItem value="CANCELED">Canceladas</MenuItem>
+            <MenuItem value="FAILED">Falharam</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Meio" value={kind} onChange={(e) => setKind(e.target.value)} sx={{ minWidth: 130 }}>
+            <MenuItem value="all">Todos</MenuItem>
+            <MenuItem value="pix">PIX</MenuItem>
+            <MenuItem value="boleto">Boleto</MenuItem>
+            <MenuItem value="both">PIX + Boleto</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Origem" value={origin} onChange={(e) => setOrigin(e.target.value)} sx={{ minWidth: 140 }}>
+            <MenuItem value="all">Todas</MenuItem>
+            <MenuItem value="manual">Manual</MenuItem>
+            <MenuItem value="recurring">Recorrente</MenuItem>
+            <MenuItem value="bot">Bot</MenuItem>
+          </TextField>
+          <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} sx={{ gridColumn: { xs: '1 / -1', md: 'auto' } }} />
+          <TextField
+            select
+            size="small"
+            label="Por página"
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            sx={{ minWidth: 110 }}
+          >
+            {PAGE_SIZES.map((n) => (
+              <MenuItem key={n} value={n}>
+                {n}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
+        <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
         <Tooltip title="Atualizar">
-          <span>
+          <Box component="span" sx={{ alignSelf: { xs: 'flex-end', md: 'center' } }}>
             <IconButton onClick={() => load()} disabled={loading}>
               <IconRefresh size={18} />
             </IconButton>
-          </span>
+          </Box>
         </Tooltip>
       </TgFilterBar>
 
@@ -545,146 +559,271 @@ export default function WhatsAppCharges() {
         />
       ) : (
         <TgCard hover={false} sx={{ p: 0, overflow: 'hidden' }}>
-          <TableContainer>
-            <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Cliente</TableCell>
-                  <TableCell>Descrição</TableCell>
-                  <TableCell align="right">Valor</TableCell>
-                  <TableCell>Vencimento</TableCell>
-                  <TableCell>Meio</TableCell>
-                  <TableCell>Situação</TableCell>
-                  <TableCell>Origem</TableCell>
-                  <TableCell align="right">Ações</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {items.map((c) => {
-                  const st = statusOf(c);
-                  return (
-                    <TableRow key={c.id} hover sx={{ opacity: ['CANCELED', 'EXPIRED', 'FAILED'].includes(c.status) ? 0.6 : 1 }}>
-                      <TableCell sx={{ maxWidth: 260 }}>
-                        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
-                          <TgAvatar name={c.customer?.name} size={34} kind="contact" />
-                          <Box sx={{ minWidth: 0 }}>
-                            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
-                              {c.customer?.name || '—'}
-                            </Typography>
-                            <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
-                              <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                                {fmtPhone(c.customer?.phone)}
-                              </Typography>
-                              {multi && c.session ? <WaNumberChip session={c.session} /> : null}
-                            </Stack>
-                          </Box>
+          {xs ? (
+            <Box>
+              {items.map((c) => {
+                const st = statusOf(c);
+                return (
+                  <Box
+                    key={c.id}
+                    sx={{
+                      p: 1.5,
+                      borderBottom: '1px solid',
+                      borderColor: 'divider',
+                      opacity: ['CANCELED', 'EXPIRED', 'FAILED'].includes(c.status) ? 0.6 : 1
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                      <TgAvatar name={c.customer?.name} size={40} kind="contact" />
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="space-between">
+                          <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
+                            {c.customer?.name || '—'}
+                          </Typography>
+                          <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 800, flexShrink: 0 }}>
+                            {c.amount_label}
+                          </Typography>
                         </Stack>
-                      </TableCell>
-                      <TableCell sx={{ maxWidth: 240 }}>
-                        <Typography variant="body2" noWrap title={c.description}>
+                        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                            {fmtPhone(c.customer?.phone)}
+                          </Typography>
+                          {multi && c.session ? <WaNumberChip session={c.session} /> : null}
+                        </Stack>
+                        <Typography variant="body2" sx={{ mt: 0.5, overflowWrap: 'anywhere' }}>
                           {c.description}
                         </Typography>
                         {c.error ? (
-                          <Typography variant="caption" sx={{ color: 'error.main' }} noWrap display="block" title={c.error}>
+                          <Typography variant="caption" sx={{ color: 'error.main', display: 'block', overflowWrap: 'anywhere' }}>
                             {c.error}
                           </Typography>
                         ) : null}
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
-                        {c.amount_label}
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          {c.due_label}
-                        </Typography>
-                        {c.status === 'PENDING' ? (
-                          <Typography variant="caption" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'text.secondary' }}>
-                            {dueText(c.days_to_due)}
-                          </Typography>
-                        ) : c.status === 'PAID' && c.paid_at ? (
-                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                            pago {fmtDateTime(c.paid_at)}
-                            {c.paid_via ? ` · ${c.paid_via === 'manual' ? 'manual' : c.paid_via.toUpperCase()}` : ''}
-                          </Typography>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>
-                        <Stack direction="row" spacing={0.5}>
+                        <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+                          <StatusChip map={STATUS} status={st} size="md" />
                           {c.pix ? (
-                            <Tooltip title="Copiar PIX copia e cola">
-                              <Chip
-                                size="small"
-                                icon={<IconQrcode size={13} />}
-                                label="PIX"
-                                onClick={() => copy(c.pix.code, 'Código PIX copiado.')}
-                                sx={{
-                                  height: 22,
-                                  fontWeight: 700,
-                                  borderRadius: 1.5,
-                                  bgcolor: (t) => tint(t, 'success', 0.12),
-                                  color: WA_DARK,
-                                  '& .MuiChip-icon': { color: WA_DARK }
-                                }}
-                              />
-                            </Tooltip>
+                            <Chip
+                              size="small"
+                              icon={<IconQrcode size={13} />}
+                              label="PIX"
+                              onClick={() => copy(c.pix.code, 'Código PIX copiado.')}
+                              sx={{
+                                height: 24,
+                                fontWeight: 700,
+                                borderRadius: 1.5,
+                                bgcolor: (t) => tint(t, 'success', 0.12),
+                                color: WA_DARK,
+                                '& .MuiChip-icon': { color: WA_DARK }
+                              }}
+                            />
                           ) : null}
                           {c.boleto ? (
-                            <Tooltip title={c.boleto.url ? 'Abrir boleto' : 'Copiar linha digitável'}>
-                              <Chip
-                                size="small"
-                                icon={<IconBarcode size={13} />}
-                                label="Boleto"
-                                onClick={() =>
-                                  c.boleto.url
-                                    ? window.open(c.boleto.url, '_blank', 'noopener')
-                                    : copy(c.boleto.digitable || c.boleto.barcode, 'Linha digitável copiada.')
-                                }
-                                sx={{ height: 22, fontWeight: 700, borderRadius: 1.5 }}
-                              />
-                            </Tooltip>
+                            <Chip
+                              size="small"
+                              icon={<IconBarcode size={13} />}
+                              label="Boleto"
+                              onClick={() =>
+                                c.boleto.url
+                                  ? window.open(c.boleto.url, '_blank', 'noopener')
+                                  : copy(c.boleto.digitable || c.boleto.barcode, 'Linha digitável copiada.')
+                              }
+                              sx={{ height: 24, fontWeight: 700, borderRadius: 1.5 }}
+                            />
                           ) : null}
                           {!c.pix && !c.boleto ? (
-                            <Chip size="small" label={KIND[c.kind] || c.kind} sx={{ height: 22, borderRadius: 1.5 }} />
+                            <Chip size="small" label={KIND[c.kind] || c.kind} sx={{ height: 24, borderRadius: 1.5 }} />
                           ) : null}
+                          <Chip
+                            size="small"
+                            variant="outlined"
+                            label={ORIGIN[c.origin] || c.origin}
+                            sx={{ height: 24, borderRadius: 1.5 }}
+                          />
                         </Stack>
-                      </TableCell>
-                      <TableCell>
-                        <StatusChip map={STATUS} status={st} size="md" />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                          {ORIGIN[c.origin] || c.origin}
+                        <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'text.secondary' }}>
+                          Vence <b>{c.due_label}</b>
+                          {c.status === 'PENDING' ? (
+                            <Box component="span" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'inherit' }}>
+                              {' '}
+                              · {dueText(c.days_to_due)}
+                            </Box>
+                          ) : c.status === 'PAID' && c.paid_at ? (
+                            <>
+                              {' '}
+                              · pago {fmtDateTime(c.paid_at)}
+                              {c.paid_via ? ` · ${c.paid_via === 'manual' ? 'manual' : c.paid_via.toUpperCase()}` : ''}
+                            </>
+                          ) : null}
                         </Typography>
-                      </TableCell>
-                      <TableCell align="right">
-                        <Tooltip title={c.chat_id ? 'Abrir conversa' : 'Sem conversa aberta neste número'}>
-                          <span>
-                            <IconButton size="small" onClick={() => openChat(c)} disabled={!c.chat_id}>
-                              <IconMessage size={17} />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <IconButton size="small" onClick={(e) => setMenu({ anchor: e.currentTarget, charge: c })} disabled={rowBusy[c.id]}>
-                          {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconDotsVertical size={17} />}
+                      </Box>
+                      <Stack spacing={0.25} sx={{ flexShrink: 0, mr: -0.5, mt: -0.5 }}>
+                        <IconButton onClick={() => openChat(c)} disabled={!c.chat_id} aria-label="Abrir conversa">
+                          <IconMessage size={19} />
                         </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                        <IconButton
+                          onClick={(e) => setMenu({ anchor: e.currentTarget, charge: c })}
+                          disabled={rowBusy[c.id]}
+                          aria-label="Mais ações"
+                        >
+                          {rowBusy[c.id] ? <CircularProgress size={16} /> : <IconDotsVertical size={19} />}
+                        </IconButton>
+                      </Stack>
+                    </Stack>
+                  </Box>
+                );
+              })}
+            </Box>
+          ) : (
+            <TableContainer>
+              <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Cliente</TableCell>
+                    <TableCell>Descrição</TableCell>
+                    <TableCell align="right">Valor</TableCell>
+                    <TableCell>Vencimento</TableCell>
+                    <TableCell>Meio</TableCell>
+                    <TableCell>Situação</TableCell>
+                    <TableCell>Origem</TableCell>
+                    <TableCell align="right">Ações</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {items.map((c) => {
+                    const st = statusOf(c);
+                    return (
+                      <TableRow key={c.id} hover sx={{ opacity: ['CANCELED', 'EXPIRED', 'FAILED'].includes(c.status) ? 0.6 : 1 }}>
+                        <TableCell sx={{ maxWidth: 260 }}>
+                          <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+                            <TgAvatar name={c.customer?.name} size={34} kind="contact" />
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                                {c.customer?.name || '—'}
+                              </Typography>
+                              <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                                <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                                  {fmtPhone(c.customer?.phone)}
+                                </Typography>
+                                {multi && c.session ? <WaNumberChip session={c.session} /> : null}
+                              </Stack>
+                            </Box>
+                          </Stack>
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 240 }}>
+                          <Typography variant="body2" noWrap title={c.description}>
+                            {c.description}
+                          </Typography>
+                          {c.error ? (
+                            <Typography variant="caption" sx={{ color: 'error.main' }} noWrap display="block" title={c.error}>
+                              {c.error}
+                            </Typography>
+                          ) : null}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+                          {c.amount_label}
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {c.due_label}
+                          </Typography>
+                          {c.status === 'PENDING' ? (
+                            <Typography variant="caption" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'text.secondary' }}>
+                              {dueText(c.days_to_due)}
+                            </Typography>
+                          ) : c.status === 'PAID' && c.paid_at ? (
+                            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                              pago {fmtDateTime(c.paid_at)}
+                              {c.paid_via ? ` · ${c.paid_via === 'manual' ? 'manual' : c.paid_via.toUpperCase()}` : ''}
+                            </Typography>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5}>
+                            {c.pix ? (
+                              <Tooltip title="Copiar PIX copia e cola">
+                                <Chip
+                                  size="small"
+                                  icon={<IconQrcode size={13} />}
+                                  label="PIX"
+                                  onClick={() => copy(c.pix.code, 'Código PIX copiado.')}
+                                  sx={{
+                                    height: 22,
+                                    fontWeight: 700,
+                                    borderRadius: 1.5,
+                                    bgcolor: (t) => tint(t, 'success', 0.12),
+                                    color: WA_DARK,
+                                    '& .MuiChip-icon': { color: WA_DARK }
+                                  }}
+                                />
+                              </Tooltip>
+                            ) : null}
+                            {c.boleto ? (
+                              <Tooltip title={c.boleto.url ? 'Abrir boleto' : 'Copiar linha digitável'}>
+                                <Chip
+                                  size="small"
+                                  icon={<IconBarcode size={13} />}
+                                  label="Boleto"
+                                  onClick={() =>
+                                    c.boleto.url
+                                      ? window.open(c.boleto.url, '_blank', 'noopener')
+                                      : copy(c.boleto.digitable || c.boleto.barcode, 'Linha digitável copiada.')
+                                  }
+                                  sx={{ height: 22, fontWeight: 700, borderRadius: 1.5 }}
+                                />
+                              </Tooltip>
+                            ) : null}
+                            {!c.pix && !c.boleto ? (
+                              <Chip size="small" label={KIND[c.kind] || c.kind} sx={{ height: 22, borderRadius: 1.5 }} />
+                            ) : null}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>
+                          <StatusChip map={STATUS} status={st} size="md" />
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                            {ORIGIN[c.origin] || c.origin}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Tooltip title={c.chat_id ? 'Abrir conversa' : 'Sem conversa aberta neste número'}>
+                            <span>
+                              <IconButton size="small" onClick={() => openChat(c)} disabled={!c.chat_id}>
+                                <IconMessage size={17} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <IconButton
+                            size="small"
+                            onClick={(e) => setMenu({ anchor: e.currentTarget, charge: c })}
+                            disabled={rowBusy[c.id]}
+                          >
+                            {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconDotsVertical size={17} />}
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
           <Stack
             direction={{ xs: 'column', sm: 'row' }}
             spacing={1}
-            alignItems={{ sm: 'center' }}
+            alignItems="center"
             justifyContent="space-between"
-            sx={{ px: 2, py: 1.25, borderTop: '1px solid', borderColor: 'divider' }}
+            sx={{ px: 2, py: 1.25, borderTop: { sm: '1px solid' }, borderColor: 'divider' }}
           >
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               Mostrando {from}–{to} de {total.toLocaleString('pt-BR')}
             </Typography>
-            <Pagination size="small" count={data.pages} page={data.page} onChange={(_, p) => setPage(p)} />
+            <Pagination
+              size={xs ? 'medium' : 'small'}
+              count={data.pages}
+              page={data.page}
+              onChange={(_, p) => setPage(p)}
+              siblingCount={xs ? 0 : 1}
+            />
           </Stack>
         </TgCard>
       )}

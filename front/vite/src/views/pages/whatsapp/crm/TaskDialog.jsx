@@ -11,10 +11,10 @@ import { IconCheck, IconTrash } from '@tabler/icons-react';
 
 import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
-import { TgConfirmDialog, TgModal } from 'views/pages/telegram/ui';
+import { TgConfirmDialog } from 'views/pages/telegram/ui';
 import { WaNumberChip, brtLocalNow, brtLocalToIso, isoToBrtLocal } from '../waKit';
 import { errMsg } from '../waShared';
-import { waPrimaryBtn } from './crmKit';
+import { CrmModal, waPrimaryBtn } from './crmKit';
 
 // ============================================================================
 // Criar/editar tarefa (usada na página Tarefas e no painel da conversa).
@@ -98,13 +98,13 @@ export default function TaskDialog({ open, onClose, task, chat, customerId, onSa
 
   return (
     <>
-      <TgModal
+      <CrmModal
         open={open}
         onClose={() => !busy && onClose?.()}
         title={task ? 'Editar tarefa' : 'Nova tarefa'}
         subtitle={
           chat || task?.chat ? (
-            <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex' }}>
+            <Stack direction="row" spacing={0.75} alignItems="center" component="span" sx={{ display: 'inline-flex', flexWrap: 'wrap' }}>
               <span>Conversa: {chat ? chat.name || chat.phone || 'sem nome' : task.chat.name || task.chat.phone || 'sem nome'}</span>
               {(chat || task.chat)?.session ? <WaNumberChip session={(chat || task.chat).session} /> : null}
             </Stack>
@@ -202,7 +202,7 @@ export default function TaskDialog({ open, onClose, task, chat, customerId, onSa
                 size="small"
                 variant="outlined"
                 onClick={() => set('due_local', quickValue(v))}
-                sx={{ textTransform: 'none', borderRadius: 2, py: 0, minHeight: 26 }}
+                sx={{ textTransform: 'none', borderRadius: 2, py: 0, minHeight: { xs: 36, sm: 26 } }}
               >
                 {label}
               </Button>
@@ -212,14 +212,14 @@ export default function TaskDialog({ open, onClose, task, chat, customerId, onSa
                 size="small"
                 color="inherit"
                 onClick={() => set('due_local', '')}
-                sx={{ textTransform: 'none', py: 0, minHeight: 26 }}
+                sx={{ textTransform: 'none', py: 0, minHeight: { xs: 36, sm: 26 } }}
               >
                 sem prazo
               </Button>
             ) : null}
           </Stack>
         </Stack>
-      </TgModal>
+      </CrmModal>
       <TgConfirmDialog
         open={confirmDel}
         onClose={() => setConfirmDel(false)}

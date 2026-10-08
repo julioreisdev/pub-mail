@@ -98,6 +98,7 @@ Per-organization module (1 number) on top of the open-source **OpenWA** gateway 
 - **Schedules**: one-off message to contacts/groups at a date and time; disappears from the list once sent.
 - **Broadcasts**: audience by contacts/tags/groups, rotating copies, daily times, per-organization warm-up, per-run history.
 - **Multiple numbers per organization** (Oct 6, 2026): each company connects as many numbers as it wants, each with its own **internal name, color and bot flow** (tabs in Settings + "New number"). **Chat** shows every number together or filtered, with the number chip on each conversation; **Status** and **Schedules** can target 1+ numbers (every number sends to all targets, or targets split between numbers); **Broadcasts** split the audience across the chosen numbers (a contact with an existing conversation goes through that number) with **anti-block pacing** presets (fast/normal/safe/very safe/custom: interval, jitter, pauses, daily limit, time window) and per-number warm-up; Contacts, Pipeline, Tasks, Customers, Charges and Metrics filter/identify by number; in **Admin → Users** the admin picks **which numbers** each user can access (owners/admins see all). Plan: `docs/plano-whatsapp-multinumero.md`.
+- **Multi-number broadcast** (Oct 6, 2026): with two or more numbers selected, choose **Use together** (contacts are pooled and split evenly — a number with 1,000 contacts and another with 100 send 550 each) or **Each number sends to its own contacts** (each contact receives from the number whose address book or conversation it came from). The estimate shows the per-number split before firing.
 - **Team chat** (Oct 6, 2026): inside Chat, the **Team** filter opens internal communication between the organization's users — direct messages and **groups** (create, add/remove members, admin), with text, image, video, audio and files, quoted replies, edit/delete and real time; independent of the connected numbers; clicking any number chip returns to WhatsApp. Media previews use icons (no emojis).
 - **Customer-service CRM** (Oct 2, 2026): **Products** (price, one-off/monthly/quarterly/yearly billing) and **Customers** (promoted contact, tax id, e-mail, address, custom fields, subscriptions with due dates, CSV import/export) with a side panel in the chat and `{{cliente.*}}` variables in any message; **Charges** by PIX and/or boleto (Mercado Pago) sent in the conversation, automatic recurring charges before the due date, reminder cadence, automatic confirmation, receipt and an "Overdue" label; Kanban **pipeline** (stages with actions: message, labels, task; auto-entry and "paid → stage"), **Tasks** with due alerts and **internal notes**; **Metrics** (first response, resolution, per agent/label, satisfaction, charges), **satisfaction survey** on close, **automatic queue distribution** (round robin / least busy among online agents) and **LGPD/GDPR opt-out** (a stop word removes the contact from bulk sends). Plan: `docs/plano-whatsapp-crm.md`; customer guide (PT): `WhatsApp - CRM e Cobranças.pdf`.
 Bans are a real risk with any unofficial client: dedicated number + warm-up. Plans: `docs/plano-modulo-whatsapp.md` and `docs/plano-whatsapp-v2.md`.
@@ -182,35 +183,40 @@ pub-mail/
 ├── front/vite/                # React SPA
 │   └── src/views/pages/       # webchat, quiz, email, leads, telegram, admin…
 ├── docs/images/               # images used in this README
-├── docker-compose.yml         # MySQL + Redis + phpMyAdmin for local dev
+├── docker-compose.yml         # local dev: MySQL + Redis (+ "app" profile with the whole system)
+├── Rodar-Local.md             # how to run it on your machine
 └── CLAUDE.md                  # detailed operational notes (deploy, gotchas, history)
 ```
 
 ## Running locally
 
-### Prerequisites
+> **Full guide, tested from scratch (Portuguese): [`Rodar-Local.md`](Rodar-Local.md)** — versions, both ways to run it, every local `.env` and common problems.
 
-Node 20, Yarn 4 (corepack), Docker (for MySQL/Redis), `ffmpeg` (Telegram audio) and `libvips` (sharp) — both optional in dev.
+### Versions
 
-### Setup
+**Node 22 LTS** (production: 22.23.3; Node 20 does not work with Prisma 7) and **Yarn 4.10.3** through Corepack (`corepack enable`). npm (10.9.x, bundled with Node) is **not** used to install: the old `package-lock.json` files are stale, `yarn.lock` is the source of truth. There is an `.nvmrc` at the root (`nvm use`).
+
+### Everything in Docker (one command)
 
 ```bash
-# 1. Infra dependencies
-docker compose up -d            # MySQL :3306, Redis :6379, phpMyAdmin :8081
+docker compose --profile app up -d --build   # MySQL, Redis, back :8000, micros, front :3000
+# login: admin@pubmail.local / admin12345 (created on first start)
+```
 
-# 2. Back
-cd back && yarn install
+### Node on your machine (for development)
+
+```bash
+docker compose up -d                          # only MySQL :3306 and Redis :6379
+
+cd back && yarn install                       # create back/.env (see Rodar-Local.md)
 yarn prisma migrate deploy && yarn prisma generate
-yarn start:dev                  # :8000
+SEED_ADMIN_EMAIL=admin@pubmail.local SEED_ADMIN_PASSWORD=admin12345 \
+  node scripts/seed-platform.mjs | docker exec -i pub-mail-mysql mysql -upubmail -ppubmail pubmail
+yarn start:dev                                # :8000
 
-# 3. AI micro (another terminal)
-cd ai-micro-services && yarn install && yarn dev   # :4000
-
-# 4. Email micro (another terminal)
-cd email-micro-services && yarn install && yarn dev   # :9999
-
-# 5. Front (another terminal)
-cd front/vite && yarn install && yarn dev   # :3000
+cd ai-micro-services && yarn install && yarn dev       # :4000
+cd email-micro-services && yarn install && yarn start  # :9999
+cd front/vite && yarn install && yarn start            # :3000
 ```
 
 > Webhooks (Telegram, Resend, gateways) need a public URL — in dev use a tunnel (e.g. `ngrok http 8000`) and point `PUBLIC_API_URL` at it.

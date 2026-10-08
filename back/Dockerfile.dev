@@ -1,0 +1,30 @@
+# Imagem de DESENVOLVIMENTO do back (NestJS). Não é a de produção (produção roda com systemd, ver Deploy.md).
+# Build a partir da RAIZ do repositório: docker compose --profile app up --build
+FROM node:22-bookworm-slim
+
+# openssl: motor de migração do Prisma | ffmpeg: áudio/vídeo (WhatsApp, Telegram, posts)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ffmpeg ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Yarn 4 vem pelo Corepack (versão fixada no "packageManager" do package.json)
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+
+WORKDIR /app/back
+COPY back/package.json back/yarn.lock back/.yarnrc.yml ./
+RUN yarn install --immutable
+
+COPY back/ ./
+# o código do plugin WordPress é servido pelo back (download do Tradutor Invisível)
+COPY wordpress/tradutor-invisivel /app/wordpress/tradutor-invisivel
+
+# o Prisma só precisa de uma URL qualquer para gerar o client
+RUN DATABASE_URL="mysql://build:build@localhost:3306/build" yarn prisma generate \
+  && yarn nest build \
+  && test -f dist/src/main.js
+
+ENV NODE_ENV=development TZ=UTC
+EXPOSE 8000
+# aplica as migrations, cria o super admin na 1ª vez e sobe a API
+CMD ["node", "scripts/docker-dev-start.mjs"]

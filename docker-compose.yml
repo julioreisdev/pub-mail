@@ -1,56 +1,67 @@
+# =============================================================================
+# Pub Mail — ambiente de DESENVOLVIMENTO local (não é o de produção; ver Deploy.md).
+# Guia completo: Rodar-Local.md
+#
+#   docker compose up -d                       -> só MySQL + Redis (você roda back/front com Node)
+#   docker compose --profile app up -d --build -> sistema todo (MySQL, Redis, back, micros, front)
+#   docker compose --profile tools up -d       -> + phpMyAdmin em http://localhost:8081
+#
+# Qualquer valor abaixo no formato ${VAR:-padrão} pode ser trocado num arquivo ".env"
+# na raiz do repositório (ele é ignorado pelo git). Os segredos daqui são SÓ para uso local.
+# =============================================================================
+x-node-env: &node-env
+  TZ: UTC
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+
 services:
   mysql:
     image: mysql:8.0
     container_name: pub-mail-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: mysqlpass
-      MYSQL_DATABASE: pub-mail
-      TZ: America/Sao_Paulo
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mysqlpass}
+      MYSQL_DATABASE: pubmail
+      MYSQL_USER: pubmail
+      MYSQL_PASSWORD: ${DB_PASS:-pubmail}
+      TZ: UTC
     ports:
-      - "3306:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
+    # Igual à produção: banco em utf8mb4_unicode_ci (sem isso as FKs das migrations falham com
+    # erro 3780) e relógio em UTC (o código converte para o horário de Brasília quando precisa).
     command:
-      [
-        "--default-authentication-plugin=mysql_native_password",
-        "--default-time-zone=-03:00",
-      ]
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+      - --default-authentication-plugin=mysql_native_password
+      - --max-connections=200
     healthcheck:
-      test:
-        [
-          "CMD",
-          "mysqladmin",
-          "ping",
-          "-h",
-          "127.0.0.1",
-          "-uroot",
-          "-pmysqlpass",
-        ]
-      interval: 10s
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-mysqlpass}"]
+      interval: 5s
       timeout: 5s
-      retries: 15
+      retries: 30
 
   redis:
     image: redis:7-alpine
     container_name: pub-mail-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 15
+      retries: 30
 
   phpmyadmin:
     image: phpmyadmin:5-apache
     container_name: pub-mail-phpmyadmin
+    profiles: ["tools"]
     restart: unless-stopped
     environment:
       PMA_HOST: mysql
@@ -62,6 +73,120 @@ services:
       mysql:
         condition: service_healthy
 
+  # ---------------------------------------------------------------- perfil "app"
+  back:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: back/Dockerfile.dev
+    container_name: pub-mail-back
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - back_uploads:/app/back/uploads
+      - back_protected:/app/back/protected
+    environment:
+      <<: *node-env
+      PORT: "8000"
+      DATABASE_HOST: mysql
+      DATABASE_PORT: "3306"
+      DATABASE_USER: pubmail
+      DATABASE_PASS: ${DB_PASS:-pubmail}
+      DATABASE_NAME: pubmail
+      DATABASE_URL: mysql://pubmail:${DB_PASS:-pubmail}@mysql:3306/pubmail
+      DATABASE_POOL_LIMIT: "10"
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-local-access-secret-nao-usar-em-producao}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-local-refresh-secret-nao-usar-em-producao}
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      IA_SERVICE_URL: http://ai:4000
+      IA_SERVICE_KEY: ${IA_SERVICE_KEY:-dev-ia-key}
+      EMAIL_SERVICE_URL: http://email:9999
+      EMAIL_SERVICE_KEY: ${EMAIL_SERVICE_KEY:-dev-email-key}
+      PUBLIC_API_URL: http://localhost:8000
+      BASE_API_URL: http://localhost:8000
+      APP_PUBLIC_URL: http://localhost:3000
+      WEBCHAT_BACKEND_INTERNAL_URL: http://127.0.0.1:8000
+      # local não emite certificado nem mexe em nginx
+      WEBCHAT_DOMAIN_BIND_PROVIDER: NONE
+      STRIPE_SECRET_KEY: sk_test_disabled_placeholder
+      SWAGGER_ENABLED: "true"
+      HTTP_BODY_LIMIT: 200mb
+      EMAIL_TOKENS_FOR_ONE_LEAD: "0"
+      EMAIL_TOKENS_FOR_ONE_TEMPLATE: "0"
+      WEBCHAT_TOKENS_PER_MESSAGE: "0"
+      SOCIAL_POST_SCHEDULE_TOKENS_COST: "0"
+      AVATAR_GENERATION_TOKENS_COST: "0"
+      WP_PLUGIN_SIGNING_KEY: ${WP_PLUGIN_SIGNING_KEY:-}
+      # WhatsApp fica desligado no ambiente local (precisa do gateway OpenWA; ver Deploy.md §22)
+      OPENWA_BAILEYS_URL: ${OPENWA_BAILEYS_URL:-}
+      OPENWA_BAILEYS_API_KEY: ${OPENWA_BAILEYS_API_KEY:-}
+      OPENWA_URL: ""
+      WHATSAPP_DEFAULT_ENGINE: baileys
+      # usuário criado na 1ª subida (organização oculta "SuperAdmin")
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-admin@pubmail.local}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin12345}
+
+  ai:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: ai-micro-services/Dockerfile.dev
+    container_name: pub-mail-ai
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *node-env
+      PORT: "4000"
+      IA_SERVICE_KEY: ${IA_SERVICE_KEY:-dev-ia-key}
+      OPENROUTER_REFERER: http://localhost:3000
+
+  email:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: email-micro-services/Dockerfile.dev
+    container_name: pub-mail-email
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *node-env
+      PORT: "9999"
+      EMAIL_SERVICE_KEY: ${EMAIL_SERVICE_KEY:-dev-email-key}
+      BASE_URL_API: http://localhost:8000
+      NEST_WEBHOOK_URL: http://back:8000/webhooks/email
+      TRACKING_SIGN_SECRET: ${JWT_ACCESS_SECRET:-dev-local-access-secret-nao-usar-em-producao}
+
+  front:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: front/vite/Dockerfile.dev
+    container_name: pub-mail-front
+    restart: unless-stopped
+    depends_on:
+      - back
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TZ: UTC
+      VITE_APP_BASE_NAME: /
+      VITE_API_URL: http://localhost:8000
+      VITE_APP_VERSION: 1.0.0-dev
+      VITE_STRIPE_ENABLED: "false"
+
 volumes:
   mysql_data:
   redis_data:
+  back_uploads:
+  back_protected:

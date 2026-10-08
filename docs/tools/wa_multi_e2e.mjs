@@ -84,7 +84,8 @@ try {
   ok('chat_id público é uuid e jid é o id do WhatsApp', /^[0-9a-f-]{36}$/.test(chatA1?.chat_id || '') && chatA1?.jid === `${PHONE1}@c.us`, chatA1);
   ok('mesmo contato em 2 números = 2 conversas distintas', chatA1?.chat_id !== chatB1?.chat_id);
   r = await call(ownerTok, 'GET', `/whatsapp/chats?session_id=${A}`); ok('filtro por número A → 1 conversa', r.s === 200 && r.j.items.length === 1 && r.j.items[0].session_id === A, r.j?.items?.length);
-  r = await call(ownerTok, 'GET', '/whatsapp/chats/counts'); ok('contagens com by_session (não lidas por número)', r.s === 200 && r.j.by_session && Number(r.j.by_session[A]) === 2 && Number(r.j.by_session[B]) === 2, r.j);
+  r = await call(ownerTok, 'GET', '/whatsapp/chats/counts'); // by_session = nº de CONVERSAS com não lidas por número (mesma régua do chip "Não lidos"): A tem 1 conversa, B tem 2
+  ok('contagens com by_session (conversas com não lidas por número)', r.s === 200 && r.j.by_session && Number(r.j.by_session[A]) === 1 && Number(r.j.by_session[B]) === 2, r.j);
   r = await call(ownerTok, 'GET', `/whatsapp/chats/counts?session_id=${B}`); ok('contagens filtradas pelo número B', r.s === 200 && r.j.all === 2, r.j);
   r = await call(ownerTok, 'GET', `/whatsapp/chats/${chatA1.chat_id}/messages`); ok('mensagens da conversa A (2) com session_id', r.s === 200 && r.j.items.length === 2 && r.j.items.every((m) => m.session_id === A && m.chat_id === chatA1.chat_id), r.j?.items?.length);
   r = await call(ownerTok, 'GET', '/whatsapp/contacts'); const cont = (r.j?.items || []).find((c) => c.phone === PHONE1);

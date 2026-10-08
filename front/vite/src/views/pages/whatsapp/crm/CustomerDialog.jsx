@@ -17,10 +17,11 @@ import Typography from '@mui/material/Typography';
 import { IconCheck, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
 
 import { post, put, remove } from 'api/api';
-import { TgConfirmDialog, TgModal } from 'views/pages/telegram/ui';
+import { TgConfirmDialog } from 'views/pages/telegram/ui';
 import { errMsg, fmtPhone, onlyDigits } from '../waShared';
 import {
   BILLING_OPTIONS,
+  CrmModal,
   MoneyField,
   StatusChip,
   SUB_STATUS,
@@ -213,8 +214,8 @@ function SubscriptionForm({ initial, products, onCancel, onSave, busy }) {
             fullWidth
           />
         </Stack>
-        <Stack direction="row" spacing={1} justifyContent="flex-end">
-          <Button size="small" color="inherit" onClick={onCancel} disabled={busy} sx={{ textTransform: 'none' }}>
+        <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+          <Button size="small" color="inherit" onClick={onCancel} disabled={busy} sx={{ textTransform: 'none', minHeight: 36 }}>
             Cancelar
           </Button>
           <Button
@@ -224,7 +225,7 @@ function SubscriptionForm({ initial, products, onCancel, onSave, busy }) {
             onClick={save}
             disabled={busy}
             startIcon={busy ? <CircularProgress size={13} color="inherit" /> : <IconCheck size={15} />}
-            sx={waPrimaryBtn}
+            sx={{ ...waPrimaryBtn, minHeight: 36, flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
           >
             {initial ? 'Salvar assinatura' : 'Adicionar assinatura'}
           </Button>
@@ -249,7 +250,7 @@ function SubscriptionRow({ s, onEdit, onRemove }) {
           </Typography>
           <StatusChip map={SUB_STATUS} status={s.status} />
         </Stack>
-        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.3 }} display="block">
           {s.price_label}
           {billingShort(s.billing)}
           {s.next_due_label ? ` · ${s.next_due_label} (${dueText(s.days_to_due)})` : ''}
@@ -257,12 +258,12 @@ function SubscriptionRow({ s, onEdit, onRemove }) {
         </Typography>
       </Box>
       <Tooltip title="Editar">
-        <IconButton size="small" onClick={onEdit}>
+        <IconButton size="small" onClick={onEdit} sx={{ p: 1 }}>
           <IconPencil size={16} />
         </IconButton>
       </Tooltip>
       <Tooltip title="Excluir">
-        <IconButton size="small" onClick={onRemove}>
+        <IconButton size="small" onClick={onRemove} sx={{ p: 1 }}>
           <IconTrash size={16} />
         </IconButton>
       </Tooltip>
@@ -405,7 +406,7 @@ export default function CustomerDialog({ open, onClose, customer, contact, produ
 
   return (
     <>
-      <TgModal
+      <CrmModal
         open={open}
         onClose={() => !busy && onClose?.()}
         title={cur?.id ? cur.name : 'Novo cliente'}
@@ -692,7 +693,7 @@ export default function CustomerDialog({ open, onClose, customer, contact, produ
             />
           </Stack>
         ) : null}
-      </TgModal>
+      </CrmModal>
 
       <TgConfirmDialog
         open={Boolean(confirm)}

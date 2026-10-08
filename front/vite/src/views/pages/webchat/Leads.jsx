@@ -509,7 +509,7 @@ export default function Leads({ lockedOrigin = null, embedded = false }) {
     };
 
     return (
-        <Box sx={{ p: embedded ? 0 : { xs: 2, md: 3 } }}>
+        <Box>
             <MainCard
                 content={false}
                 sx={{

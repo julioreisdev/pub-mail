@@ -215,7 +215,7 @@ export default function Dashboard() {
   const gridCols = Math.min(4, Math.max(1, cards.length + (showAccessCard ? 1 : 0)));
 
   return (
-    <Box sx={{ p: { xs: 0.5, md: 1 } }}>
+    <Box>
       <Box sx={{ mb: 3 }}>
         <Typography sx={{ fontWeight: 700, fontSize: { xs: 24, md: 30 }, letterSpacing: '-0.02em', color: 'text.primary' }}>
           Olá{firstName ? `, ${firstName}` : ''}! 👋

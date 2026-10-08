@@ -126,6 +126,8 @@ export class WhatsAppDataService {
           n.payments = (await tx.whatsapp_payments.deleteMany({ where: { ...where, status: { not: 'PAID' } } })).count;
           n.schedules = (await tx.whatsapp_schedules.deleteMany({ where })).count;
           n.broadcast_sends = (await tx.whatsapp_broadcast_sends.deleteMany({ where })).count;
+          // o número deixa de "conhecer" os contatos (os contatos em si são da organização)
+          await tx.whatsapp_contact_sessions.deleteMany({ where });
           n.session_events = (await tx.whatsapp_session_events.deleteMany({ where: { session_id: { in: sessionIds } } })).count;
           n.media = (await tx.whatsapp_media.deleteMany({ where: mediaWhere })).count;
           if (!opts.sessionId) {

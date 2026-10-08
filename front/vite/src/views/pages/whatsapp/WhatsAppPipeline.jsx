@@ -39,11 +39,11 @@ import {
 import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { useRealtimeEvent } from 'realtime/useRealtime';
-import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
+import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'views/pages/telegram/ui';
 import WaChatPicker from './WaChatPicker';
 import { WaNumberChip, WaPageHeader, useNow, useWaSessions } from './waKit';
 import { errMsg, fmtAgo, fmtPhone, tint } from './waShared';
-import { CrmKpi, MoneyField, WaNumberFilter, chatUrl, formatBRL, useSessionFilter, waPrimaryBtn } from './crm/crmKit';
+import { CrmKpi, CrmModal, MoneyField, WaNumberFilter, chatUrl, formatBRL, useSessionFilter, useXs, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
 // WhatsApp → Funil (Kanban): colunas = etapas (por org), cards = conversas.
@@ -112,7 +112,7 @@ function StageDialog({ open, onClose, stage, tags, onSaved }) {
     return undefined;
   };
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title={stage ? 'Editar etapa' : 'Nova etapa'}
@@ -147,13 +147,20 @@ function StageDialog({ open, onClose, stage, tags, onSaved }) {
             fullWidth
             autoFocus
           />
-          <TextField select size="small" label="Tipo" value={f.kind} onChange={(e) => set('kind', e.target.value)} sx={{ minWidth: 170 }}>
+          <TextField
+            select
+            size="small"
+            label="Tipo"
+            value={f.kind}
+            onChange={(e) => set('kind', e.target.value)}
+            sx={{ minWidth: { sm: 170 }, width: { xs: '100%', sm: 'auto' } }}
+          >
             <MenuItem value="open">Em andamento</MenuItem>
             <MenuItem value="won">Ganho (fechou)</MenuItem>
             <MenuItem value="lost">Perdido</MenuItem>
           </TextField>
         </Stack>
-        <Stack direction="row" spacing={0.75} alignItems="center">
+        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
           <Typography variant="caption" sx={{ color: 'text.secondary', mr: 0.5 }}>
             Cor
           </Typography>
@@ -164,8 +171,8 @@ function StageDialog({ open, onClose, stage, tags, onSaved }) {
               role="button"
               aria-label={`Cor ${c}`}
               sx={{
-                width: 22,
-                height: 22,
+                width: { xs: 30, sm: 22 },
+                height: { xs: 30, sm: 22 },
                 borderRadius: '50%',
                 bgcolor: c,
                 cursor: 'pointer',
@@ -248,13 +255,13 @@ function StageDialog({ open, onClose, stage, tags, onSaved }) {
             label="Prazo"
             value={f.task_days}
             onChange={(e) => set('task_days', Math.max(0, Math.min(365, parseInt(e.target.value || '0', 10) || 0)))}
-            sx={{ width: 150, flexShrink: 0 }}
+            sx={{ width: { xs: '100%', sm: 150 }, flexShrink: 0 }}
             InputProps={{ endAdornment: <InputAdornment position="end">dias</InputAdornment> }}
             inputProps={{ min: 0, max: 365 }}
           />
         </Stack>
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -305,7 +312,7 @@ function AutomationDialog({ open, onClose, stages }) {
     </TextField>
   );
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Automação do funil"
@@ -337,7 +344,7 @@ function AutomationDialog({ open, onClose, stages }) {
         )}
         {sel('paid_stage_id', 'Cobrança paga → etapa', 'Quando uma cobrança do CRM é paga, a conversa vai para esta etapa (ex.: Fechado).')}
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -361,7 +368,7 @@ function DealDialog({ open, onClose, card, onSaved }) {
     }
   };
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Valor estimado"
@@ -385,7 +392,7 @@ function DealDialog({ open, onClose, card, onSaved }) {
         autoFocus
         helperText="Soma por etapa aparece no topo da coluna. Zero = sem valor."
       />
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -420,7 +427,7 @@ function AddChatDialog({ open, onClose, stages, defaultStage, onDone, sessions, 
     return undefined;
   };
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Adicionar conversas ao funil"
@@ -454,7 +461,7 @@ function AddChatDialog({ open, onClose, stages, defaultStage, onDone, sessions, 
         </TextField>
         <WaChatPicker value={picked} onChange={setPicked} listHeight={320} sessions={sessions} initialSessionId={initialSessionId} />
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -500,7 +507,7 @@ function Card({ c, now, onOpen, onMenu, dragging, multi }) {
                 e.stopPropagation();
                 onMenu(e, c);
               }}
-              sx={{ p: 0.25, mr: -0.5 }}
+              sx={{ p: { xs: 0.75, md: 0.25 }, mr: { xs: -1, md: -0.5 }, mt: { xs: -0.5, md: 0 } }}
             >
               <IconDotsVertical size={15} />
             </IconButton>
@@ -591,6 +598,7 @@ export default function WhatsAppPipeline() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const canAdmin = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
+  const xs = useXs();
   const now = useNow(30000);
   const { sessions } = useWaSessions(30000);
   const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
@@ -702,7 +710,14 @@ export default function WhatsAppPipeline() {
         subtitle="Arraste as conversas pelas etapas. Cada etapa pode enviar mensagem, mudar etiquetas e criar tarefa ao receber uma conversa."
         sx={{ mb: 2.5 }}
         action={
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+          <Stack
+            direction="row"
+            spacing={1}
+            flexWrap="wrap"
+            useFlexGap
+            justifyContent={{ xs: 'flex-start', md: 'flex-end' }}
+            sx={{ width: { xs: '100%', md: 'auto' }, '& .MuiButton-root': { flex: { xs: '1 1 45%', md: '0 0 auto' }, minHeight: 40 } }}
+          >
             {canAdmin ? (
               <>
                 <Button
@@ -749,7 +764,7 @@ export default function WhatsAppPipeline() {
           placeholder="Buscar por nome ou telefone"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          sx={{ flex: 1, minWidth: 220, maxWidth: 420 }}
+          sx={{ flex: 1, minWidth: { md: 220 }, maxWidth: { md: 420 } }}
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -765,25 +780,44 @@ export default function WhatsAppPipeline() {
             ) : null
           }}
         />
-        <Chip
-          label="Só as minhas"
-          clickable
-          color={mine ? 'success' : 'default'}
-          variant={mine ? 'filled' : 'outlined'}
-          onClick={() => setMine((v) => !v)}
-          sx={{ fontWeight: 700 }}
-        />
-        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
-        <Box sx={{ flex: 1 }} />
-        <Tooltip title="Atualizar">
-          <span>
-            <IconButton onClick={() => load()} disabled={loading}>
-              <IconRefresh size={18} />
-            </IconButton>
-          </span>
-        </Tooltip>
+        <Stack
+          direction="row"
+          spacing={1.25}
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ display: { xs: 'flex', md: 'contents' } }}
+        >
+          <Chip
+            label="Só as minhas"
+            clickable
+            color={mine ? 'success' : 'default'}
+            variant={mine ? 'filled' : 'outlined'}
+            onClick={() => setMine((v) => !v)}
+            sx={{ fontWeight: 700, height: 36 }}
+          />
+          <WaNumberFilter
+            sessions={sessions}
+            value={sessionId}
+            onChange={setSessionId}
+            sx={{ flex: { xs: '1 1 160px', md: '0 0 auto' } }}
+          />
+          <Box sx={{ flex: 1 }} />
+          <Tooltip title="Atualizar">
+            <span>
+              <IconButton onClick={() => load()} disabled={loading}>
+                <IconRefresh size={18} />
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Stack>
       </TgFilterBar>
 
+      {xs && board?.columns.length > 1 ? (
+        <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mb: 0.75 }}>
+          Deslize para o lado para ver as outras etapas · use o menu ⋮ do card para mover.
+        </Typography>
+      ) : null}
       {loading && !board ? (
         <TgCard hover={false} sx={{ p: 2 }}>
           <TgListSkeleton rows={6} />
@@ -795,10 +829,16 @@ export default function WhatsAppPipeline() {
           sx={{
             display: 'flex',
             gap: 1.5,
+            width: '100%',
+            maxWidth: '100%',
             overflowX: 'auto',
+            overscrollBehaviorX: 'contain',
+            WebkitOverflowScrolling: 'touch',
             pb: 2,
+            px: { xs: 0.25, md: 0 },
             alignItems: 'flex-start',
-            scrollSnapType: { xs: 'x mandatory', md: 'none' }
+            scrollSnapType: { xs: 'x mandatory', md: 'none' },
+            scrollPaddingLeft: 2
           }}
         >
           {board.columns.map((col) => {
@@ -817,9 +857,11 @@ export default function WhatsAppPipeline() {
                 }}
                 onDrop={(e) => onDrop(e, st.id)}
                 sx={{
-                  width: 292,
-                  minWidth: 292,
+                  width: { xs: '85vw', sm: 292 },
+                  minWidth: { xs: '85vw', sm: 292 },
+                  maxWidth: { xs: 360, sm: 'none' },
                   scrollSnapAlign: 'start',
+                  flexShrink: 0,
                   borderRadius: 3,
                   border: '1px solid',
                   borderColor: isOver ? st.color : 'divider',
@@ -827,7 +869,7 @@ export default function WhatsAppPipeline() {
                   transition: 'border-color .15s, background-color .15s',
                   display: 'flex',
                   flexDirection: 'column',
-                  maxHeight: 'calc(100dvh - 330px)',
+                  maxHeight: { xs: '70dvh', md: 'calc(100dvh - 330px)' },
                   minHeight: 220
                 }}
               >
@@ -842,7 +884,11 @@ export default function WhatsAppPipeline() {
                     {st.name}
                   </Typography>
                   <Chip size="small" label={col.total} sx={{ height: 20, fontWeight: 800, fontSize: 11 }} />
-                  <IconButton size="small" onClick={(e) => setColMenu({ anchor: e.currentTarget, stage: st })} sx={{ p: 0.25 }}>
+                  <IconButton
+                    size="small"
+                    onClick={(e) => setColMenu({ anchor: e.currentTarget, stage: st })}
+                    sx={{ p: { xs: 0.75, md: 0.25 }, mr: { xs: -0.5, md: 0 } }}
+                  >
                     <IconDotsVertical size={16} />
                   </IconButton>
                 </Stack>
@@ -887,7 +933,15 @@ export default function WhatsAppPipeline() {
                   size="small"
                   startIcon={<IconPlus size={14} />}
                   onClick={() => setAddDlg({ stageId: st.id })}
-                  sx={{ m: 1, mt: 0, textTransform: 'none', fontWeight: 700, justifyContent: 'flex-start', color: 'text.secondary' }}
+                  sx={{
+                    m: 1,
+                    mt: 0,
+                    minHeight: 40,
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    justifyContent: 'flex-start',
+                    color: 'text.secondary'
+                  }}
                 >
                   Adicionar conversa
                 </Button>
@@ -1058,7 +1112,7 @@ export default function WhatsAppPipeline() {
         initialSessionId={sessionId || undefined}
         onDone={() => load({ silent: true })}
       />
-      <TgModal
+      <CrmModal
         open={Boolean(delStage)}
         onClose={() => setDelStage(null)}
         title={`Excluir a etapa "${delStage?.stage?.name}"?`}
@@ -1112,7 +1166,7 @@ export default function WhatsAppPipeline() {
               ))}
           </TextField>
         </Stack>
-      </TgModal>
+      </CrmModal>
     </Box>
   );
 }

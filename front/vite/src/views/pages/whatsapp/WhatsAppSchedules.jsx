@@ -532,29 +532,32 @@ function ScheduleModal({ open, initial, sessions, byId, onClose }) {
       maxWidth="md"
       disableClose={saving}
       footer={
-        <>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
+        // um único filho: no celular o aviso ocupa a linha de cima e os botões a de baixo
+        <Box sx={{ width: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1, minWidth: 0 }}>
+          <Box sx={{ flex: { xs: '1 1 100%', sm: '1 1 0' }, minWidth: 0 }}>
             {!connected ? (
-              <Typography variant="caption" sx={{ color: 'warning.main', fontWeight: 600 }}>
+              <Typography variant="caption" sx={{ color: 'warning.main', fontWeight: 600, display: 'block' }}>
                 {single || editing ? 'Número desconectado' : 'Nenhum número escolhido está conectado'}: o envio só acontece com o número
                 ativo no horário.
               </Typography>
             ) : null}
           </Box>
-          <Button color="inherit" onClick={() => onClose?.(false)} disabled={saving} sx={{ textTransform: 'none' }}>
-            Cancelar
-          </Button>
-          <Button
-            variant="contained"
-            disableElevation
-            onClick={submit}
-            disabled={saving}
-            startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconCalendarClock size={17} />}
-            sx={waButtonSx}
-          >
-            {editing ? 'Salvar' : 'Agendar'}
-          </Button>
-        </>
+          <Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ ml: 'auto' }}>
+            <Button color="inherit" onClick={() => onClose?.(false)} disabled={saving} sx={{ textTransform: 'none' }}>
+              Cancelar
+            </Button>
+            <Button
+              variant="contained"
+              disableElevation
+              onClick={submit}
+              disabled={saving}
+              startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <IconCalendarClock size={17} />}
+              sx={waButtonSx}
+            >
+              {editing ? 'Salvar' : 'Agendar'}
+            </Button>
+          </Stack>
+        </Box>
       }
     >
       <Stack spacing={3}>
@@ -668,7 +671,7 @@ function ScheduleModal({ open, initial, sessions, byId, onClose }) {
             sessionId={pickerSessionId}
           />
           {/* telefone avulso */}
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.25 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} sx={{ mt: 1.25 }}>
             <TextField
               size="small"
               label="Telefone avulso (DDI + DDD + número)"
@@ -681,7 +684,7 @@ function ScheduleModal({ open, initial, sessions, byId, onClose }) {
                   addPhone();
                 }
               }}
-              sx={{ flex: 1, maxWidth: 360 }}
+              sx={{ flex: 1, maxWidth: { sm: 360 } }}
               slotProps={{ input: { startAdornment: <IconPhone size={16} style={{ marginRight: 6, opacity: 0.6 }} /> } }}
             />
             <Button
@@ -691,7 +694,13 @@ function ScheduleModal({ open, initial, sessions, byId, onClose }) {
               onClick={addPhone}
               disabled={phoneInput.replace(/\D/g, '').length < 8}
               startIcon={<IconPlus size={15} />}
-              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, borderColor: 'divider' }}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 700,
+                borderRadius: 2,
+                borderColor: 'divider',
+                alignSelf: { xs: 'flex-start', sm: 'auto' }
+              }}
             >
               Adicionar
             </Button>
@@ -957,9 +966,12 @@ function HistoryRow({ group, byId, showNumber, onReschedule }) {
   const when = first.sent_at || first.schedule_at || first.created_at;
   const Mode = MODE_UI[first.mode === 'split' ? 'split' : 'all'];
   return (
-    <TgCard hover={false} sx={{ p: 1.5, display: 'flex', gap: 1.5, alignItems: 'flex-start', opacity: allCanceled ? 0.75 : 1 }}>
+    <TgCard
+      hover={false}
+      sx={{ p: 1.5, display: 'flex', flexWrap: 'wrap', gap: 1.5, alignItems: 'flex-start', opacity: allCanceled ? 0.75 : 1 }}
+    >
       <TargetAvatars targets={targets} size={30} max={3} />
-      <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box sx={{ flex: '1 1 0', minWidth: 0 }}>
         <Stack direction="row" alignItems="center" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 0.25 }}>
           {many ? (
             <Tooltip title={Mode.label}>
@@ -1048,7 +1060,15 @@ function HistoryRow({ group, byId, showNumber, onReschedule }) {
           color="inherit"
           startIcon={<IconRefresh size={15} />}
           onClick={() => onReschedule(group)}
-          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, flexShrink: 0, borderColor: 'divider' }}
+          sx={{
+            textTransform: 'none',
+            fontWeight: 700,
+            borderRadius: 2,
+            flexShrink: 0,
+            borderColor: 'divider',
+            // celular: desce para uma linha própria, em largura total (o conteúdo fica com a largura toda)
+            flex: { xs: '1 1 100%', sm: '0 0 auto' }
+          }}
         >
           Reagendar
         </Button>
@@ -1214,7 +1234,8 @@ export default function WhatsAppSchedules() {
             : 'Mensagens pontuais para contatos e grupos em dia e hora marcados. Depois de enviada, sai da lista.'
         }
         action={
-          <Stack direction="row" spacing={1} alignItems="center">
+          // celular: o WaPageHeader põe isto numa linha própria; o select e o botão crescem, o ícone não
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             {many ? (
               <WaNumberSelect
                 sessions={sessions}
@@ -1222,7 +1243,7 @@ export default function WhatsAppSchedules() {
                 onChange={setSessionFilter}
                 allowAll
                 label="Número"
-                sx={{ minWidth: 190 }}
+                sx={{ minWidth: { xs: 0, sm: 190 } }}
                 fullWidth={false}
               />
             ) : null}
@@ -1239,7 +1260,7 @@ export default function WhatsAppSchedules() {
       <WaSessionBanner session={bannerSession} loading={sessionLoading} connected={connected} what="enviar as mensagens agendadas" />
 
       {/* ---------- próximos ---------- */}
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5 }}>
+      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
         <IconCalendarTime size={18} />
         <Typography variant="h4" sx={{ fontWeight: 700 }}>
           Próximos

@@ -44,19 +44,21 @@ import {
 
 import { api, get, post, put } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
-import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton, TgModal } from 'views/pages/telegram/ui';
+import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'views/pages/telegram/ui';
 import { WaNumberDot, WaPageHeader, sessionLabel, useWaSessions } from './waKit';
 import { WA_DARK, errMsg, fmtPhone, tint } from './waShared';
 import CustomerDialog from './crm/CustomerDialog';
 import {
   BILLING_STATUS,
   CrmKpi,
+  CrmModal,
   CustomerNumberChips,
   StatusChip,
   WaNumberFilter,
   chatUrl,
   dueText,
   useSessionFilter,
+  useXs,
   waPrimaryBtn
 } from './crm/crmKit';
 
@@ -118,7 +120,7 @@ function FieldsDialog({ open, onClose, fields, onSaved }) {
     }
   };
   return (
-    <TgModal
+    <CrmModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Campos personalizados"
@@ -145,7 +147,13 @@ function FieldsDialog({ open, onClose, fields, onSaved }) {
     >
       <Stack spacing={1.25}>
         {list.map((f, i) => (
-          <Stack key={f.key || i} direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+          <Stack
+            key={f.key || i}
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1}
+            alignItems={{ sm: 'center' }}
+            sx={{ pb: { xs: 1.25, sm: 0 }, borderBottom: { xs: '1px dashed', sm: 0 }, borderColor: { xs: 'divider' } }}
+          >
             <TextField
               size="small"
               label="Nome do campo"
@@ -176,9 +184,15 @@ function FieldsDialog({ open, onClose, fields, onSaved }) {
                 sx={{ flex: 1 }}
               />
             ) : null}
-            <IconButton size="small" onClick={() => setList((xs) => xs.filter((_, j) => j !== i))}>
-              <IconTrash size={16} />
-            </IconButton>
+            <Button
+              size="small"
+              color="error"
+              startIcon={<IconTrash size={16} />}
+              onClick={() => setList((xs) => xs.filter((_, j) => j !== i))}
+              sx={{ textTransform: 'none', flexShrink: 0, alignSelf: { xs: 'flex-start', sm: 'center' }, minHeight: 36 }}
+            >
+              Remover
+            </Button>
           </Stack>
         ))}
         {list.length < 20 ? (
@@ -196,7 +210,7 @@ function FieldsDialog({ open, onClose, fields, onSaved }) {
           </Typography>
         ) : null}
       </Stack>
-    </TgModal>
+    </CrmModal>
   );
 }
 
@@ -204,6 +218,7 @@ function FieldsDialog({ open, onClose, fields, onSaved }) {
 export default function WhatsAppCustomers() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const xs = useXs();
   const canEdit = ['OWNER', 'ADMIN', 'SUPER_ADMIN'].includes(user?.user?.role);
   const { sessions, byId: sessionsById, connected } = useWaSessions(30000);
   const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
@@ -353,7 +368,14 @@ export default function WhatsAppCustomers() {
   };
   const headerAction = useMemo(
     () => (
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent="flex-end">
+      <Stack
+        direction="row"
+        spacing={1}
+        flexWrap="wrap"
+        useFlexGap
+        justifyContent={{ xs: 'flex-start', md: 'flex-end' }}
+        sx={{ width: { xs: '100%', md: 'auto' }, '& .MuiButton-root': { flex: { xs: '1 1 45%', md: '0 0 auto' }, minHeight: 40 } }}
+      >
         <Button
           variant="outlined"
           color="inherit"
@@ -379,9 +401,14 @@ export default function WhatsAppCustomers() {
             variant="outlined"
             startIcon={<IconListDetails size={18} />}
             onClick={() => setFieldsDlg(true)}
-            sx={{ fontWeight: 700, borderRadius: 2 }}
+            sx={{ fontWeight: 700, borderRadius: 2, whiteSpace: 'nowrap' }}
           >
-            Campos personalizados
+            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+              Campos personalizados
+            </Box>
+            <Box component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>
+              Campos extras
+            </Box>
           </Button>
         ) : null}
         <Button
@@ -449,52 +476,61 @@ export default function WhatsAppCustomers() {
             ) : null
           }}
         />
-        <TextField select size="small" label="Situação" value={billing} onChange={(e) => setBilling(e.target.value)} sx={{ minWidth: 150 }}>
-          <MenuItem value="all">Todas</MenuItem>
-          <MenuItem value="overdue">Em atraso</MenuItem>
-        </TextField>
-        <TextField select size="small" label="Cliente" value={status} onChange={(e) => setStatus(e.target.value)} sx={{ minWidth: 140 }}>
-          <MenuItem value="all">Ativos e inativos</MenuItem>
-          <MenuItem value="active">Ativos</MenuItem>
-          <MenuItem value="inactive">Inativos</MenuItem>
-        </TextField>
-        <TextField
-          select
-          size="small"
-          label="Produto"
-          value={productId}
-          onChange={(e) => setProductId(e.target.value)}
-          sx={{ minWidth: 180 }}
-        >
-          <MenuItem value="">Todos</MenuItem>
-          {products.map((p) => (
-            <MenuItem key={p.id} value={p.id}>
-              {p.name}
-            </MenuItem>
-          ))}
-        </TextField>
-        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} />
-        <TextField
-          select
-          size="small"
-          label="Por página"
-          value={pageSize}
-          onChange={(e) => setPageSize(Number(e.target.value))}
-          sx={{ minWidth: 110 }}
-        >
-          {PAGE_SIZES.map((n) => (
-            <MenuItem key={n} value={n}>
-              {n}
-            </MenuItem>
-          ))}
-        </TextField>
-        <Box sx={{ flex: 1 }} />
+        <Box sx={{ display: { xs: 'grid', md: 'contents' }, gap: 1.25, gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
+          <TextField
+            select
+            size="small"
+            label="Situação"
+            value={billing}
+            onChange={(e) => setBilling(e.target.value)}
+            sx={{ minWidth: 150 }}
+          >
+            <MenuItem value="all">Todas</MenuItem>
+            <MenuItem value="overdue">Em atraso</MenuItem>
+          </TextField>
+          <TextField select size="small" label="Cliente" value={status} onChange={(e) => setStatus(e.target.value)} sx={{ minWidth: 140 }}>
+            <MenuItem value="all">Ativos e inativos</MenuItem>
+            <MenuItem value="active">Ativos</MenuItem>
+            <MenuItem value="inactive">Inativos</MenuItem>
+          </TextField>
+          <TextField
+            select
+            size="small"
+            label="Produto"
+            value={productId}
+            onChange={(e) => setProductId(e.target.value)}
+            sx={{ minWidth: 180 }}
+          >
+            <MenuItem value="">Todos</MenuItem>
+            {products.map((p) => (
+              <MenuItem key={p.id} value={p.id}>
+                {p.name}
+              </MenuItem>
+            ))}
+          </TextField>
+          <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} sx={{ gridColumn: { xs: '1 / -1', md: 'auto' } }} />
+          <TextField
+            select
+            size="small"
+            label="Por página"
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            sx={{ minWidth: 110 }}
+          >
+            {PAGE_SIZES.map((n) => (
+              <MenuItem key={n} value={n}>
+                {n}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Box>
+        <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
         <Tooltip title="Atualizar">
-          <span>
+          <Box component="span" sx={{ alignSelf: { xs: 'flex-end', md: 'center' } }}>
             <IconButton onClick={() => load()} disabled={loading}>
               <IconRefresh size={18} />
             </IconButton>
-          </span>
+          </Box>
         </Tooltip>
       </TgFilterBar>
 
@@ -529,131 +565,219 @@ export default function WhatsAppCustomers() {
         />
       ) : (
         <TgCard hover={false} sx={{ p: 0, overflow: 'hidden' }}>
-          <TableContainer>
-            <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Cliente</TableCell>
-                  {multi ? <TableCell>Números</TableCell> : null}
-                  <TableCell>Produtos</TableCell>
-                  <TableCell>Situação</TableCell>
-                  <TableCell>Próximo vencimento</TableCell>
-                  <TableCell align="right">Mensal</TableCell>
-                  <TableCell align="right">Ações</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {items.map((c) => (
-                  <TableRow
-                    key={c.id}
-                    hover
-                    sx={{ cursor: 'pointer', opacity: c.status === 'inactive' ? 0.6 : 1 }}
-                    onClick={() => setDlg({ customer: c })}
-                  >
-                    <TableCell sx={{ maxWidth: 300 }}>
-                      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
-                        <TgAvatar name={c.name} size={36} kind="contact" />
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
-                            {c.name}
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
-                            {fmtPhone(c.phone)}
-                            {c.email ? ` · ${c.email}` : ''}
-                          </Typography>
-                        </Box>
+          {xs ? (
+            <Box>
+              {items.map((c) => (
+                <Box
+                  key={c.id}
+                  onClick={() => setDlg({ customer: c })}
+                  sx={{
+                    p: 1.5,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    cursor: 'pointer',
+                    opacity: c.status === 'inactive' ? 0.6 : 1,
+                    '&:active': { bgcolor: 'action.hover' }
+                  }}
+                >
+                  <Stack direction="row" spacing={1.25} alignItems="flex-start">
+                    <TgAvatar name={c.name} size={40} kind="contact" />
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                        {c.name}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+                        {fmtPhone(c.phone)}
+                        {c.email ? ` · ${c.email}` : ''}
+                      </Typography>
+                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 0.75 }}>
+                        <StatusChip map={BILLING_STATUS} status={c.billing_status} size="md" />
+                        {c.products.slice(0, 2).map((p, i) => (
+                          <Chip
+                            key={i}
+                            size="small"
+                            label={p}
+                            sx={{
+                              height: 22,
+                              fontWeight: 600,
+                              borderRadius: 1.5,
+                              bgcolor: (t) => tint(t, 'success', 0.12),
+                              color: WA_DARK
+                            }}
+                          />
+                        ))}
+                        {c.products.length > 2 ? (
+                          <Chip size="small" label={`+${c.products.length - 2}`} sx={{ height: 22, borderRadius: 1.5 }} />
+                        ) : null}
                       </Stack>
-                    </TableCell>
-                    {multi ? (
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        {c.chats?.length ? (
+                      <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="space-between" sx={{ mt: 0.75 }}>
+                        <Typography variant="caption" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'text.secondary', minWidth: 0 }}>
+                          {c.next_due_label ? `${c.next_due_label} · ${dueText(c.days_to_due)}` : 'Sem vencimento'}
+                        </Typography>
+                        <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, flexShrink: 0 }}>
+                          {c.monthly_cents ? `${c.monthly_label}/mês` : ''}
+                        </Typography>
+                      </Stack>
+                      {multi && c.chats?.length ? (
+                        <Box sx={{ mt: 0.75 }} onClick={(e) => e.stopPropagation()}>
                           <CustomerNumberChips chats={c.chats} byId={sessionsById} max={3} onPick={(ch) => navigate(chatUrl(ch.chat_id))} />
+                        </Box>
+                      ) : null}
+                    </Box>
+                    <Stack spacing={0.25} onClick={(e) => e.stopPropagation()} sx={{ flexShrink: 0, mr: -0.5, mt: -0.5 }}>
+                      <IconButton
+                        onClick={(e) => openConversation(c, e.currentTarget)}
+                        disabled={rowBusy[c.id]}
+                        aria-label="Abrir conversa"
+                      >
+                        {rowBusy[c.id] ? <CircularProgress size={16} /> : <IconMessage size={19} />}
+                      </IconButton>
+                      <IconButton onClick={() => setDlg({ customer: c })} aria-label="Editar">
+                        <IconPencil size={19} />
+                      </IconButton>
+                    </Stack>
+                  </Stack>
+                </Box>
+              ))}
+            </Box>
+          ) : (
+            <TableContainer>
+              <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Cliente</TableCell>
+                    {multi ? <TableCell>Números</TableCell> : null}
+                    <TableCell>Produtos</TableCell>
+                    <TableCell>Situação</TableCell>
+                    <TableCell>Próximo vencimento</TableCell>
+                    <TableCell align="right">Mensal</TableCell>
+                    <TableCell align="right">Ações</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {items.map((c) => (
+                    <TableRow
+                      key={c.id}
+                      hover
+                      sx={{ cursor: 'pointer', opacity: c.status === 'inactive' ? 0.6 : 1 }}
+                      onClick={() => setDlg({ customer: c })}
+                    >
+                      <TableCell sx={{ maxWidth: 300 }}>
+                        <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 0 }}>
+                          <TgAvatar name={c.name} size={36} kind="contact" />
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                              {c.name}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+                              {fmtPhone(c.phone)}
+                              {c.email ? ` · ${c.email}` : ''}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                      </TableCell>
+                      {multi ? (
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          {c.chats?.length ? (
+                            <CustomerNumberChips
+                              chats={c.chats}
+                              byId={sessionsById}
+                              max={3}
+                              onPick={(ch) => navigate(chatUrl(ch.chat_id))}
+                            />
+                          ) : (
+                            <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                              sem conversa
+                            </Typography>
+                          )}
+                        </TableCell>
+                      ) : null}
+                      <TableCell sx={{ maxWidth: 260 }}>
+                        {c.products.length ? (
+                          <Stack direction="row" spacing={0.5} sx={{ overflow: 'hidden' }}>
+                            {c.products.slice(0, 2).map((p, i) => (
+                              <Chip
+                                key={i}
+                                size="small"
+                                label={p}
+                                sx={{
+                                  height: 22,
+                                  fontWeight: 600,
+                                  borderRadius: 1.5,
+                                  bgcolor: (t) => tint(t, 'success', 0.12),
+                                  color: WA_DARK
+                                }}
+                              />
+                            ))}
+                            {c.products.length > 2 ? (
+                              <Chip size="small" label={`+${c.products.length - 2}`} sx={{ height: 22, borderRadius: 1.5 }} />
+                            ) : null}
+                          </Stack>
                         ) : (
                           <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                            sem conversa
+                            —
                           </Typography>
                         )}
                       </TableCell>
-                    ) : null}
-                    <TableCell sx={{ maxWidth: 260 }}>
-                      {c.products.length ? (
-                        <Stack direction="row" spacing={0.5} sx={{ overflow: 'hidden' }}>
-                          {c.products.slice(0, 2).map((p, i) => (
-                            <Chip
-                              key={i}
-                              size="small"
-                              label={p}
-                              sx={{
-                                height: 22,
-                                fontWeight: 600,
-                                borderRadius: 1.5,
-                                bgcolor: (t) => tint(t, 'success', 0.12),
-                                color: WA_DARK
-                              }}
-                            />
-                          ))}
-                          {c.products.length > 2 ? (
-                            <Chip size="small" label={`+${c.products.length - 2}`} sx={{ height: 22, borderRadius: 1.5 }} />
-                          ) : null}
-                        </Stack>
-                      ) : (
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                          —
-                        </Typography>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <StatusChip map={BILLING_STATUS} status={c.billing_status} size="md" />
-                    </TableCell>
-                    <TableCell>
-                      {c.next_due_label ? (
-                        <Box>
-                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                            {c.next_due_label}
+                      <TableCell>
+                        <StatusChip map={BILLING_STATUS} status={c.billing_status} size="md" />
+                      </TableCell>
+                      <TableCell>
+                        {c.next_due_label ? (
+                          <Box>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                              {c.next_due_label}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'text.secondary' }}>
+                              {dueText(c.days_to_due)}
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            —
                           </Typography>
-                          <Typography variant="caption" sx={{ color: c.days_to_due < 0 ? 'warning.main' : 'text.secondary' }}>
-                            {dueText(c.days_to_due)}
-                          </Typography>
-                        </Box>
-                      ) : (
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                          —
-                        </Typography>
-                      )}
-                    </TableCell>
-                    <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
-                      {c.monthly_cents ? c.monthly_label : '—'}
-                    </TableCell>
-                    <TableCell align="right" onClick={(e) => e.stopPropagation()}>
-                      <Tooltip title={c.chats?.length > 1 ? 'Abrir conversa (escolher o número)' : 'Abrir conversa'}>
-                        <span>
-                          <IconButton size="small" onClick={(e) => openConversation(c, e.currentTarget)} disabled={rowBusy[c.id]}>
-                            {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconMessage size={17} />}
+                        )}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700 }}>
+                        {c.monthly_cents ? c.monthly_label : '—'}
+                      </TableCell>
+                      <TableCell align="right" onClick={(e) => e.stopPropagation()}>
+                        <Tooltip title={c.chats?.length > 1 ? 'Abrir conversa (escolher o número)' : 'Abrir conversa'}>
+                          <span>
+                            <IconButton size="small" onClick={(e) => openConversation(c, e.currentTarget)} disabled={rowBusy[c.id]}>
+                              {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconMessage size={17} />}
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="Editar">
+                          <IconButton size="small" onClick={() => setDlg({ customer: c })}>
+                            <IconPencil size={17} />
                           </IconButton>
-                        </span>
-                      </Tooltip>
-                      <Tooltip title="Editar">
-                        <IconButton size="small" onClick={() => setDlg({ customer: c })}>
-                          <IconPencil size={17} />
-                        </IconButton>
-                      </Tooltip>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
           <Stack
             direction={{ xs: 'column', sm: 'row' }}
             spacing={1}
-            alignItems={{ sm: 'center' }}
+            alignItems={{ xs: 'center', sm: 'center' }}
             justifyContent="space-between"
-            sx={{ px: 2, py: 1.25, borderTop: '1px solid', borderColor: 'divider' }}
+            sx={{ px: 2, py: 1.25, borderTop: { sm: '1px solid' }, borderColor: 'divider' }}
           >
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               Mostrando {from}–{to} de {total.toLocaleString('pt-BR')}
             </Typography>
-            <Pagination size="small" count={data.pages} page={data.page} onChange={(_, p) => setPage(p)} />
+            <Pagination
+              size={xs ? 'medium' : 'small'}
+              count={data.pages}
+              page={data.page}
+              onChange={(_, p) => setPage(p)}
+              siblingCount={xs ? 0 : 1}
+            />
           </Stack>
         </TgCard>
       )}
@@ -703,7 +827,7 @@ export default function WhatsAppCustomers() {
             ))}
       </Menu>
 
-      <TgModal
+      <CrmModal
         open={Boolean(importDlg)}
         onClose={() => !importDlg?.loading && setImportDlg(null)}
         title="Importar clientes (CSV)"
@@ -733,8 +857,14 @@ export default function WhatsAppCustomers() {
             pelo nome do produto (cria o produto se não existir e <code>price</code> vier preenchido); <code>due_day</code> = dia do
             vencimento (1–28).
           </Typography>
-          <Button component="label" variant="outlined" sx={{ textTransform: 'none', fontWeight: 700, alignSelf: 'flex-start' }}>
-            {importDlg?.file ? importDlg.file.name : 'Escolher arquivo .csv'}
+          <Button
+            component="label"
+            variant="outlined"
+            sx={{ textTransform: 'none', fontWeight: 700, alignSelf: { xs: 'stretch', sm: 'flex-start' }, minHeight: 44, maxWidth: '100%' }}
+          >
+            <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {importDlg?.file ? importDlg.file.name : 'Escolher arquivo .csv'}
+            </Box>
             <input
               hidden
               type="file"
@@ -770,7 +900,7 @@ export default function WhatsAppCustomers() {
             </Alert>
           ) : null}
         </Stack>
-      </TgModal>
+      </CrmModal>
       <CustomerDialog
         open={Boolean(dlg)}
         onClose={() => setDlg(null)}

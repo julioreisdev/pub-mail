@@ -178,7 +178,8 @@ export default function WhatsAppProducts() {
         subtitle="O que a sua empresa vende: produtos, serviços e planos, com preço e forma de cobrança."
         sx={{ mb: 2.5 }}
         action={
-          <Stack direction="row" spacing={1}>
+          // celular: o WaPageHeader põe isto numa linha própria (o botão cresce, o ícone não)
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Tooltip title="Atualizar">
               <IconButton onClick={load}>
                 <IconRefresh size={18} />

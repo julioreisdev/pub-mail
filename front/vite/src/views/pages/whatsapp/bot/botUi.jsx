@@ -9,14 +9,19 @@ import {
   Box,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
   IconButton,
   InputAdornment,
   Stack,
   TextField,
   Tooltip,
   Typography,
-  createFilterOptions
+  createFilterOptions,
+  useMediaQuery
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import {
   IconArrowsSplit2,
   IconFlag3,
@@ -29,7 +34,8 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconQrcode,
-  IconTags
+  IconTags,
+  IconX
 } from '@tabler/icons-react';
 
 import { EmojiPicker } from '../waShared';
@@ -731,5 +737,76 @@ export function BotStatusPill({ status = 'paused', size = 'sm', sx }) {
       />
       {cfg.label}
     </Box>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Responsivo: celular = abaixo de `sm` (< 600 px)
+// -----------------------------------------------------------------------------
+export const useXs = () => {
+  const theme = useTheme();
+  return useMediaQuery(theme.breakpoints.down('sm'));
+};
+
+// Modal padrão do módulo (mesma cara do TgModal), em tela cheia no celular.
+// Cabeçalho e rodapé fixos; só o conteúdo rola.
+export function BotModal({ open, onClose, title, subtitle, footer, maxWidth = 'sm', children, disableClose, contentSx }) {
+  const xs = useXs();
+  return (
+    <Dialog
+      open={open}
+      onClose={() => !disableClose && onClose?.()}
+      maxWidth={maxWidth}
+      fullWidth
+      fullScreen={xs}
+      slotProps={{ paper: { sx: { borderRadius: xs ? 0 : 3, overflow: 'hidden' } } }}
+    >
+      <Box
+        sx={{
+          px: { xs: 2, sm: 3 },
+          pt: { xs: 1.75, sm: 2.25 },
+          pb: { xs: 1.5, sm: 2 },
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          flexShrink: 0,
+          bgcolor: 'background.paper'
+        }}
+      >
+        <Stack direction="row" alignItems="flex-start" spacing={1}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="h4" sx={{ fontWeight: 700 }} noWrap>
+              {title}
+            </Typography>
+            {subtitle ? (
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.25 }}>
+                {subtitle}
+              </Typography>
+            ) : null}
+          </Box>
+          <IconButton size="small" onClick={() => onClose?.()} disabled={disableClose} aria-label="Fechar" sx={{ mt: -0.5, mr: -0.5 }}>
+            <IconX size={18} />
+          </IconButton>
+        </Stack>
+      </Box>
+      <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: { xs: 2, sm: 2.5 }, ...contentSx }}>{children}</DialogContent>
+      {footer ? (
+        <DialogActions
+          sx={{
+            px: { xs: 2, sm: 3 },
+            pt: 1.5,
+            pb: xs ? 'calc(12px + env(safe-area-inset-bottom))' : 1.75,
+            borderTop: '1px solid',
+            borderColor: 'divider',
+            flexShrink: 0,
+            bgcolor: 'background.paper',
+            flexWrap: 'wrap',
+            gap: 1,
+            '& > :not(:first-of-type)': { ml: 0 }
+          }}
+        >
+          {footer}
+        </DialogActions>
+      ) : null}
+    </Dialog>
   );
 }

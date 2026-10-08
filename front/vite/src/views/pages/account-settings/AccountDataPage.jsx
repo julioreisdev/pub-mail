@@ -89,7 +89,7 @@ export default function AccountDataPage() {
   const roleLabel = ROLE_LABEL[roleKey] || roleKey || '—';
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
+    <Box>
       {!user || !org ? (
         <Alert severity="warning" sx={{ borderRadius: 2, mb: 2 }}>
           Não foi possível carregar os dados da conta. Tente sair e entrar novamente.

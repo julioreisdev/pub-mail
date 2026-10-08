@@ -10,9 +10,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Box, Button, CircularProgress, MenuItem, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { IconAlertTriangle, IconMessageChatbot, IconPlayerPlay, IconPlus, IconRobot, IconUserShare } from '@tabler/icons-react';
 
-import { TgCard, TgModal, TgStatusPill } from 'views/pages/telegram/ui';
+import { TgCard, TgStatusPill } from 'views/pages/telegram/ui';
 import { WaNumberChip, WaNumberMultiSelect, sessionLabel } from '../waKit';
-import { WA_DARK, WA_GREEN, hexA } from './botUi';
+import { BotModal, WA_DARK, WA_GREEN, hexA, useXs } from './botUi';
 
 export const flowPillStatus = (flow) => (flow?.active ? 'active' : 'paused');
 export const flowPillLabel = (flow) => (flow?.active ? 'Ligado' : 'Desligado');
@@ -61,14 +61,15 @@ export function FlowNumbers({ sessions = [], max = 3, emptyText = 'Nenhum númer
 // -----------------------------------------------------------------------------
 // Cartão de um fluxo
 // -----------------------------------------------------------------------------
-function FlowCard({ flow, selected, onSelect }) {
+function FlowCard({ flow, selected, onSelect, stacked }) {
   const stats = flow.stats || {};
   return (
     <TgCard
       onClick={() => onSelect(flow.id)}
       sx={{
         flexShrink: 0,
-        width: 236,
+        width: stacked ? '100%' : 236,
+        minWidth: 0,
         p: 1.5,
         cursor: 'pointer',
         scrollSnapAlign: 'start',
@@ -110,17 +111,19 @@ function FlowCard({ flow, selected, onSelect }) {
   );
 }
 
-/** Faixa horizontal com os fluxos + cartão "Novo fluxo". */
+/** Faixa horizontal com os fluxos + cartão "Novo fluxo" (no celular: cartões empilhados, largura total). */
 export function FlowStrip({ flows, selectedId, onSelect, onCreate, canCreate = true, sx }) {
+  const xs = useXs();
   return (
     <Box
       sx={{
         display: 'flex',
-        gap: 1.25,
-        overflowX: 'auto',
+        flexDirection: xs ? 'column' : 'row',
+        gap: xs ? 1 : 1.25,
+        overflowX: xs ? 'hidden' : 'auto',
         overflowY: 'hidden',
-        pb: 0.75,
-        scrollSnapType: 'x proximity',
+        pb: xs ? 0 : 0.75,
+        scrollSnapType: xs ? 'none' : 'x proximity',
         scrollbarWidth: 'thin',
         '&::-webkit-scrollbar': { height: 6 },
         '&::-webkit-scrollbar-thumb': { bgcolor: 'divider', borderRadius: 3 },
@@ -128,7 +131,7 @@ export function FlowStrip({ flows, selectedId, onSelect, onCreate, canCreate = t
       }}
     >
       {flows.map((f) => (
-        <FlowCard key={f.id} flow={f} selected={f.id === selectedId} onSelect={onSelect} />
+        <FlowCard key={f.id} flow={f} selected={f.id === selectedId} onSelect={onSelect} stacked={xs} />
       ))}
       <Tooltip title={canCreate ? '' : 'Limite de fluxos atingido.'}>
         <Box
@@ -143,8 +146,8 @@ export function FlowStrip({ flows, selectedId, onSelect, onCreate, canCreate = t
           }}
           sx={{
             flexShrink: 0,
-            width: 150,
-            minHeight: 104,
+            width: xs ? '100%' : 150,
+            minHeight: xs ? 52 : 104,
             borderRadius: 3,
             border: '1.5px dashed',
             borderColor: 'divider',
@@ -158,9 +161,9 @@ export function FlowStrip({ flows, selectedId, onSelect, onCreate, canCreate = t
             '&:focus-visible': { boxShadow: `0 0 0 3px ${hexA(WA_GREEN, 0.3)}` }
           }}
         >
-          <Stack alignItems="center" spacing={0.5}>
-            <IconPlus size={22} />
-            <Typography variant="caption" sx={{ fontWeight: 800 }}>
+          <Stack direction={xs ? 'row' : 'column'} alignItems="center" spacing={xs ? 1 : 0.5}>
+            <IconPlus size={xs ? 18 : 22} />
+            <Typography variant={xs ? 'body2' : 'caption'} sx={{ fontWeight: 800 }}>
               Novo fluxo
             </Typography>
           </Stack>
@@ -200,7 +203,7 @@ export function FlowFormDialog({ state, flows = [], busy, onClose, onSubmit }) {
     onSubmit({ mode, name: v, clone_of: mode === 'rename' ? undefined : cloneOf || undefined, flow: state?.flow });
   };
   return (
-    <TgModal
+    <BotModal
       open={open}
       onClose={() => !busy && onClose()}
       title={title}
@@ -264,7 +267,7 @@ export function FlowFormDialog({ state, flows = [], busy, onClose, onSubmit }) {
           </TextField>
         ) : null}
       </Stack>
-    </TgModal>
+    </BotModal>
   );
 }
 
@@ -291,7 +294,7 @@ export function AssignNumbersDialog({ flow, flows = [], sessions = [], preselect
   const leaving = (flow?.sessions || []).filter((s) => !ids.includes(s.id));
 
   return (
-    <TgModal
+    <BotModal
       open={open}
       onClose={() => !busy && onClose()}
       title="Números que usam este fluxo"
@@ -347,7 +350,7 @@ export function AssignNumbersDialog({ flow, flows = [], sessions = [], preselect
           </Alert>
         ) : null}
       </Stack>
-    </TgModal>
+    </BotModal>
   );
 }
 

@@ -16,6 +16,7 @@ import { WhatsAppSchedulesService } from './whatsapp-schedules.service';
 import { WhatsAppAttendanceService } from './whatsapp-attendance.service';
 import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.service';
 import { WaAccessService } from './wa-access.service';
+import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
 import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto } from './dto/whatsapp-crud.dto';
 
@@ -146,7 +147,7 @@ export class WhatsAppSchedulesController {
 @UseGuards(JwtAuthGuard)
 @Controller('whatsapp/contacts')
 export class WhatsAppContactsController {
-  constructor(private readonly contacts: WhatsAppContactsService, private readonly access: WaAccessService) {}
+  constructor(private readonly contacts: WhatsAppContactsService, private readonly access: WaAccessService, private readonly presenter: WhatsAppPresenter) {}
 
   @Get() async list(@Req() req: any, @Query() q: any) { return this.contacts.list(req.user.organizationId, q, await this.access.allowedIds(req.user)); }
   @Get('tags') tags(@Req() req: any) { return this.contacts.tags(req.user.organizationId); }
@@ -176,7 +177,11 @@ export class WhatsAppContactsController {
     res.setHeader('Content-Type', p.mime); res.setHeader('Cache-Control', 'private, max-age=86400');
     return res.sendFile(p.path);
   }
-  @Patch(':id') patch(@Req() req: any, @Param('id') id: string, @Body() dto: PatchContactDto) { return this.contacts.patch(req.user.organizationId, id, dto); }
+  @Patch(':id') async patch(@Req() req: any, @Param('id') id: string, @Body() dto: PatchContactDto) {
+    const r = await this.contacts.patch(req.user.organizationId, id, dto);
+    for (const c of r.renamed_chats || []) this.presenter.chat(req.user.organizationId, c.session_id, c.chat_id);
+    return r;
+  }
   @Delete(':id') remove(@Req() req: any, @Param('id') id: string) { return this.contacts.remove(req.user.organizationId, id); }
 }
 
@@ -225,7 +230,7 @@ export class WhatsAppBroadcastsController {
   @Post() @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') create(@Req() req: any, @Body() dto: BroadcastDto) { return this.bc.create(req.user.organizationId, dto); }
   @Put(':id') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') update(@Req() req: any, @Param('id') id: string, @Body() dto: BroadcastDto) { return this.bc.update(req.user.organizationId, id, dto); }
   @Delete(':id') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') remove(@Req() req: any, @Param('id') id: string) { return this.bc.remove(req.user.organizationId, id); }
-  @Post('audience-estimate') audience(@Req() req: any, @Body() dto: AudienceDto) { return this.bc.audience(req.user.organizationId, dto.targets, dto.session_ids); }
+  @Post('audience-estimate') audience(@Req() req: any, @Body() dto: AudienceDto) { return this.bc.audience(req.user.organizationId, dto.targets, dto.session_ids, dto.distribution); }
   @Get(':id/copies') copies(@Req() req: any, @Param('id') id: string) { return this.bc.getCopies(req.user.organizationId, id); }
   @Put(':id/copies') setCopies(@Req() req: any, @Param('id') id: string, @Body() dto: CopiesDto) { return this.bc.setCopies(req.user.organizationId, id, dto.copies); }
   @Post(':id/fire') @Throttle({ default: { limit: 5, ttl: 60_000 } }) fire(@Req() req: any, @Param('id') id: string) { return this.bc.fire(req.user.organizationId, id); }

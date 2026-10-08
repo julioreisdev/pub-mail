@@ -3,7 +3,7 @@ import PaymentsSettings from './PaymentsSettings';
 
 export default function PaymentsSettingsPage() {
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
+    <Box>
       <PaymentsSettings />
     </Box>
   );
