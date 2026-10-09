@@ -954,6 +954,8 @@ WEBHOOK_MAX_PAYLOAD_BYTES=12582912
 RATE_LIMIT_SHORT_LIMIT=100
 RATE_LIMIT_MEDIUM_LIMIT=3000
 RATE_LIMIT_LONG_LIMIT=100000
+# mídia vai em base64 (+33 %); o padrão de 25mb recusa vídeo acima de ~18 MB (resposta 404 "Cannot POST")
+BODY_SIZE_LIMIT=100mb
 EOF2
 umask 022
 cat > docker-compose.yml <<'EOF2'
@@ -966,7 +968,7 @@ services:
     ports: ["127.0.0.1:2786:2785"]
     volumes: ["./data:/app/data"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    mem_limit: 1536m
+    mem_limit: 2g   # vídeo grande ocupa ~3 cópias em memória no envio
     pids_limit: 512
 EOF2
 docker compose pull && docker compose up -d

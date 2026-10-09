@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException, PayloadTooLargeException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { OpenWaClient, OpenWaError } from './openwa.client';
 import { WhatsAppSessionsService, sessionLabel } from './whatsapp-sessions.service';
@@ -40,6 +40,8 @@ export class WhatsAppChatService {
 
   private translate(e: any): never {
     if (e instanceof OpenWaError) {
+      // corpo acima do BODY_SIZE_LIMIT do gateway: o OpenWA responde 413 ou um 404 "Cannot POST …" (não é sessão sumida)
+      if (e.status === 413 || (e.status === 404 && /Cannot (POST|PUT)/i.test(e.message))) throw new PayloadTooLargeException('Arquivo grande demais para o gateway do WhatsApp. Envie um arquivo menor ou fale com o suporte.');
       if (e.status === 404) throw new NotFoundException('Sessão não encontrada no gateway.');
       if (e.status === 429) throw new BadRequestException(e.retryAfterSeconds ? `Limite de envio atingido. Tente em ${e.retryAfterSeconds}s.` : 'Limite de envio atingido.');
       if (e.status >= 500 || e.status === 503 || e.status === 504) throw new ServiceUnavailableException(e.message);
