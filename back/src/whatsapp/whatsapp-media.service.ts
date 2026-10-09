@@ -51,6 +51,51 @@ export async function toOggOpus(buf: Buffer): Promise<Buffer> {
   }
 }
 
+// ---------------------------------------------------------------- vídeo
+// O WhatsApp só reproduz vídeo em MP4 com H.264 (yuv420p) + AAC. Outro formato (.mov da gravação de
+// tela do Mac, HEVC do iPhone, WebM…) é ACEITO pelo gateway, mas o WhatsApp descarta: fica em ✓ e
+// não aparece nem no celular de quem enviou. Já H.264: só troca a embalagem p/ MP4 (segundos);
+// senão converte (libx264 veryfast, lado maior até 1920 px).
+export const VIDEO_MP4 = 'video/mp4';
+type VideoProbe = { vcodec: string | null; pix: string | null; acodec: string | null; hasVideo: boolean };
+async function probeVideo(path: string): Promise<VideoProbe> {
+  const { stdout } = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt', '-of', 'json', path], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const streams: any[] = JSON.parse(String(stdout || '{}')).streams || [];
+  const v = streams.find((x) => x.codec_type === 'video');
+  const a = streams.find((x) => x.codec_type === 'audio');
+  return { vcodec: v?.codec_name || null, pix: v?.pix_fmt || null, acodec: a?.codec_name || null, hasVideo: Boolean(v) };
+}
+/** `null` = já está no formato do WhatsApp (MP4 + H.264 yuv420p + AAC/sem áudio). */
+export async function toWhatsAppMp4(buf: Buffer, mime: string): Promise<{ buffer: Buffer; mode: 'remux' | 'transcode' } | null> {
+  const id = randomUUID();
+  const inPath = join(plainTmpDir(), `wa-v-${id}.in`);
+  const outPath = join(plainTmpDir(), `wa-v-${id}.mp4`);
+  await fsp.writeFile(inPath, buf);
+  try {
+    const p = await probeVideo(inPath);
+    if (!p.hasVideo) return null;
+    const videoOk = p.vcodec === 'h264' && (!p.pix || p.pix === 'yuv420p');
+    const audioOk = !p.acodec || p.acodec === 'aac';
+    if (videoOk && audioOk && String(mime || '').toLowerCase() === VIDEO_MP4) return null;
+    const mode: 'remux' | 'transcode' = videoOk ? 'remux' : 'transcode';
+    const args = ['-y', '-i', inPath, '-map', '0:v:0', '-map', '0:a:0?', '-map_metadata', '-1', '-movflags', '+faststart'];
+    if (mode === 'remux') args.push('-c:v', 'copy');
+    else
+      args.push(
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2',
+        '-vf', "scale='if(gt(iw\\,ih)\\,min(1920\\,iw)\\,-2)':'if(gt(iw\\,ih)\\,-2\\,min(1920\\,ih))',scale=trunc(iw/2)*2:trunc(ih/2)*2",
+      );
+    if (p.acodec && p.acodec !== 'aac') args.push('-c:a', 'aac', '-b:a', '128k');
+    else args.push('-c:a', 'copy');
+    args.push('-f', 'mp4', outPath);
+    await execFileP('ffmpeg', args, { timeout: 280_000, maxBuffer: 8 * 1024 * 1024 });
+    return { buffer: await fsp.readFile(outPath), mode };
+  } finally {
+    await fsp.unlink(inPath).catch(() => undefined);
+    await fsp.unlink(outPath).catch(() => undefined);
+  }
+}
+
 export const WAVEFORM_BARS = 64;
 /**
  * Forma de onda de um áudio: decodifica com ffmpeg (mono, 8 kHz, PCM 16 bits, no máx. 10 min) e tira o
@@ -171,6 +216,30 @@ export class WhatsAppMediaService {
     return { buffer: out, mime: outMime, filename: name, converted };
   }
 
+  /**
+   * Vídeo no formato que o WhatsApp reproduz (ver toWhatsAppMp4). Falha na conversão devolve o original.
+   * `converted:true` quando os bytes mudaram.
+   */
+  async normalizeVideo(buf: Buffer, mime: string, filename?: string | null) {
+    const t0 = Date.now();
+    try {
+      const r = await toWhatsAppMp4(buf, mime);
+      if (!r) return { buffer: buf, mime, filename: filename || null, converted: false };
+      const name = filename ? `${String(filename).replace(/\.[a-z0-9]{1,8}$/i, '')}.mp4` : null;
+      this.logger.log(`vídeo ${mime} → MP4 (${r.mode}) ${Math.round(buf.length / 1048576)}→${Math.round(r.buffer.length / 1048576)} MB em ${Math.round((Date.now() - t0) / 1000)} s`);
+      return { buffer: r.buffer, mime: VIDEO_MP4, filename: name, converted: true };
+    } catch (e: any) {
+      this.logger.warn(`conversão de vídeo p/ MP4 falhou (${mime}): ${String(e?.message || e).slice(0, 300)}`);
+      return { buffer: buf, mime, filename: filename || null, converted: false };
+    }
+  }
+
+  /** Vídeo fora de MP4 (.mov, .webm…) sempre passa pela conversão ao guardar/reenviar; MP4 é sondado no envio pelo chat. */
+  private videoNeedsNormalize(mime: string) {
+    const m = String(mime || '').toLowerCase();
+    return m.startsWith('video/') && m !== VIDEO_MP4;
+  }
+
   /** Voz precisa passar pelo normalizeAudio (conversão e/ou reempacotamento); outros áudios só se o formato exigir. */
   private needsNormalize(mime: string, voice: boolean) {
     return voice || needsAudioConversion(mime, voice);
@@ -178,6 +247,7 @@ export class WhatsAppMediaService {
 
   async store(orgId: string, buf: Buffer, mime: string, filename?: string | null, kind?: string) {
     if (this.needsNormalize(mime, kind === 'voice')) ({ buffer: buf, mime, filename } = await this.normalizeAudio(buf, mime, kind === 'voice', filename));
+    else if (kind !== 'sticker' && this.videoNeedsNormalize(mime)) ({ buffer: buf, mime, filename } = await this.normalizeVideo(buf, mime, filename));
     if (buf.length > 1024 && (await this.usage(orgId)) + buf.length > MEDIA_QUOTA_BYTES) {
       // 413 com texto claro (era Error genérico → "Internal server error" na tela). O inbound captura igual e marca a mídia como omitida.
       throw new PayloadTooLargeException(`O espaço de mídia do WhatsApp desta organização está cheio (${Math.round(MEDIA_QUOTA_BYTES / 1024 / 1024 / 1024 * 10) / 10} GB). Fale com o suporte para ampliar.`);
@@ -255,6 +325,19 @@ export class WhatsAppMediaService {
       const n = await this.normalizeAudio(buf, m.mime, m.kind === 'voice', m.filename);
       if (n.converted) {
         const rel = join(m.organization_id, `${m.id}.ogg`);
+        await this.writeStored(m.organization_id, rel, n.buffer);
+        if (rel !== m.storage_path) await fsp.unlink(this.absPath(m)).catch(() => undefined);
+        m = await this.prisma.whatsapp_media.update({
+          where: { id: m.id },
+          data: { mime: n.mime, filename: n.filename, size_bytes: BigInt(n.buffer.length), storage_path: rel, sha1: createHash('sha1').update(n.buffer).digest('hex') },
+        });
+        buf = n.buffer;
+      }
+    } else if (m.kind !== 'sticker' && this.videoNeedsNormalize(m.mime)) {
+      // vídeo guardado antes da conversão existir (.mov etc.): converte uma vez e passa a guardar o MP4
+      const n = await this.normalizeVideo(buf, m.mime, m.filename);
+      if (n.converted) {
+        const rel = join(m.organization_id, `${m.id}.mp4`);
         await this.writeStored(m.organization_id, rel, n.buffer);
         if (rel !== m.storage_path) await fsp.unlink(this.absPath(m)).catch(() => undefined);
         m = await this.prisma.whatsapp_media.update({

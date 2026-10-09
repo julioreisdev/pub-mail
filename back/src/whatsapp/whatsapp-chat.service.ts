@@ -464,6 +464,13 @@ export class WhatsAppChatService {
       mime = n.mime;
       filename = n.filename || filename;
     }
+    if (kind === 'video') {
+      // .mov/HEVC/WebM: o WhatsApp aceita e descarta (fica em ✓). Sonda até MP4 (pode ser HEVC por dentro).
+      const n = await this.media.normalizeVideo(buffer, mime, filename);
+      buffer = n.buffer;
+      mime = n.mime;
+      filename = n.filename || filename;
+    }
     const rawCaption = String(dto.caption || '').trim().slice(0, 1000);
     const caption = (rawCaption ? await this.attendance.sign(orgId, userId, rawCaption) : '') || undefined;
     const stored = await this.media.store(orgId, buffer, mime, filename || null, ptt ? 'voice' : kindOfMime(mime));
