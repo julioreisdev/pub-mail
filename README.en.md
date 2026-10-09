@@ -251,7 +251,7 @@ In the **Funnel Builder**, a sequence can end with **💳 PIX charge**: set the 
 Platform settings (AI keys, Resend, webhook secret, edge IP, certbot email) live in the database (`system_settings`) and are edited under **Integrations**.
 
 - `WP_PLUGIN_SIGNING_KEY` (signs the WordPress plugin license; never change it once you have customers), `APP_PUBLIC_URL` and `WP_PLUGIN_SOURCE_DIR` (optional)
-- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (WhatsApp gateway with the Baileys engine, recommended) and `OPENWA_URL` / `OPENWA_API_KEY` (whatsapp-web.js gateway, optional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (media quota per org, default 2048)
+- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (WhatsApp gateway with the Baileys engine, recommended) and `OPENWA_URL` / `OPENWA_API_KEY` (whatsapp-web.js gateway, optional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (media quota per org, default 2048; production uses 25600)
 
 ### AI micro
 

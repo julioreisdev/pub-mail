@@ -251,7 +251,7 @@ No **Construtor de Funil**, uma sequência pode terminar em **💳 Cobrança PIX
 Configurações de plataforma (chaves de IA, Resend, webhook secret, IP de borda, e-mail do certbot) ficam no banco (`system_settings`) e são editadas em **Integrações**.
 
 - `WP_PLUGIN_SIGNING_KEY` (assina a licença do plugin WordPress; nunca trocar depois de ter clientes), `APP_PUBLIC_URL` e `WP_PLUGIN_SOURCE_DIR` (opcionais)
-- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (gateway WhatsApp com motor Baileys, recomendado) e `OPENWA_URL` / `OPENWA_API_KEY` (gateway whatsapp-web.js, opcional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (cota de mídia por org, padrão 2048)
+- `OPENWA_BAILEYS_URL` / `OPENWA_BAILEYS_API_KEY` (gateway WhatsApp com motor Baileys, recomendado) e `OPENWA_URL` / `OPENWA_API_KEY` (gateway whatsapp-web.js, opcional); `WHATSAPP_DEFAULT_ENGINE` (`baileys`); `OPENWA_WEBHOOK_BASE`; `WHATSAPP_MEDIA_QUOTA_MB` (cota de mídia por org, padrão 2048; produção usa 25600)
 
 ### AI micro
 

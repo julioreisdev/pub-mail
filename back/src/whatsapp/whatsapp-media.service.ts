@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { execFile } from 'child_process';
@@ -179,7 +179,8 @@ export class WhatsAppMediaService {
   async store(orgId: string, buf: Buffer, mime: string, filename?: string | null, kind?: string) {
     if (this.needsNormalize(mime, kind === 'voice')) ({ buffer: buf, mime, filename } = await this.normalizeAudio(buf, mime, kind === 'voice', filename));
     if (buf.length > 1024 && (await this.usage(orgId)) + buf.length > MEDIA_QUOTA_BYTES) {
-      throw new Error(`Cota de mídia da organização atingida (${Math.round(MEDIA_QUOTA_BYTES / 1024 / 1024)} MB).`);
+      // 413 com texto claro (era Error genérico → "Internal server error" na tela). O inbound captura igual e marca a mídia como omitida.
+      throw new PayloadTooLargeException(`O espaço de mídia do WhatsApp desta organização está cheio (${Math.round(MEDIA_QUOTA_BYTES / 1024 / 1024 / 1024 * 10) / 10} GB). Fale com o suporte para ampliar.`);
     }
     const ext = MIME_EXT[String(mime || '').toLowerCase()] || (filename && extname(filename).replace('.', '').toLowerCase().slice(0, 8)) || 'bin';
     const dir = join(this.root(), orgId);

@@ -1002,7 +1002,7 @@ OPENWA_BAILEYS_API_KEY=$KEY
 WHATSAPP_DEFAULT_ENGINE=baileys
 OPENWA_WEBHOOK_BASE=http://host.docker.internal:8000
 # OPENWA_URL / OPENWA_API_KEY   # só se também rodar o gateway whatsapp-web.js (porta 2785)
-# WHATSAPP_MEDIA_QUOTA_MB=2048   # cota de mídia por organização (padrão 2 GB)
+# WHATSAPP_MEDIA_QUOTA_MB=25600  # cota de mídia por organização (padrão 2 GB é pouco: 2 números ≈ 250 MB/dia × 90 dias; produção usa 25 GB)
 EOF2
 mkdir -p /opt/pub-mail/back/protected/whatsapp && chmod 750 /opt/pub-mail/back/protected/whatsapp
 systemctl restart pubmail-back
