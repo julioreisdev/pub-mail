@@ -56,6 +56,7 @@ export const KINDS: KindMeta[] = [
   { key: 'session_connected', group: 'connection', label: 'Número conectou', description: 'Um número do WhatsApp voltou a ficar pronto.' },
   { key: 'rating', group: 'other', label: 'Avaliação recebida', description: 'Um cliente deu nota ao atendimento.' },
   { key: 'broadcast_done', group: 'other', label: 'Broadcast concluído', description: 'Um disparo em massa terminou.' },
+  { key: 'broadcast_paused', group: 'other', label: 'Broadcast pausado', description: 'O disparo parou sozinho por bloqueios ou restrição — precisa da sua decisão.', important: true },
   { key: 'team_message', group: 'other', label: 'Mensagem da equipe', description: 'Alguém falou com você no chat interno.' },
   { key: 'custom', group: 'other', label: 'Avisos personalizados', description: 'Notificações criadas por você ou pela sua equipe.' },
 ];
@@ -99,6 +100,7 @@ export type Prefs = {
   session_connected: boolean;
   rating: boolean;
   broadcast_done: boolean;
+  broadcast_paused: boolean;
   team_message: boolean;
   custom: boolean;
 };
@@ -130,6 +132,7 @@ export const DEFAULT_PREFS: Prefs = {
   session_connected: false,
   rating: true,
   broadcast_done: true,
+  broadcast_paused: true,
   team_message: true,
   custom: true,
 };
@@ -197,6 +200,7 @@ export function normalizePrefs(raw: any, base: Prefs = DEFAULT_PREFS): Prefs {
     session_connected: bool(r.session_connected, base.session_connected),
     rating: bool(r.rating, base.rating),
     broadcast_done: bool(r.broadcast_done, base.broadcast_done),
+    broadcast_paused: bool(r.broadcast_paused, base.broadcast_paused),
     team_message: bool(r.team_message, base.team_message),
     custom: bool(r.custom, base.custom),
   };

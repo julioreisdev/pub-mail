@@ -95,8 +95,12 @@ export class BroadcastDto {
   @IsOptional() @IsArray() @ArrayMaxSize(48) times?: number[];
   @IsOptional() @IsIn(['sequential', 'random']) mode?: string;
   @IsOptional() @IsBoolean() delete_used?: boolean;
+  // "Randomizar envio": cada destinatário recebe uma copy sorteada entre todas as cadastradas
+  @IsOptional() @IsBoolean() randomize_copies?: boolean;
+  // excluir da audiência quem não respondeu nos últimos N dias (null = desligado)
+  @IsOptional() @ValidateIf((o) => o.exclude_inactive_days !== null) @IsInt() @Min(1) @Max(365) exclude_inactive_days?: number | null;
   @IsOptional() @IsBoolean() active?: boolean;
-  @IsOptional() @IsInt() @Min(1000) @Max(120000) interval_ms?: number;
+  @IsOptional() @IsInt() @Min(100) @Max(120000) interval_ms?: number;
   @IsOptional() @IsBoolean() risk_ack?: boolean;
 }
 export class CopiesDto {
@@ -106,6 +110,15 @@ export class AudienceDto {
   @IsOptional() targets?: any;
   @IsOptional() @IsArray() session_ids?: string[];
   @IsOptional() @IsIn(['shared', 'own']) distribution?: string;
+  @IsOptional() @ValidateIf((o) => o.exclude_inactive_days !== null) @IsInt() @Min(1) @Max(365) exclude_inactive_days?: number | null;
+}
+export class RunActionDto {
+  @IsOptional() @IsBoolean() force?: boolean;
+}
+export class RepliesQueryDto {
+  @IsOptional() @Type(() => Number) days?: number;
+  @IsOptional() @Type(() => Number) page?: number;
+  @IsOptional() @Type(() => Number) page_size?: number;
 }
 export class RunsQueryDto {
   @IsOptional() @Type(() => Number) page?: number;

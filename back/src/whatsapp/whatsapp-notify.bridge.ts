@@ -44,6 +44,7 @@ export class WhatsAppNotifyBridge implements OnModuleInit {
     this.hooks.on('session_disconnected', (e) => this.onSession(e, false));
     this.hooks.on('rating', (e) => this.onRating(e));
     this.hooks.on('broadcast_done', (e) => this.onBroadcastDone(e));
+    this.hooks.on('broadcast_paused', (e) => this.onBroadcastPaused(e));
   }
 
   private chatRow(orgId: string, sessionId: string, jid: string) {
@@ -200,6 +201,10 @@ export class WhatsAppNotifyBridge implements OnModuleInit {
   }
 
   // ---------------------------------------------------------------- broadcasts
+  private async onBroadcastPaused(e: { orgId: string; broadcast: any; run: any; reason: string }) {
+    await this.notifications.notify(e.orgId, { kind: 'broadcast_paused', title: `Broadcast pausado: ${e.broadcast?.name || 'campanha'}`, body: `${e.reason}. Abra Broadcasts para retomar ou enviar mesmo assim.`, url: '/whatsapp/broadcasts', tag: `broadcast:${e.run?.id}`, important: true, data: { broadcast_id: e.broadcast?.id, run_id: e.run?.id } });
+  }
+
   private async onBroadcastDone(e: { orgId: string; broadcast: any; run: any; stats: { total: number; sent: number; failed: number; blocked: number } }) {
     const s = e.stats;
     await this.notifications.notify(e.orgId, { kind: 'broadcast_done', title: `Broadcast concluído: ${e.broadcast?.name || 'campanha'}`, body: `${s.sent} de ${s.total} enviados${s.failed ? ` · ${s.failed} falhas` : ''}${s.blocked ? ` · ${s.blocked} bloqueados` : ''}.`, url: '/whatsapp/broadcasts', tag: `broadcast:${e.run?.id}`, data: { broadcast_id: e.broadcast?.id, run_id: e.run?.id } });

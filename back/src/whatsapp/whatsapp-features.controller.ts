@@ -18,7 +18,7 @@ import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.serv
 import { WaAccessService } from './wa-access.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
-import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto } from './dto/whatsapp-crud.dto';
+import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto, RunActionDto, RepliesQueryDto } from './dto/whatsapp-crud.dto';
 import { serveWaFile } from './crypto/wa-file-serve';
 
 const MB = 1024 * 1024;
@@ -231,11 +231,14 @@ export class WhatsAppBroadcastsController {
   @Post() @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') create(@Req() req: any, @Body() dto: BroadcastDto) { return this.bc.create(req.user.organizationId, dto); }
   @Put(':id') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') update(@Req() req: any, @Param('id') id: string, @Body() dto: BroadcastDto) { return this.bc.update(req.user.organizationId, id, dto); }
   @Delete(':id') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') remove(@Req() req: any, @Param('id') id: string) { return this.bc.remove(req.user.organizationId, id); }
-  @Post('audience-estimate') audience(@Req() req: any, @Body() dto: AudienceDto) { return this.bc.audience(req.user.organizationId, dto.targets, dto.session_ids, dto.distribution); }
+  @Post('audience-estimate') audience(@Req() req: any, @Body() dto: AudienceDto) { return this.bc.audience(req.user.organizationId, dto.targets, dto.session_ids, dto.distribution, dto.exclude_inactive_days ?? null); }
   @Get(':id/copies') copies(@Req() req: any, @Param('id') id: string) { return this.bc.getCopies(req.user.organizationId, id); }
   @Put(':id/copies') setCopies(@Req() req: any, @Param('id') id: string, @Body() dto: CopiesDto) { return this.bc.setCopies(req.user.organizationId, id, dto.copies); }
   @Post(':id/fire') @Throttle({ default: { limit: 5, ttl: 60_000 } }) fire(@Req() req: any, @Param('id') id: string) { return this.bc.fire(req.user.organizationId, id); }
   @Get(':id/runs') runs(@Req() req: any, @Param('id') id: string, @Query() q: RunsQueryDto) { return this.bc.runs(req.user.organizationId, id, q); }
+  @Post(':id/runs/:runId/pause') pauseRun(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string) { return this.bc.pauseRunManual(req.user.organizationId, id, runId); }
+  @Post(':id/runs/:runId/resume') resumeRun(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string, @Body() dto: RunActionDto) { return this.bc.resumeRun(req.user.organizationId, id, runId, Boolean(dto?.force)); }
+  @Get(':id/replies') replies(@Req() req: any, @Param('id') id: string, @Query() q: RepliesQueryDto) { return this.bc.replies(req.user.organizationId, id, q); }
   @Get(':id/runs/:runId/sends') sends(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string, @Query() q: any) { return this.bc.sends(req.user.organizationId, id, runId, q); }
 }
 

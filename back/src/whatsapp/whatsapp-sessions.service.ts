@@ -605,6 +605,7 @@ export class WhatsAppSessionsService {
     const r = await this.prisma.whatsapp_sessions.updateMany({ where: { id: row.id, openwa_session_id: current }, data: patch });
     if (!r.count) return; // encerrada enquanto isso
     // notificações: só nas transições de verdade (pronto ↔ caiu)
+    if (event === 'session.restriction') this.hooks.emit('session_restricted', { orgId: row.organization_id, row: { ...row, ...patch }, reason: patch.last_error || null });
     if (patch.status && patch.status !== prevStatus) {
       if (patch.status === 'ready' && prevStatus !== 'ready') this.hooks.emit('session_connected', { orgId: row.organization_id, row: { ...row, ...patch } });
       if ((patch.status === 'disconnected' || patch.status === 'failed') && prevStatus === 'ready') this.hooks.emit('session_disconnected', { orgId: row.organization_id, row: { ...row, ...patch }, reason: patch.last_error || null });

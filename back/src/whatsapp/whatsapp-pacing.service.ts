@@ -22,6 +22,13 @@ export function brtDayStart(now = new Date()) {
 @Injectable()
 export class WhatsAppPacingService {
   constructor(private readonly prisma: PrismaService) {}
+  // contagem do dia por número, em cache por 20 s e incrementada localmente a cada envio (noteSent)
+  private readonly todayCache = new Map<string, { at: number; day: number; total: number; cold: number }>();
+
+  noteSent(sessionId: string, cold: boolean) {
+    const c = this.todayCache.get(sessionId);
+    if (c) { c.total++; if (cold) c.cold++; }
+  }
 
   warmupDay(pairedAt: Date | null | undefined) {
     if (!pairedAt) return null;
@@ -38,6 +45,14 @@ export class WhatsAppPacingService {
   // Enviadas hoje (BRT) pelo número e, dentre elas, "frias" = para chats individuais sem nenhuma mensagem recebida antes.
   async sentToday(row: PacingRow) {
     const start = brtDayStart();
+    const cached = this.todayCache.get(row.id);
+    if (cached && cached.day === start.getTime() && Date.now() - cached.at < 20_000) return { total: cached.total, cold: cached.cold };
+    const res = await this.sentTodayFresh(row, start);
+    this.todayCache.set(row.id, { at: Date.now(), day: start.getTime(), total: res.total, cold: res.cold });
+    return res;
+  }
+
+  private async sentTodayFresh(row: PacingRow, start: Date) {
     const out = await this.prisma.whatsapp_messages.findMany({
       where: { organization_id: row.organization_id, session_id: row.id, direction: 'OUT', timestamp: { gte: start }, chat_id: { endsWith: '@c.us' } },
       select: { chat_id: true },
@@ -61,7 +76,7 @@ export class WhatsAppPacingService {
 
   // Broadcast pode enviar deste número para este chat agora? (false → PACED até amanhã)
   // `dailyCap` (opcional) = limite diário extra configurado na campanha (vale o menor).
-  async canSend(row: PacingRow, chatId: string, dailyCap?: number | null): Promise<{ ok: boolean; reason?: string }> {
+  async canSend(row: PacingRow, chatId: string, dailyCap?: number | null): Promise<{ ok: boolean; reason?: string; cold?: boolean }> {
     if (!/@c\.us$/.test(chatId)) return { ok: true }; // grupos não entram no aquecimento
     const lim = this.limits(row.paired_at);
     const daily = row.pacing_enabled === false ? Number.POSITIVE_INFINITY : lim.daily;
@@ -72,6 +87,6 @@ export class WhatsAppPacingService {
     if (row.pacing_enabled === false) return { ok: true };
     const hasIn = await this.prisma.whatsapp_messages.count({ where: { organization_id: row.organization_id, session_id: row.id, chat_id: chatId, direction: 'IN' } });
     if (!hasIn && sent.cold >= lim.cold) return { ok: false, reason: `Limite de contatos frios do dia (${lim.cold}) atingido` };
-    return { ok: true };
+    return { ok: true, cold: !hasIn };
   }
 }

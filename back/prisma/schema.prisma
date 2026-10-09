@@ -1557,6 +1557,9 @@ model whatsapp_contacts {
   is_business          Boolean   @default(false)
   is_my_contact        Boolean   @default(false)
   is_blocked           Boolean   @default(false)
+  wa_exists            Boolean?
+  wa_checked_at        DateTime? @db.DateTime(3)
+  blocked_us_at        DateTime? @db.DateTime(3)
   opted_out_at         DateTime? @db.DateTime(3)
   saved                Boolean   @default(false)
   tags                 Json?
@@ -1806,6 +1809,8 @@ model whatsapp_broadcasts {
   times           Json?
   mode            String    @default("sequential") @db.VarChar(16)
   delete_used     Boolean   @default(false)
+  randomize_copies Boolean  @default(false)
+  exclude_inactive_days Int?
   active          Boolean   @default(false)
   last_copy_index Int       @default(0)
   interval_ms     Int       @default(4000)
@@ -1838,11 +1843,17 @@ model whatsapp_broadcast_runs {
   copy_id         String?             @db.Char(36)
   by_session      Json?
   messages        Json?
+  copies          Json?
   total           Int                 @default(0)
   sent            Int                 @default(0)
   failed          Int                 @default(0)
   blocked         Int                 @default(0)
+  skipped         Int                 @default(0)
+  replied         Int                 @default(0)
   status          String              @default("running") @db.VarChar(12)
+  paused_at       DateTime?           @db.DateTime(3)
+  pause_reason    String?             @db.VarChar(255)
+  forced_at       DateTime?           @db.DateTime(3)
   finished_at     DateTime?           @db.DateTime(3)
   created_at      DateTime            @default(now()) @db.DateTime(3)
   broadcast       whatsapp_broadcasts @relation(fields: [broadcast_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcrun_bc")
@@ -1865,14 +1876,19 @@ model whatsapp_broadcast_sends {
   status          String                  @default("PENDING") @db.VarChar(8)
   attempts        Int                     @default(0)
   msg_index       Int                     @default(0)
+  copy_index      Int?
   next_at         DateTime?               @db.DateTime(3)
   last_error      String?                 @db.VarChar(500)
+  skip_reason     String?                 @db.VarChar(255)
   created_at      DateTime                @default(now()) @db.DateTime(3)
   sent_at         DateTime?               @db.DateTime(3)
+  replied_at      DateTime?               @db.DateTime(3)
   run             whatsapp_broadcast_runs @relation(fields: [run_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcsend_run")
 
   @@index([status, organization_id, next_at], map: "idx_wabcsend_queue")
   @@index([run_id], map: "idx_wabcsend_run")
+  @@index([organization_id, session_id, chat_id, sent_at], map: "idx_wabcsend_chat")
+  @@index([run_id, status], map: "idx_wabcsend_run_status")
 }
 
 // Filtros personalizados do chat (abas com contatos/grupos escolhidos)

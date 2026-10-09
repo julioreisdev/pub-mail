@@ -4,6 +4,8 @@ import {
   AccordionDetails,
   AccordionSummary,
   Alert,
+  Pagination,
+  Skeleton,
   Autocomplete,
   Box,
   Button,
@@ -38,6 +40,8 @@ import {
   IconDeviceFloppy,
   IconPencil,
   IconPlayerPlay,
+  IconPlayerPause,
+  IconMessageReply,
   IconHistory,
   IconMessage2,
   IconChevronDown,
@@ -66,9 +70,19 @@ import {
   IconArrowsSplit,
   IconCircleCheck,
   IconUsersGroup,
-  IconAddressBook
+  IconAddressBook,
+  IconTargetArrow,
+  IconWorld,
+  IconArrowsExchange,
+  IconListCheck,
+  IconMessageCircleCheck,
+  IconMessageCircleOff,
+  IconCalendarStats,
+  IconRepeatOff,
+  IconFilterMinus
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 
 import { get, post, put, remove } from 'api/api';
 import { TgEmptyState, TgCard, TgStatusPill, TgFilterBar, TgConfirmDialog, TgGhostButton, TgListSkeleton } from 'views/pages/telegram/ui';
@@ -134,6 +148,22 @@ const audienceOf = (b) => {
   return { contacts, groups, total, parts, by_session, warnings };
 };
 const CONTACT_MODE_LABEL = { saved: 'contatos salvos', all: 'todos os contatos', none: 'sem contatos' };
+// resumo curto da origem e dos filtros da audiência (linha da lista)
+const audienceRulesOf = (b) => {
+  const t = b?.targets || {};
+  const out = [];
+  if (t.contacts && t.contacts !== 'none') {
+    if (t.source === 'sending') out.push('só dos números que enviam');
+    else if (t.source === 'others') out.push('só de outros números');
+    else if (t.source === 'custom') out.push(`de ${plural((t.source_session_ids || []).length, 'número escolhido', 'números escolhidos')}`);
+    if (t.engagement === 'replied') out.push('já responderam');
+    if (t.engagement === 'never') out.push('nunca responderam');
+    if ((t.exclude_tags || []).length) out.push(`sem tags: ${t.exclude_tags.join(', ')}`);
+    if (t.cooldown_hours) out.push(`sem repetir em ${t.cooldown_hours} h`);
+  }
+  if (b?.exclude_inactive_days) out.push(`responderam em ${b.exclude_inactive_days} d`);
+  return out;
+};
 
 // ---- ritmo de envio (presets anti-bloqueio) ----
 const RISK_UI = {
@@ -221,13 +251,14 @@ const presetOf = (presets, key) => (presets?.items || []).find((p) => p.key === 
 const pacingLabel = (presets, pacing) =>
   presetOf(presets, pacing?.preset)?.label || presetOf(FALLBACK_PRESETS, pacing?.preset)?.label || 'Normal';
 const pacingRisk = (presets, pacing) =>
-  presetOf(presets, pacing?.preset)?.risk || presetOf(FALLBACK_PRESETS, pacing?.preset)?.risk || 'medium';
+  pacing?.preset === 'custom' || !pacing?.preset
+    ? riskOfInterval(pacing?.interval_ms)
+    : presetOf(presets, pacing?.preset)?.risk || presetOf(FALLBACK_PRESETS, pacing?.preset)?.risk || 'medium';
 // frases curtas que descrevem um `pacing` normalizado
 const pacingParts = (p) => {
   const out = [];
   if (!p) return out;
-  const sec = Math.round((Number(p.interval_ms) || 0) / 1000);
-  out.push(`${sec} s entre envios${p.jitter_pct ? ` (±${p.jitter_pct} %)` : ''}`);
+  out.push(`${fmtSec(p.interval_ms)} s entre envios${p.jitter_pct ? ` (±${p.jitter_pct} %)` : ''}`);
   if (p.pause_every && p.pause_minutes) out.push(`pausa de ${p.pause_minutes} min a cada ${p.pause_every} envios`);
   else out.push('sem pausas');
   out.push(p.daily_limit ? `até ${Number(p.daily_limit).toLocaleString('pt-BR')} envios/dia por número` : 'sem limite diário próprio');
@@ -241,6 +272,7 @@ const TIME_STATUS = {
   sent_with_errors: { color: 'warning.main', tip: (t) => `Disparado hoje às ${t}, com algumas falhas` },
   failed: { color: 'error.main', tip: (t) => `Executou hoje (${t}) e falhou` },
   sending: { color: 'info.main', tip: () => 'Enviando agora…' },
+  paused: { color: 'error.main', tip: () => 'Pausado (bloqueios ou pausa manual) — veja o aviso na campanha' },
   pending: { color: 'warning.main', tip: (t) => `Aguardando o horário de hoje (${t})` },
   missed: { color: 'text.disabled', tip: (t) => `Agendado ${t} — não rodou hoje (roda no próximo dia)` }
 };
@@ -765,22 +797,41 @@ function CopiesModal({ broadcast, open, onClose }) {
 
 // ---------------------------------------------------------------- modal de broadcast
 const DEFAULT_PACING = {
-  preset: 'normal',
-  interval_ms: 8000,
-  jitter_pct: 30,
+  preset: 'custom',
+  interval_ms: 300,
+  jitter_pct: 20,
   daily_limit: null,
-  pause_every: 50,
-  pause_minutes: 10,
+  pause_every: 0,
+  pause_minutes: 0,
   window: null
+};
+// segundos com até 1 casa (0,3 s) para intervalos curtos
+const fmtSec = (ms) => {
+  const sec = (Number(ms) || 0) / 1000;
+  return sec < 10 ? String(Math.round(sec * 10) / 10).replace('.', ',') : String(Math.round(sec));
 };
 const EMPTY = {
   name: 'Novo broadcast',
   session_ids: [],
   distribution: 'shared',
-  targets: { contacts: 'saved', contact_ids: [], tags: [], groups: [] },
+  targets: {
+    contacts: 'saved',
+    contact_ids: [],
+    tags: [],
+    exclude_tags: [],
+    groups: [],
+    source: 'all',
+    source_session_ids: [],
+    include_unlinked: true,
+    outsiders: 'skip',
+    engagement: 'any',
+    cooldown_hours: null
+  },
   times: [],
   mode: 'sequential',
   delete_used: false,
+  randomize_copies: false,
+  exclude_inactive_days: null,
   pacing: DEFAULT_PACING,
   active: true
 };
@@ -807,32 +858,47 @@ const DISTRIBUTIONS = [
 ];
 const distributionOf = (key) => DISTRIBUTIONS.find((d) => d.key === key) || DISTRIBUTIONS[0];
 
-function DistributionPicker({ value, onChange }) {
+// cartões de escolha única (rádio) — divisão entre números, origem da audiência, histórico de resposta
+function ChoiceCards({ options, value, onChange, ariaLabel, columns = 2, disabled = false }) {
   return (
     <Box
       role="radiogroup"
-      aria-label="Como dividir os contatos entre os números"
-      sx={{ display: 'grid', gap: 1, gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' } }}
+      aria-label={ariaLabel}
+      aria-disabled={disabled}
+      sx={{
+        display: 'grid',
+        gap: 1,
+        gridTemplateColumns: {
+          xs: 'minmax(0, 1fr)',
+          sm: `repeat(${Math.min(columns, 2)}, minmax(0, 1fr))`,
+          md: `repeat(${columns}, minmax(0, 1fr))`
+        },
+        opacity: disabled ? 0.5 : 1,
+        pointerEvents: disabled ? 'none' : 'auto'
+      }}
     >
-      {DISTRIBUTIONS.map((d) => {
+      {options.map((d) => {
         const selected = value === d.key;
+        const tone = d.tone || WA_DARK;
         return (
           <Box
             key={d.key}
             role="radio"
             aria-checked={selected}
-            tabIndex={0}
+            tabIndex={disabled ? -1 : 0}
             onClick={() => onChange(d.key)}
-            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? onChange(d.key) : null)}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? (e.preventDefault(), onChange(d.key)) : null)}
             sx={{
               p: 1.5,
               borderRadius: 2.5,
               border: '2px solid',
               cursor: 'pointer',
-              borderColor: selected ? WA_DARK : 'divider',
+              display: 'flex',
+              flexDirection: 'column',
+              borderColor: selected ? tone : 'divider',
               bgcolor: selected ? `${WA_GREEN}14` : 'background.paper',
               transition: 'border-color .12s ease, background-color .12s ease',
-              '&:hover': { borderColor: selected ? WA_DARK : `${WA_GREEN}99` },
+              '&:hover': { borderColor: selected ? tone : `${WA_GREEN}99` },
               outline: 'none',
               '&:focus-visible': { boxShadow: `0 0 0 3px ${WA_GREEN}55` }
             }}
@@ -864,12 +930,218 @@ function DistributionPicker({ value, onChange }) {
             <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1.35 }}>
               {d.description}
             </Typography>
+            {d.extra ? <Box sx={{ mt: 'auto', pt: 1 }}>{d.extra}</Box> : null}
           </Box>
         );
       })}
     </Box>
   );
 }
+
+function DistributionPicker({ value, onChange }) {
+  return <ChoiceCards options={DISTRIBUTIONS} value={value} onChange={onChange} ariaLabel="Como dividir os contatos entre os números" />;
+}
+
+// ---------------------------------------------------------------- origem da audiência
+// De quais números vem a audiência — independe de quais números ENVIAM.
+const SOURCES = [
+  {
+    key: 'sending',
+    Icon: IconTargetArrow,
+    label: (n) => (n > 1 ? 'Só destes números' : 'Só deste número'),
+    description: (n) => `Quem está na agenda ou já conversou com ${n > 1 ? 'os números que enviam' : 'o número que envia'}.`
+  },
+  {
+    key: 'all',
+    Icon: IconWorld,
+    label: (n) => (n > 1 ? 'Destes e dos outros' : 'Deste e dos outros'),
+    description: () => 'Os contatos de todos os números da organização.'
+  },
+  {
+    key: 'others',
+    Icon: IconArrowsExchange,
+    label: () => 'Só dos outros números',
+    description: (n) => `Quem é dos outros números e ainda não é ${n > 1 ? 'destes' : 'deste'}. Bom para ampliar o alcance.`
+  },
+  {
+    key: 'custom',
+    Icon: IconListCheck,
+    label: () => 'Escolher números',
+    description: () => 'Você marca de quais números vem a audiência.'
+  }
+];
+const effectiveOutsiders = (t) => (t.source === 'others' ? 'split' : t.outsiders || (t.source === 'custom' ? 'split' : 'skip'));
+
+// chip de número que liga/desliga (origem personalizada), com quantos contatos ele traz
+function SourceNumberToggle({ session, selected, count, sending, onClick }) {
+  const color = session.color || WA_GREEN;
+  return (
+    <Box
+      role="checkbox"
+      aria-checked={selected}
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ' ? (e.preventDefault(), onClick()) : null)}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 0.9,
+        pl: 0.75,
+        pr: 1.25,
+        py: 0.6,
+        borderRadius: 5,
+        cursor: 'pointer',
+        userSelect: 'none',
+        border: '1.5px solid',
+        borderColor: selected ? color : 'divider',
+        bgcolor: selected ? `${color}1F` : 'background.paper',
+        transition: 'all .12s ease',
+        '&:hover': { borderColor: color },
+        outline: 'none',
+        '&:focus-visible': { boxShadow: `0 0 0 3px ${color}40` }
+      }}
+    >
+      <Checkbox size="small" checked={selected} tabIndex={-1} sx={{ p: 0, color: 'text.disabled', '&.Mui-checked': { color } }} />
+      <WaNumberDot session={session} size={8} />
+      <Typography sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>{sessionLabel(session)}</Typography>
+      <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700 }}>
+        {count != null ? count.toLocaleString('pt-BR') : '…'}
+      </Typography>
+      {sending ? (
+        <Box
+          component="span"
+          sx={{
+            fontSize: 10,
+            fontWeight: 800,
+            px: 0.6,
+            py: 0.1,
+            borderRadius: 1,
+            color: WA_DARK,
+            bgcolor: `${WA_GREEN}24`,
+            letterSpacing: 0.2
+          }}
+        >
+          ENVIA
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function AudienceSourcePicker({ targets, setT, sendingIds, sessions, estimate, disabled }) {
+  const n = Math.max(1, sendingIds.length);
+  const counts = useMemo(() => new Map((estimate?.source_by_session || []).map((x) => [x.session_id, x.contacts || 0])), [estimate]);
+  const source = targets.source || 'all';
+  const options = SOURCES.map((o) => ({ key: o.key, Icon: o.Icon, label: o.label(n), description: o.description(n) }));
+  const pick = (key) =>
+    setT({
+      source: key,
+      include_unlinked: key === 'all',
+      source_session_ids: key === 'custom' ? (targets.source_session_ids?.length ? targets.source_session_ids : sendingIds) : []
+    });
+  const custom = targets.source_session_ids || [];
+  const toggle = (id) => setT({ source_session_ids: custom.includes(id) ? custom.filter((x) => x !== id) : [...custom, id] });
+  const unlinked = estimate?.unlinked;
+  const othersEmpty = source === 'others' && sessions.every((s) => sendingIds.includes(s.id));
+
+  return (
+    <Box>
+      <ChoiceCards
+        options={options}
+        value={source}
+        onChange={pick}
+        columns={4}
+        ariaLabel="De quais números vem a audiência"
+        disabled={disabled}
+      />
+      {disabled ? (
+        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.75 }}>
+          Escolha "Contatos salvos" ou "Todos os contatos" acima para definir de quais números vem a audiência.
+        </Typography>
+      ) : null}
+      {!disabled && source === 'custom' ? (
+        <Box sx={{ mt: 1.25, p: 1.5, borderRadius: 2.5, border: '1px dashed', borderColor: 'divider' }}>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700, display: 'block', mb: 1 }}>
+            Contatos de quais números? O número ao lado é quantos contatos cada um traz (um contato pode ser de mais de um número).
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {sessions.map((s) => (
+              <SourceNumberToggle
+                key={s.id}
+                session={s}
+                selected={custom.includes(s.id)}
+                count={estimate ? counts.get(s.id) || 0 : null}
+                sending={sendingIds.includes(s.id)}
+                onClick={() => toggle(s.id)}
+              />
+            ))}
+          </Stack>
+          {!custom.length ? (
+            <Typography variant="caption" sx={{ color: 'error.main', display: 'block', mt: 1, fontWeight: 600 }}>
+              Marque ao menos um número.
+            </Typography>
+          ) : null}
+        </Box>
+      ) : null}
+      {!disabled && othersEmpty ? (
+        <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.75, fontWeight: 600 }}>
+          Todos os números da organização estão enviando: não sobram "outros números" para tirar a audiência.
+        </Typography>
+      ) : null}
+      {!disabled ? (
+        <FormControlLabel
+          sx={{ mt: 1, ml: -0.75, alignItems: 'flex-start' }}
+          control={
+            <Checkbox
+              size="small"
+              checked={Boolean(targets.include_unlinked)}
+              onChange={(e) => setT({ include_unlinked: e.target.checked })}
+              sx={{ mt: -0.25, '&.Mui-checked': { color: WA_DARK } }}
+            />
+          }
+          label={
+            <Box>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Incluir contatos sem número de origem
+                {unlinked != null ? (
+                  <Typography component="span" variant="caption" sx={{ color: 'text.secondary', ml: 0.75, fontWeight: 700 }}>
+                    {plural(unlinked, 'contato', 'contatos')}
+                  </Typography>
+                ) : null}
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                Importados ou criados à mão, que ainda não estão na agenda nem conversaram com nenhum número.
+              </Typography>
+            </Box>
+          }
+        />
+      ) : null}
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------- histórico de resposta
+const ENGAGEMENTS = [
+  { key: 'any', Icon: IconUsers, label: 'Todos', description: 'Não filtra pelo histórico de conversa.' },
+  {
+    key: 'replied',
+    Icon: IconMessageCircleCheck,
+    label: 'Já responderam',
+    description: 'Só quem já mandou mensagem para algum dos números.'
+  },
+  {
+    key: 'recent',
+    Icon: IconCalendarStats,
+    label: 'Responderam há pouco',
+    description: 'Só quem mandou mensagem para o número nos últimos dias.'
+  },
+  {
+    key: 'never',
+    Icon: IconMessageCircleOff,
+    label: 'Nunca responderam',
+    description: 'Só quem nunca mandou mensagem. É o público de maior risco de bloqueio.'
+  }
+];
 
 // card clicável de um preset de ritmo
 function PresetCard({ preset, selected, onSelect }) {
@@ -968,11 +1240,15 @@ function CustomPacingFields({ pacing, limits, onChange }) {
         <TextField
           type="number"
           size="small"
-          label="Intervalo (s)"
-          value={Math.round((Number(pacing.interval_ms) || 0) / 1000)}
-          onChange={(e) => onChange({ interval_ms: num(e.target.value, 1, Math.round(lim.interval_ms.max / 1000)) * 1000 })}
-          inputProps={{ min: 1, max: Math.round(lim.interval_ms.max / 1000) }}
-          helperText={`${Math.round(lim.interval_ms.min / 1000)}–${Math.round(lim.interval_ms.max / 1000)} s`}
+          label="Tempo entre envios (s)"
+          value={(Number(pacing.interval_ms) || 0) / 1000}
+          onChange={(e) => {
+            const v = Number(String(e.target.value).replace(',', '.'));
+            if (!Number.isFinite(v)) return;
+            onChange({ interval_ms: Math.min(lim.interval_ms.max, Math.max(lim.interval_ms.min, Math.round(v * 1000))) });
+          }}
+          inputProps={{ min: lim.interval_ms.min / 1000, max: Math.round(lim.interval_ms.max / 1000), step: 0.1 }}
+          helperText={`${lim.interval_ms.min / 1000}–${Math.round(lim.interval_ms.max / 1000)} s · 0,3 s ≈ 3 envios/s (10 mil/h)`}
         />
         <TextField
           type="number"
@@ -1045,6 +1321,13 @@ function EstimateBox({ estimate, loading, many }) {
   if (!estimate && !loading) return null;
   const by = Array.isArray(estimate?.by_session) ? estimate.by_session : [];
   const warnings = Array.isArray(estimate?.warnings) ? estimate.warnings : [];
+  const f = estimate?.filtered || {};
+  const filteredParts = [
+    f.source ? `${plural(f.source, 'contato', 'contatos')} pela origem` : null,
+    f.tags ? `${plural(f.tags, 'contato', 'contatos')} pelas tags` : null,
+    f.engagement ? `${plural(f.engagement, 'contato', 'contatos')} pelo histórico de resposta` : null,
+    f.cooldown ? `${plural(f.cooldown, 'contato', 'contatos')} receberam broadcast há pouco` : null
+  ].filter(Boolean);
   return (
     <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -1094,6 +1377,19 @@ function EstimateBox({ estimate, loading, many }) {
           Contatos divididos <b>{distributionOf(estimate.distribution).short}</b>
           {(estimate?.groups || 0) > 0 ? '; grupos saem pelo número que está em cada grupo.' : '.'}
         </Typography>
+      ) : null}
+      {filteredParts.length ? (
+        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ color: 'text.secondary' }}>
+            <IconFilterMinus size={14} />
+            <Typography variant="caption" sx={{ fontWeight: 700 }}>
+              Ficaram de fora:
+            </Typography>
+          </Stack>
+          {filteredParts.map((p) => (
+            <Chip key={p} size="small" variant="outlined" label={p} sx={{ height: 20, fontSize: 11, borderRadius: 1, fontWeight: 600 }} />
+          ))}
+        </Stack>
       ) : null}
       {warnings.map((w) => (
         <Stack key={w} direction="row" spacing={0.5} alignItems="flex-start" sx={{ color: 'warning.main', mt: 0.5 }}>
@@ -1182,15 +1478,16 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
         pacing: {
           ...DEFAULT_PACING,
           ...(initial.pacing || {}),
-          preset: initial.pacing?.preset || (initial.interval_ms ? 'custom' : 'normal')
-        }
+          preset: initial.pacing?.preset || 'custom'
+        },
+        randomize_copies: Boolean(initial.randomize_copies),
+        exclude_inactive_days: initial.exclude_inactive_days ?? null
       });
       setRiskAck(Boolean(initial.risk_ack_at));
     } else {
       // novo: pré-seleciona todos os números conectados (ou todos, se nenhum estiver)
       const ids = readyIds.length ? readyIds : (sessions || []).map((s) => s.id);
-      const dflt = presetOf(presets, presets?.default || 'normal') || presetOf(FALLBACK_PRESETS, 'normal');
-      setForm({ ...EMPTY, session_ids: ids, pacing: { ...DEFAULT_PACING, ...(dflt || {}), preset: dflt?.key || 'normal' } });
+      setForm({ ...EMPTY, session_ids: ids, pacing: { ...DEFAULT_PACING } });
       setRiskAck(false);
     }
     setEstimate(null);
@@ -1206,17 +1503,25 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
       post('/whatsapp/broadcasts/audience-estimate', {
         targets: form.targets,
         session_ids: form.session_ids,
-        distribution: form.distribution
+        distribution: form.distribution,
+        exclude_inactive_days: form.exclude_inactive_days || null
       })
         .then((r) => seq === estSeq.current && setEstimate(r))
         .catch(() => seq === estSeq.current && setEstimate(null))
         .finally(() => seq === estSeq.current && setEstimating(false));
     }, 400);
     return () => clearTimeout(t);
-  }, [open, form.targets, form.session_ids, form.distribution]);
+  }, [open, form.targets, form.session_ids, form.distribution, form.exclude_inactive_days]);
 
   const setF = (p) => setForm((f) => ({ ...f, ...p }));
   const setT = (p) => setForm((f) => ({ ...f, targets: { ...f.targets, ...p } }));
+  const engagementValue = form.exclude_inactive_days ? 'recent' : form.targets.engagement || 'any';
+  const pickEngagement = (key) =>
+    setForm((f) =>
+      key === 'recent'
+        ? { ...f, exclude_inactive_days: f.exclude_inactive_days || 30, targets: { ...f.targets, engagement: 'any' } }
+        : { ...f, exclude_inactive_days: null, targets: { ...f.targets, engagement: key } }
+    );
   const setP = (p) => setForm((f) => ({ ...f, pacing: { ...f.pacing, ...p } }));
   const choosePreset = (key) => {
     const p = presetOf(presets, key) || presetOf(FALLBACK_PRESETS, key);
@@ -1251,6 +1556,8 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
     if (!form.name.trim()) return toast.error('Dê um nome ao broadcast.');
     if ((sessions || []).length && !form.session_ids.length) return toast.error('Escolha ao menos um número para disparar.');
     if (!hasTargets) return toast.error('Escolha contatos e/ou grupos como destino.');
+    if (form.targets.contacts !== 'none' && form.targets.source === 'custom' && !(form.targets.source_session_ids || []).length)
+      return toast.error('Marque de quais números vem a audiência.');
     if (form.pacing.preset === 'custom') {
       const w = form.pacing.window;
       if (w && (w.start || w.end)) {
@@ -1273,6 +1580,8 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
         times: form.times,
         mode: form.mode,
         delete_used: form.delete_used,
+        randomize_copies: Boolean(form.randomize_copies),
+        exclude_inactive_days: form.exclude_inactive_days ? Number(form.exclude_inactive_days) : null,
         active: form.active,
         risk_ack: Boolean(riskAck)
       };
@@ -1359,6 +1668,36 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                       Grupos saem sempre pelo número que está no grupo.
                     </Typography>
                   </Stack>
+                  {form.distribution === 'own' && form.targets.contacts !== 'none' ? (
+                    <Box sx={{ mt: 1.25, p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        Contatos que não são de nenhum dos números que enviam
+                      </Typography>
+                      {form.targets.source === 'others' ? (
+                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.25 }}>
+                          Como a audiência vem de outros números, esses contatos são divididos entre os números que enviam.
+                        </Typography>
+                      ) : (
+                        <RadioGroup
+                          row
+                          value={effectiveOutsiders(form.targets)}
+                          onChange={(e) => setT({ outsiders: e.target.value })}
+                          sx={{ mt: 0.25 }}
+                        >
+                          <FormControlLabel
+                            value="split"
+                            control={<Radio size="small" sx={{ '&.Mui-checked': { color: WA_DARK } }} />}
+                            label={<Typography variant="body2">Dividir entre eles</Typography>}
+                          />
+                          <FormControlLabel
+                            value="skip"
+                            control={<Radio size="small" sx={{ '&.Mui-checked': { color: WA_DARK } }} />}
+                            label={<Typography variant="body2">Deixar de fora</Typography>}
+                          />
+                        </RadioGroup>
+                      )}
+                    </Box>
+                  ) : null}
                 </Box>
               ) : (
                 <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1 }}>
@@ -1385,7 +1724,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
           )}
         </Box>
 
-        {/* ---------- contatos ---------- */}
+        {/* ---------- contatos + origem da audiência ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.5 }}>Contatos</Typography>
           <RadioGroup value={form.targets.contacts} onChange={(e) => setT({ contacts: e.target.value })}>
@@ -1393,18 +1732,52 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
             <FormControlLabel
               value="all"
               control={<Radio size="small" />}
-              label={many ? 'Todos os contatos (agenda de todos os números)' : 'Todos os contatos do WhatsApp conectado'}
+              label={many ? 'Todos os contatos' : 'Todos os contatos do WhatsApp conectado'}
             />
             <FormControlLabel value="none" control={<Radio size="small" />} label="Nenhum (só os escolhidos abaixo / grupos)" />
           </RadioGroup>
+
+          {many ? (
+            <Box sx={{ mt: 1.75 }}>
+              <Typography sx={{ fontWeight: 700, fontSize: 13, mb: 0.25 }}>De quais números vem a audiência</Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+                Independe de quais números enviam. Um contato é de um número quando está na agenda dele ou já conversou com ele.
+              </Typography>
+              <AudienceSourcePicker
+                targets={form.targets}
+                setT={setT}
+                sendingIds={form.session_ids}
+                sessions={sessions}
+                estimate={estimate}
+                disabled={form.targets.contacts === 'none'}
+              />
+            </Box>
+          ) : null}
+
           {form.targets.contacts !== 'none' && tags.length ? (
-            <Box sx={{ mt: 1 }}>
+            <Box
+              sx={{
+                mt: 1.75,
+                display: 'grid',
+                gap: 1.25,
+                gridTemplateColumns: { xs: 'minmax(0, 1fr)', sm: 'repeat(2, minmax(0, 1fr))' }
+              }}
+            >
               <MultiSelect
-                label="Filtrar por tags"
+                label="Só quem tem as tags"
                 value={form.targets.tags}
                 onChange={(v) => setT({ tags: v })}
                 options={tags.map((t) => ({ value: t, label: t }))}
-                placeholder="Só quem tem estas tags…"
+                placeholder="Qualquer tag…"
+                limitTags={2}
+              />
+              <MultiSelect
+                label="Excluir quem tem as tags"
+                value={form.targets.exclude_tags || []}
+                onChange={(v) => setT({ exclude_tags: v })}
+                options={tags.map((t) => ({ value: t, label: t }))}
+                placeholder="Ex.: cliente, não perturbe…"
+                limitTags={2}
               />
             </Box>
           ) : null}
@@ -1417,6 +1790,9 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
               placeholder="Adicionar contatos…"
               limitTags={2}
             />
+            <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
+              Os contatos escolhidos aqui sempre recebem, mesmo fora da origem e dos filtros.
+            </Typography>
           </Box>
         </Box>
 
@@ -1478,17 +1854,115 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
             <FormControlLabel value="random" control={<Radio size="small" />} label="Aleatório (sorteia uma copy a cada disparo)" />
           </RadioGroup>
           <FormControlLabel
-            control={<Switch checked={form.delete_used} onChange={(e) => setF({ delete_used: e.target.checked })} />}
+            control={
+              <Switch
+                checked={form.delete_used}
+                onChange={(e) => setF({ delete_used: e.target.checked })}
+                disabled={form.randomize_copies}
+              />
+            }
             label="Apagar a copy depois de usar"
           />
+          <Box sx={{ mt: 1, p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+            <FormControlLabel
+              control={<Switch checked={Boolean(form.randomize_copies)} onChange={(e) => setF({ randomize_copies: e.target.checked })} />}
+              label={
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    Randomizar envio
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    Usa TODAS as copies no mesmo disparo: cada contato recebe uma sorteada. Com 20 copies, 20 textos diferentes circulam ao
+                    mesmo tempo (menos "texto igual em massa"). O modo acima e "apagar depois de usar" deixam de valer.
+                  </Typography>
+                </Box>
+              }
+              sx={{ alignItems: 'flex-start', m: 0 }}
+            />
+          </Box>
+        </Box>
+
+        {/* ---------- histórico de resposta + não repetir ---------- */}
+        <Box>
+          <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.25 }}>Histórico de resposta</Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+            Quem já responde tem muito menos chance de denunciar o número. Vale para os contatos salvos/todos; grupos e escolhidos à mão
+            sempre recebem. Veja quem respondeu em "Respostas", na lista.
+          </Typography>
+          <ChoiceCards
+            options={ENGAGEMENTS.map((o) =>
+              o.key === 'recent' && engagementValue === 'recent'
+                ? {
+                    ...o,
+                    description: 'Só quem mandou mensagem para o número nos últimos',
+                    extra: (
+                      <TextField
+                        type="number"
+                        size="small"
+                        value={form.exclude_inactive_days || ''}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        onChange={(e) => setF({ exclude_inactive_days: Math.min(365, Math.max(1, parseInt(e.target.value, 10) || 1)) })}
+                        inputProps={{ min: 1, max: 365, 'aria-label': 'dias' }}
+                        sx={{ width: '100%' }}
+                        InputProps={{ endAdornment: <Typography variant="caption">dias</Typography> }}
+                      />
+                    )
+                  }
+                : o
+            )}
+            value={engagementValue}
+            onChange={pickEngagement}
+            columns={4}
+            ariaLabel="Histórico de resposta"
+            disabled={form.targets.contacts === 'none'}
+          />
+          <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px solid', borderColor: 'divider' }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+              <FormControlLabel
+                sx={{ m: 0, flex: 1, alignItems: 'flex-start' }}
+                control={
+                  <Switch
+                    checked={Boolean(form.targets.cooldown_hours)}
+                    disabled={form.targets.contacts === 'none'}
+                    onChange={(e) => setT({ cooldown_hours: e.target.checked ? form.targets.cooldown_hours || 24 : null })}
+                  />
+                }
+                label={
+                  <Box sx={{ pt: 0.25 }}>
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <IconRepeatOff size={16} />
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        Não repetir para quem recebeu broadcast há pouco
+                      </Typography>
+                    </Stack>
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                      Pula quem recebeu qualquer broadcast da organização nesse período. Evita duas campanhas seguidas na mesma pessoa.
+                    </Typography>
+                  </Box>
+                }
+              />
+              <TextField
+                type="number"
+                size="small"
+                value={form.targets.cooldown_hours || ''}
+                disabled={!form.targets.cooldown_hours}
+                onChange={(e) => setT({ cooldown_hours: Math.min(720, Math.max(1, parseInt(e.target.value, 10) || 1)) })}
+                inputProps={{ min: 1, max: 720, 'aria-label': 'horas' }}
+                sx={{ width: 120, flexShrink: 0 }}
+                InputProps={{ endAdornment: <Typography variant="caption">horas</Typography> }}
+              />
+            </Stack>
+          </Box>
         </Box>
 
         {/* ---------- ritmo (anti-bloqueio) ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.25 }}>Ritmo de envio (anti-bloqueio)</Typography>
           <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.25 }}>
-            Intervalos maiores, pausas e limites diários parecem mais humanos e reduzem o risco de restrição. O aquecimento de cada número
-            continua valendo por cima do ritmo escolhido.
+            Padrão: 0,3 s entre envios (≈ 3 por segundo, 10 mil por hora). Campanhas no mesmo horário andam em paralelo, cada uma no seu
+            ritmo. Intervalos maiores, pausas e limites diários reduzem o risco; o aquecimento de cada número continua valendo por cima. Se
+            o número começar a ser bloqueado, o disparo <b>pausa sozinho</b> e você decide se continua.
           </Typography>
           <Box
             sx={{
@@ -1497,9 +1971,10 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
               gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', md: 'repeat(3, minmax(0, 1fr))' }
             }}
           >
-            {presetItems.map((p) => (
-              <PresetCard key={p.key} preset={p} selected={form.pacing.preset === p.key} onSelect={() => choosePreset(p.key)} />
-            ))}
+            {presetItems.map((p0) => {
+              const p = p0.key === 'custom' ? { ...p0, risk: riskOfInterval(form.pacing.interval_ms) } : p0;
+              return <PresetCard key={p.key} preset={p} selected={form.pacing.preset === p.key} onSelect={() => choosePreset(p.key)} />;
+            })}
           </Box>
           {form.pacing.preset === 'custom' ? <CustomPacingFields pacing={form.pacing} limits={limits} onChange={setP} /> : null}
           {fastPreset && fastWarning ? (
@@ -1568,7 +2043,73 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
 }
 
 // ---------------------------------------------------------------- histórico
+// aviso de disparo pausado (disjuntor/manual) com Retomar / Enviar mesmo assim — lista e histórico
+function PausedBanner({ run, busy, onResume, onForce, compact }) {
+  const auto = run.pause_reason && run.pause_reason !== 'Pausado manualmente';
+  return (
+    <Box
+      sx={{
+        mt: 1,
+        p: 1.25,
+        borderRadius: 2,
+        border: '1px solid',
+        borderColor: (t) => `rgba(${t.vars.palette.error.mainChannel} / 0.35)`,
+        bgcolor: (t) => `rgba(${t.vars.palette.error.mainChannel} / 0.06)`
+      }}
+    >
+      <Stack direction="row" spacing={1} alignItems="flex-start">
+        <Box sx={{ color: 'error.main', display: 'inline-flex', mt: 0.25, flexShrink: 0 }}>
+          <IconPlayerPause size={18} />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="body2" sx={{ fontWeight: 800, color: 'error.main', lineHeight: 1.3 }}>
+            Disparo pausado{compact ? '' : ` · ${fmtDateBRT(run.run_at)}`}
+          </Typography>
+          <Typography variant="body2" sx={{ color: 'text.primary', lineHeight: 1.4 }}>
+            {run.pause_reason || 'Pausa manual'}
+            {auto ? '. O disjuntor parou o envio para proteger o número.' : '.'}
+            {auto && run.total ? ` Enviados ${run.sent} de ${run.total}${run.blocked ? `, ${run.blocked} bloqueados` : ''}.` : ''}
+          </Typography>
+        </Box>
+      </Stack>
+      <Stack direction="row" spacing={1} sx={{ mt: 1, pl: { xs: 0, sm: 3.5 } }} flexWrap="wrap" useFlexGap>
+        <Button
+          size="small"
+          variant="outlined"
+          color="inherit"
+          disabled={busy}
+          onClick={onResume}
+          sx={{ whiteSpace: 'nowrap', borderRadius: 2 }}
+        >
+          Retomar
+        </Button>
+        <Button
+          size="small"
+          variant="contained"
+          color="error"
+          disableElevation
+          disabled={busy}
+          onClick={onForce}
+          sx={{ whiteSpace: 'nowrap', borderRadius: 2 }}
+        >
+          Enviar mesmo assim
+        </Button>
+      </Stack>
+    </Box>
+  );
+}
+
+// risco do ritmo PERSONALIZADO pelo intervalo (o back marca "custom" como alto; aqui vale o valor escolhido)
+const riskOfInterval = (ms) => {
+  const v = Number(ms) || 0;
+  if (v <= 1000) return 'high';
+  if (v <= 5000) return 'medium';
+  if (v <= 20000) return 'low';
+  return 'minimal';
+};
+
 function runOutcome(r) {
+  if (r.status === 'paused') return { key: 'paused', color: 'error.main', label: 'Pausado', Icon: IconPlayerPause };
   if (r.status === 'running') return { key: 'sending', color: 'info.main', label: 'Enviando…', Icon: IconLoader2 };
   if ((r.sent || 0) === 0 && (r.total || 0) > 0 && (r.paced || 0) === 0)
     return { key: 'failed', color: 'error.main', label: 'Falhou', Icon: IconCircleXFilled };
@@ -1649,7 +2190,8 @@ const SEND_STATUS = {
   DONE: { pill: 'active', label: 'Enviado' },
   FAILED: { pill: 'error', label: 'Falhou' },
   BLOCKED: { pill: 'banned', label: 'Bloqueado' },
-  PACED: { pill: 'flood', label: 'Aguardando limite do dia' }
+  PACED: { pill: 'flood', label: 'Aguardando limite do dia' },
+  SKIPPED: { pill: 'inactive', label: 'Pulado' }
 };
 
 // gaveta "Ver envios" de uma run (filtra por status e por número)
@@ -1724,6 +2266,7 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
               <MenuItem value="PENDING">Na fila</MenuItem>
               <MenuItem value="BLOCKED">Bloqueados</MenuItem>
               <MenuItem value="FAILED">Falhas</MenuItem>
+              <MenuItem value="SKIPPED">Pulados (sem WhatsApp / bloqueou)</MenuItem>
             </Select>
           </FormControl>
           {many ? <WaNumberSelect sessions={runSessions} value={sess} onChange={(v) => setSess(v || '')} allowAll label="Número" /> : null}
@@ -1765,6 +2308,16 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
                       Bateu o limite do dia deste número — sai amanhã automaticamente.
                     </Typography>
                   ) : null}
+                  {s.status === 'SKIPPED' && s.skip_reason ? (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5 }}>
+                      {s.skip_reason}
+                    </Typography>
+                  ) : null}
+                  {s.replied_at ? (
+                    <Typography variant="caption" sx={{ color: 'success.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
+                      Respondeu {fmtDateBRT(s.replied_at)}
+                    </Typography>
+                  ) : null}
                   {s.last_error ? (
                     <Typography variant="caption" sx={{ color: 'error.main', display: 'block', mt: 0.5 }} noWrap>
                       {s.last_error}
@@ -1795,6 +2348,29 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
 
 function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
   const [data, setData] = useState({ items: [], total: 0, page: 1, pages: 1 });
+  const [actionBusy, setActionBusy] = useState(false);
+  const runAction = async (r, what) => {
+    if (actionBusy) return;
+    setActionBusy(true);
+    try {
+      if (what === 'pause') await post(`/whatsapp/broadcasts/${broadcast.id}/runs/${r.id}/pause`, {});
+      else await post(`/whatsapp/broadcasts/${broadcast.id}/runs/${r.id}/resume`, { force: what === 'force' });
+      toast.success(
+        what === 'pause'
+          ? 'Disparo pausado.'
+          : what === 'force'
+            ? 'Retomado — o disjuntor foi desligado neste disparo.'
+            : 'Disparo retomado.'
+      );
+      setRefreshTick((x) => x + 1);
+    } catch (e) {
+      toast.error(errMsg(e, 'Não deu para alterar o disparo.'));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+  const [refreshTick, setRefreshTick] = useState(0);
+
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('all');
   const [period, setPeriod] = useState('all');
@@ -1821,7 +2397,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
       .then((d) => setData({ items: asList(d), total: d?.total ?? 0, page: d?.page ?? page, pages: d?.pages ?? 1 }))
       .catch(() => setData({ items: [], total: 0, page: 1, pages: 1 }))
       .finally(() => setLoading(false));
-  }, [open, broadcast, status, period, page]);
+  }, [open, broadcast, status, period, page, refreshTick]);
 
   useEffect(() => {
     load();
@@ -1853,6 +2429,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
           <InputLabel id="wa-runs-status-label">Status</InputLabel>
           <Select labelId="wa-runs-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
             <MenuItem value="all">Todos os status</MenuItem>
+            <MenuItem value="paused">Pausados</MenuItem>
             <MenuItem value="clean">Sucesso</MenuItem>
             <MenuItem value="errors">Com falhas</MenuItem>
             <MenuItem value="sending">Enviando</MenuItem>
@@ -1916,7 +2493,16 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
                     {(r.paced || 0) > 0 ? <StatPill label="Aguard. limite" value={r.paced} color="info.main" /> : null}
                     {(r.blocked || 0) > 0 ? <StatPill label="Bloqueados" value={r.blocked} color="warning.main" /> : null}
                     {(r.failed || 0) > 0 ? <StatPill label="Falhas" value={r.failed} color="error.main" /> : null}
+                    {(r.skipped || 0) > 0 ? <StatPill label="Pulados" value={r.skipped} /> : null}
+                    {(r.replied || 0) > 0 ? <StatPill label="Responderam" value={r.replied} color="success.main" /> : null}
                   </Stack>
+                  {r.status === 'running' ? (
+                    <Tooltip title="Pausar este disparo">
+                      <IconButton size="small" onClick={() => runAction(r, 'pause')}>
+                        <IconPlayerPause size={18} />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
                   <Tooltip title="Ver envios">
                     <IconButton size="small" onClick={() => setSendsFor(r)}>
                       <IconListDetails size={18} />
@@ -1924,9 +2510,24 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
                   </Tooltip>
                 </Stack>
                 <RunBar r={r} />
+                {r.status === 'paused' ? (
+                  <PausedBanner
+                    run={r}
+                    busy={actionBusy}
+                    onResume={() => runAction(r, 'resume')}
+                    onForce={() => runAction(r, 'force')}
+                    compact
+                  />
+                ) : null}
+                {r.forced_at && r.status === 'running' ? (
+                  <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mt: 0.5, fontWeight: 600 }}>
+                    "Enviar mesmo assim" ligado: o disjuntor não pausa mais este disparo.
+                  </Typography>
+                ) : null}
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
                   <Typography variant="caption" sx={{ color: 'text.disabled' }}>
                     {rate}% entregues
+                    {r.randomized ? ' · copies sorteadas' : ''}
                   </Typography>
                   {(r.paced || 0) > 0 ? (
                     <Typography variant="caption" sx={{ color: 'info.main', fontWeight: 600 }}>
@@ -1987,6 +2588,112 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
 }
 
 // resultado de um "Disparar agora" (por número + avisos do back)
+// quem respondeu aos disparos desta campanha nos últimos N dias
+function RepliesModal({ broadcast, open, onClose, byId }) {
+  const [days, setDays] = useState(7);
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (!open || !broadcast) return undefined;
+    let alive = true;
+    setLoading(true);
+    get(`/whatsapp/broadcasts/${broadcast.id}/replies`, { params: { days, page, page_size: 25 } })
+      .then((r) => alive && setData(r))
+      .catch((e) => alive && toast.error(errMsg(e, 'Não deu para carregar as respostas.')))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [open, broadcast, days, page]);
+  useEffect(() => {
+    if (open) {
+      setPage(1);
+      setData(null);
+    }
+  }, [open, days]);
+  const many = (byId?.size || 0) > 1;
+  return (
+    <CrmModal
+      open={open}
+      onClose={onClose}
+      title={`Respostas · ${broadcast?.name || ''}`}
+      subtitle="Quem respondeu depois de receber um disparo desta campanha."
+      maxWidth="md"
+    >
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ mb: 1.5 }}>
+        <FormControl size="small" sx={{ minWidth: 170 }}>
+          <InputLabel id="wa-replies-days">Período</InputLabel>
+          <Select labelId="wa-replies-days" label="Período" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            {[1, 3, 7, 15, 30, 60, 90].map((d) => (
+              <MenuItem key={d} value={d}>
+                Últimos {d} {d === 1 ? 'dia' : 'dias'}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        {data ? (
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <StatPill label="Disparos" value={data.runs} />
+            <StatPill label="Contatos" value={data.contacts} />
+            <StatPill label="Responderam" value={data.replied} color="success.main" />
+            <StatPill label="Não responderam" value={data.not_replied} color="warning.main" />
+            <StatPill label="Taxa" value={`${data.rate}%`} color={data.rate >= 10 ? 'success.main' : 'text.secondary'} />
+          </Stack>
+        ) : null}
+      </Stack>
+      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.5 }}>
+        Para tirar quem não responde da audiência, edite a campanha e ligue "Excluir quem não respondeu nos últimos N dias".
+      </Typography>
+      {loading && !data ? (
+        <Skeleton height={160} />
+      ) : !data || !data.items.length ? (
+        <TgEmptyState
+          dense
+          icon={IconMessageReply}
+          title="Ninguém respondeu ainda"
+          description="As respostas são contadas quando o contato manda mensagem depois de receber o disparo."
+        />
+      ) : (
+        <Stack spacing={0.75}>
+          {data.items.map((r) => (
+            <Box
+              key={`${r.contact_id || r.jid}-${r.replied_at}`}
+              sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2, p: 1.25, bgcolor: 'background.paper' }}
+            >
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                      {r.name}
+                    </Typography>
+                    {many && r.session ? <WaNumberChip session={r.session} /> : null}
+                  </Stack>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                    {r.phone ? `+${String(r.phone).replace(/^\+/, '')} · ` : ''}enviado {fmtDateBRT(r.sent_at)} · respondeu{' '}
+                    {fmtDateBRT(r.replied_at)}
+                  </Typography>
+                </Box>
+                {r.chat_id ? (
+                  <Button size="small" variant="outlined" onClick={() => navigate(`/whatsapp/chat?chat=${encodeURIComponent(r.chat_id)}`)}>
+                    Abrir conversa
+                  </Button>
+                ) : null}
+              </Stack>
+            </Box>
+          ))}
+          {data.pages > 1 ? (
+            <Stack direction="row" justifyContent="center" sx={{ pt: 1 }}>
+              <Pagination count={data.pages} page={page} onChange={(_, p) => setPage(p)} size="small" />
+            </Stack>
+          ) : null}
+        </Stack>
+      )}
+    </CrmModal>
+  );
+}
+
 function FireResultModal({ result, onClose, onRuns, byId }) {
   const open = Boolean(result);
   const by = Array.isArray(result?.by_session) ? result.by_session : [];
@@ -2051,13 +2758,14 @@ function FireResultModal({ result, onClose, onRuns, byId }) {
 }
 
 // ---------------------------------------------------------------- ações da linha
-function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, onDelete, onToggle }) {
+function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, onReplies, onDelete, onToggle }) {
   const [anchor, setAnchor] = useState(null);
   const noCopies = (b.copies_count || 0) === 0;
   const fireTip = !connected ? 'Conecte o WhatsApp para disparar' : noCopies ? 'Cadastre uma copy antes de disparar' : 'Disparar agora';
   const secondary = [
     { key: 'edit', label: 'Editar', icon: <IconPencil size={17} />, run: () => onEdit(b) },
     { key: 'runs', label: 'Histórico', icon: <IconHistory size={17} />, run: () => onRuns(b) },
+    { key: 'replies', label: 'Respostas', icon: <IconMessageReply size={17} />, run: () => onReplies(b) },
     { key: 'del', label: 'Excluir', icon: <IconTrash size={17} />, run: () => onDelete(b), danger: true }
   ];
   return (
@@ -2080,7 +2788,10 @@ function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, o
           size="small"
           checked={b.active}
           onChange={() => onToggle(b)}
-          sx={{ '& .Mui-checked': { color: WA_GREEN }, '& .Mui-checked + .MuiSwitch-track': { bgcolor: `${WA_GREEN} !important` } }}
+          sx={{
+            '& .MuiSwitch-switchBase.Mui-checked': { color: WA_GREEN },
+            '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: WA_GREEN, opacity: 0.55 }
+          }}
         />
       </Tooltip>
       <Tooltip title={fireTip}>
@@ -2161,6 +2872,8 @@ export default function WhatsAppBroadcasts() {
   const [editing, setEditing] = useState(null);
   const [copiesFor, setCopiesFor] = useState(null);
   const [runsFor, setRunsFor] = useState(null);
+  const [repliesFor, setRepliesFor] = useState(null);
+  const [runBusy, setRunBusy] = useState(null);
   const [firingFor, setFiringFor] = useState(null);
   const [firing, setFiring] = useState(false);
   const [fireResult, setFireResult] = useState(null);
@@ -2185,6 +2898,20 @@ export default function WhatsAppBroadcasts() {
   }, []);
 
   const reqRef = useRef(0);
+  const resumeRun = async (b, force) => {
+    const run = b.paused_run;
+    if (!run) return;
+    setRunBusy(run.id);
+    try {
+      await post(`/whatsapp/broadcasts/${b.id}/runs/${run.id}/resume`, { force });
+      toast.success(force ? 'Retomado — o disjuntor foi desligado neste disparo.' : 'Disparo retomado.');
+      load();
+    } catch (e) {
+      toast.error(errMsg(e, 'Não deu para retomar.'));
+    } finally {
+      setRunBusy(null);
+    }
+  };
   const load = useCallback(async () => {
     const seq = ++reqRef.current;
     setLoading(true);
@@ -2496,7 +3223,7 @@ export default function WhatsAppBroadcasts() {
                           Audiência ≈ {aud.total.toLocaleString('pt-BR')}
                         </Typography>
                         <Typography variant="caption" sx={{ color: 'text.disabled', minWidth: 0, overflowWrap: 'anywhere' }}>
-                          ({[...aud.parts, CONTACT_MODE_LABEL[mode]].filter(Boolean).join(' · ')}
+                          ({[...aud.parts, CONTACT_MODE_LABEL[mode], ...audienceRulesOf(b)].filter(Boolean).join(' · ')}
                           {(b.targets?.tags || []).length ? ` · tags: ${b.targets.tags.join(', ')}` : ''})
                         </Typography>
                         {many && aud.by_session.length > 1 ? (
@@ -2529,7 +3256,7 @@ export default function WhatsAppBroadcasts() {
                           <Chip
                             size="small"
                             icon={<IconHourglassHigh size={12} />}
-                            label={`${pacingLabel(presets, b.pacing)} · ${Math.round((b.pacing?.interval_ms || b.interval_ms || 0) / 1000)} s`}
+                            label={`${pacingLabel(presets, b.pacing)} · ${fmtSec(b.pacing?.interval_ms || b.interval_ms || 0)} s`}
                             variant="outlined"
                             sx={{
                               borderRadius: 1,
@@ -2582,6 +3309,14 @@ export default function WhatsAppBroadcasts() {
                           ⚠ Cadastre ao menos uma copy para disparar.
                         </Typography>
                       ) : null}
+                      {b.paused_run ? (
+                        <PausedBanner
+                          run={b.paused_run}
+                          busy={runBusy === b.paused_run.id}
+                          onResume={() => resumeRun(b, false)}
+                          onForce={() => resumeRun(b, true)}
+                        />
+                      ) : null}
                     </Box>
                     <RowActions
                       b={b}
@@ -2591,6 +3326,7 @@ export default function WhatsAppBroadcasts() {
                       onCopies={setCopiesFor}
                       onEdit={setEditing}
                       onRuns={setRunsFor}
+                      onReplies={setRepliesFor}
                       onDelete={setDeletingFor}
                       onToggle={toggleActive}
                     />
@@ -2624,6 +3360,7 @@ export default function WhatsAppBroadcasts() {
           if (ok) load();
         }}
       />
+      <RepliesModal broadcast={repliesFor} open={Boolean(repliesFor)} onClose={() => setRepliesFor(null)} byId={byId} />
       <RunsModal broadcast={runsFor} open={!!runsFor} onClose={() => setRunsFor(null)} sessions={sessions} byId={byId} />
       <FireResultModal
         result={fireResult}

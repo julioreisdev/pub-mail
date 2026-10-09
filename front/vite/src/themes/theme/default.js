@@ -36,8 +36,8 @@ const defaultColor = {
 
   // warning
   warningLight: '#fff8e1',
-  warningMain: '#ffe57f',
-  warningDark: '#ffc107',
+  warningMain: '#d97706', // âmbar legível (o '#ffe57f' do Berry sumia no branco)
+  warningDark: '#b45309',
 
   // grey
   grey50: '#f8fafc',
@@ -95,6 +95,8 @@ const defaultColor = {
   darkSuccessLight: '#14301f',
   darkErrorLight: '#3a1c1c',
   darkWarningLight: '#3a2f14',
+  darkWarningMain: '#fbbf24', // âmbar mais claro sobre o navy
+  darkWarningDark: '#f59e0b',
   darkOrangeLight: '#3a2418'
 };
 

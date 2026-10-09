@@ -44,7 +44,7 @@ export function buildPalette(presetColor) {
       light: colors.warningLight,
       main: colors.warningMain,
       dark: colors.warningDark,
-      contrastText: colors.grey700
+      contrastText: '#ffffff'
     },
     success: {
       light: colors.successLight,
@@ -113,8 +113,8 @@ export function buildPalette(presetColor) {
     },
     warning: {
       light: colors.darkWarningLight,
-      main: colors.warningMain,
-      dark: colors.warningDark,
+      main: colors.darkWarningMain,
+      dark: colors.darkWarningDark,
       contrastText: '#1a1a1a'
     },
     success: {
