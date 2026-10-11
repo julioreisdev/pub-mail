@@ -62,6 +62,7 @@ const WhatsAppTasks = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppT
 const WhatsAppMetrics = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppMetrics')));
 const WhatsAppNotifications = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppNotifications')));
 const TranslatorPlugin = Loadable(lazy(() => import('views/pages/wordpress/TranslatorPlugin')));
+const PushInPlay = Loadable(lazy(() => import('views/pages/wordpress/PushInPlay')));
 
 // ==============================|| MAIN ROUTING (PROTECTED) ||============================== //
 
@@ -167,7 +168,10 @@ const MainRoutes = {
         {
           path: 'wordpress',
           element: <RequireModule module="wordpress" />, // gate por módulo liberado
-          children: [{ path: 'tradutor', element: <TranslatorPlugin /> }]
+          children: [
+            { path: 'tradutor', element: <TranslatorPlugin /> },
+            { path: 'push-in-play', element: <PushInPlay /> }
+          ]
         },
         {
           path: 'telegram',

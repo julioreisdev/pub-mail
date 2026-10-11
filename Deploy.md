@@ -381,7 +381,7 @@ Em ambos os casos, confira:
 
 - `uploads/` é servido **diretamente pelo nginx** (precisa de 755).
 - `protected/` guarda os produtos vendidos no webchat; é lido só pelo back e entregue por URL assinada. **Não** pode aparecer em nenhum `location` do nginx.
-- `wordpress/tradutor-invisivel/` (vem junto com o código) é o plugin WordPress do módulo **WordPress**: o back monta dele o `.zip` que cada cliente baixa, com a chave da conta embutida. Confira que os scripts compilados existem: `ls /opt/pub-mail/wordpress/tradutor-invisivel/assets/*.min.js` (3 arquivos). Ao atualizar o plugin, envie essa pasta de novo — os sites dos clientes recebem a versão nova pela atualização automática do WordPress.
+- `wordpress/tradutor-invisivel/` (vem junto com o código) é o plugin WordPress do módulo **WordPress**: o back monta dele o `.zip` que cada cliente baixa, com a chave da conta embutida. Confira que os scripts compilados existem: `ls /opt/pub-mail/wordpress/tradutor-invisivel/assets/*.min.js` (3 arquivos). Ao atualizar o plugin, envie essa pasta de novo — os sites dos clientes recebem a versão nova pela atualização automática do WordPress. O mesmo vale para `wordpress/push-in-play/` (plugin Push In Play, sem passo de compilação: é PHP + JS puro).
 
 **✅ Resultado esperado:** `ls /opt/pub-mail` mostra `back  ai-micro-services  email-micro-services  front  README.md …`; a busca por `.env` não lista nada (os `.env` são criados na seção 11).
 
@@ -494,9 +494,10 @@ EOF2
 | `EMAIL_TOKENS_FOR_ONE_LEAD` … `AVATAR_GENERATION_TOKENS_COST` | `0` | Custos internos em "tokens" (carteira). Com `0` nada é cobrado. |
 | `HTTP_BODY_LIMIT` | `200mb` | Limite do body JSON/urlencoded do Express. Casa com o `client_max_body_size` do nginx. |
 | `STRIPE_SECRET_KEY` | `sk_test_disabled_placeholder` | **Não pode ficar vazio**: o `BillingService` lança erro no boot e o back não sobe. O placeholder é inerte porque o Stripe está desligado no front. |
-| `WP_PLUGIN_SIGNING_KEY` | aleatório (hex 32) | Módulo **WordPress**: assina a verificação de licença dos plugins "Tradutor Invisível" instalados nos sites dos clientes. **Nunca troque depois de ter clientes**: os plugins instalados deixariam de aceitar as respostas até atualizarem. Sem ela, o back deriva uma do `JWT_ACCESS_SECRET` (e aí trocar o JWT pararia os plugins). |
+| `WP_PLUGIN_SIGNING_KEY` | aleatório (hex 32) | Módulo **WordPress**: assina a verificação de licença dos plugins ("Tradutor Invisível" e "Push In Play") instalados nos sites dos clientes. **Nunca troque depois de ter clientes**: os plugins instalados deixariam de aceitar as respostas até atualizarem. Sem ela, o back deriva uma do `JWT_ACCESS_SECRET` (e aí trocar o JWT pararia os plugins). |
 | `APP_PUBLIC_URL` (opcional) | `https://SEU-DOMINIO` | Endereço do painel usado no botão "Abrir o Pub Mail" do plugin. Padrão: `PUBLIC_API_URL` sem o `api.`. |
-| `WP_PLUGIN_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/tradutor-invisivel` | Pasta com o código do plugin, de onde o back monta o `.zip` de cada cliente. Padrão: `../wordpress/tradutor-invisivel` a partir de `back/`. |
+| `WP_PLUGIN_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/tradutor-invisivel` | Pasta com o código do plugin Tradutor Invisível, de onde o back monta o `.zip` de cada cliente. Padrão: `../wordpress/tradutor-invisivel` a partir de `back/`. |
+| `WP_PIP_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/push-in-play` | Idem para o plugin Push In Play (notificações push). Padrão: `../wordpress/push-in-play` a partir de `back/`. A chave da conta é a mesma dos dois plugins. |
 
 ### 11.2 Micro de IA (`ai-micro-services/.env`)
 
@@ -1134,9 +1135,9 @@ $ tar -czf - email-micro-services/*.js | ssh pubmail-prod 'tar -xzf - -C /opt/pu
 
 (Se mudou dependência: `unset CI; yarn install` na pasta antes do restart.)
 
-### 23.4 Plugin WordPress "Tradutor Invisível" (mudou `wordpress/tradutor-invisivel`)
+### 23.4 Plugins WordPress (mudou `wordpress/tradutor-invisivel` ou `wordpress/push-in-play`)
 
-Compile os scripts na sua máquina (kit em `wordpress/tradutor-invisivel-dev`, com `npm install` feito uma vez) e envie a pasta do plugin. Não precisa reiniciar nada: o back lê a pasta a cada download e a versão pelo cabeçalho do arquivo principal.
+Tradutor Invisível: compile os scripts na sua máquina (kit em `wordpress/tradutor-invisivel-dev`, com `npm install` feito uma vez) e envie a pasta do plugin. Push In Play: só enviar a pasta (`tar -czf - wordpress/push-in-play | ssh pubmail-prod 'tar -xzf - -C /opt/pub-mail'`) depois de subir `Version:`/`PIP_VERSION`. Não precisa reiniciar nada: o back lê a pasta a cada download e a versão pelo cabeçalho do arquivo principal.
 
 ```
 $ (cd wordpress/tradutor-invisivel-dev && npm test)          # compila assets/*.min.js e roda os testes

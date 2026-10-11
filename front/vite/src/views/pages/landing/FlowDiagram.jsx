@@ -46,7 +46,7 @@ export const CHANNELS = [
     color: '#e2e8f0',
     angle: 30,
     delay: 4.3,
-    items: ['Plugin Tradutor Invisível', 'Sites ilimitados', 'URL traduzida']
+    items: ['Tradutor Invisível', 'Push In Play: notificações push', 'Broadcasts por horário', 'Sites ilimitados']
   },
   {
     key: 'telegram',

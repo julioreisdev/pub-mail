@@ -328,7 +328,8 @@ export class AdminService {
           await tx.whatsapp_media.deleteMany(where); // metadados; arquivos em protected/whatsapp/<org> ficam p/ limpeza
           await tx.whatsapp_session_events.deleteMany(where);
           await tx.whatsapp_sessions.deleteMany(where); // sessão WhatsApp (gateway já limpo antes da transação)
-          await tx.wp_plugin_sites.deleteMany(where); // plugin WordPress (sites e chaves)
+          await tx.wp_plugin_site_stats.deleteMany(where); // plugins WordPress (métricas, sites e chaves)
+          await tx.wp_plugin_sites.deleteMany(where);
           await tx.wp_plugin_licenses.deleteMany(where);
           await tx.platform_payments.deleteMany(where); // cobranças de assinatura
           await tx.organization_access.deleteMany(where); // plano de acesso

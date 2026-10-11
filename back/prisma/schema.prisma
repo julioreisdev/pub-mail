@@ -2082,6 +2082,7 @@ model wp_plugin_sites {
   organization_id String   @db.Char(36)
   site_host       String   @db.VarChar(190)
   site_url        String   @db.VarChar(255)
+  plugin          String   @default("tradutor-invisivel") @db.VarChar(40)
   plugin_version  String?  @db.VarChar(20)
   wp_version      String?  @db.VarChar(20)
   php_version     String?  @db.VarChar(20)
@@ -2089,9 +2090,37 @@ model wp_plugin_sites {
   checks          Int      @default(0)
   first_seen_at   DateTime @default(now()) @db.DateTime(3)
   last_seen_at    DateTime @default(now()) @db.DateTime(3)
+  // Push In Play (11/10/2026): nome do site + último resumo de métricas enviado pelo plugin (JSON) e quando.
+  site_name       String?  @db.VarChar(120)
+  stats           Json?
+  stats_at        DateTime? @db.DateTime(3)
 
-  @@unique([license_id, site_host], map: "uk_wpsite_lic_host")
+  @@unique([license_id, site_host, plugin], map: "uk_wpsite_lic_host_plugin")
   @@index([organization_id, last_seen_at], map: "idx_wpsite_org")
+}
+
+// Push In Play (11/10/2026): métricas DIÁRIAS de cada site (o plugin manda os últimos 31 dias a cada 15 min;
+// aqui ficam para sempre e somam todos os sites da org no painel). FK para wp_plugin_sites no banco (CASCADE).
+model wp_plugin_site_stats {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  site_id         String   @db.Char(36)
+  organization_id String   @db.Char(36)
+  day             DateTime @db.Date
+  impressions     Int      @default(0)
+  clicks          Int      @default(0)
+  granted         Int      @default(0)
+  denied          Int      @default(0)
+  dismissed       Int      @default(0)
+  installed       Int      @default(0)
+  sent            Int      @default(0)
+  failed          Int      @default(0)
+  clicked         Int      @default(0)
+  sent_flow       Int      @default(0)
+  sent_broadcast  Int      @default(0)
+  updated_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@unique([site_id, day], map: "uk_wpstat_site_day")
+  @@index([organization_id, day], map: "idx_wpstat_org_day")
 }
 
 // WhatsApp CRM fase 3 (02/10/2026): funil (Kanban), tarefas e notas internas. FK org no banco (CASCADE).

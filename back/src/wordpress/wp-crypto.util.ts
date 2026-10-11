@@ -68,18 +68,25 @@ export function decrypt(b64: string): string {
 
 export const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-/** Token do pacote para a atualização automática: "<licença>.<validade>.<hmac>". */
-export function packageToken(licenseId: string, ttlSeconds = 2 * 86400): string {
+/**
+ * Token do pacote para a atualização automática: "<licença>.<validade>.<hmac>".
+ * O plugin entra no HMAC (o Tradutor, 1º plugin, continua sem sufixo — tokens antigos seguem válidos).
+ */
+export function packageToken(licenseId: string, plugin = 'tradutor-invisivel', ttlSeconds = 2 * 86400): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
-  return `${licenseId}.${exp}.${hmacPkg(licenseId, exp)}`;
+  return `${licenseId}.${exp}.${hmacPkg(licenseId, exp, plugin)}`;
 }
 
-export function verifyPackageToken(tok: string): string | null {
+export function verifyPackageToken(tok: string, plugin = 'tradutor-invisivel'): string | null {
   const m = /^([0-9a-f-]{36})\.(\d{9,12})\.([0-9a-f]{32})$/.exec(String(tok || ''));
   if (!m) return null;
   if (Number(m[2]) < Math.floor(Date.now() / 1000)) return null;
-  const want = hmacPkg(m[1], Number(m[2]));
+  const want = hmacPkg(m[1], Number(m[2]), plugin);
   return want.length === m[3].length && timingSafeEqual(Buffer.from(want), Buffer.from(m[3])) ? m[1] : null;
 }
 
-const hmacPkg = (id: string, exp: number) => createHmac('sha256', seed()).update(`trinv-pkg|${id}|${exp}`).digest('hex').slice(0, 32);
+const hmacPkg = (id: string, exp: number, plugin: string) =>
+  createHmac('sha256', seed())
+    .update(plugin === 'tradutor-invisivel' ? `trinv-pkg|${id}|${exp}` : `trinv-pkg|${id}|${exp}|${plugin}`)
+    .digest('hex')
+    .slice(0, 32);

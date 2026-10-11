@@ -1,5 +1,5 @@
 // assets
-import { IconBrandWordpress, IconLanguage } from '@tabler/icons-react';
+import { IconBrandWordpress, IconLanguage, IconBellRinging } from '@tabler/icons-react';
 
 // ==============================|| WORDPRESS MENU ITEMS ||============================== //
 
@@ -16,6 +16,14 @@ const wordpress = {
       type: 'item',
       url: '/wordpress/tradutor',
       icon: IconLanguage,
+      target: false
+    },
+    {
+      id: 'wordpress-push-in-play',
+      title: 'Push In Play',
+      type: 'item',
+      url: '/wordpress/push-in-play',
+      icon: IconBellRinging,
       target: false
     }
   ]

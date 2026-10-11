@@ -28,6 +28,7 @@ import {
 
 import { useAuth } from 'contexts/AuthContext';
 import FlowDiagram, { CHANNELS } from './FlowDiagram';
+import WhatsAppShowcase from './WhatsAppShowcase';
 
 // ================================|| LANDING (/) ||================================ //
 // Cabeçalho fixo (Início · Preços · Entrar) → hero escuro com o fluxograma grande → planos
@@ -120,14 +121,15 @@ const PLANS = [
     name: 'WordPress',
     Icon: IconBrandWordpress,
     color: '#64748b',
-    monthly: 97,
-    annualOff: 0.1,
+    monthly: 197,
+    annualOff: 0.2,
     items: [
-      'Plugin Tradutor Invisível',
-      'Sites ilimitados',
-      'Tradução automática para o idioma do visitante',
-      'URL traduzida',
-      'Atualização automática'
+      'Tradutor Invisível: cada visitante lê no idioma dele, com URL traduzida',
+      'Push In Play: notificações push do seu site, sem serviço externo',
+      'Popup de permissão com teste A/B e app na tela inicial (iPhone)',
+      'Automação de boas-vindas e broadcasts por horário com sorteio de copys',
+      'Copys importadas de planilha, métricas por copy e por disparo',
+      'Sites ilimitados, licença pela conta e atualização automática'
     ]
   }
 ];
@@ -160,6 +162,7 @@ function Header({ active, onNav, isAuthenticated }) {
   }, []);
   const items = [
     { id: 'inicio', label: 'Início' },
+    { id: 'whatsapp', label: 'WhatsApp' },
     { id: 'precos', label: 'Preços' }
   ];
   const NavLink = ({ id, label }) => (
@@ -839,9 +842,14 @@ export default function Landing() {
   // seção ativa no cabeçalho conforme a rolagem
   useEffect(() => {
     const onScroll = () => {
-      const precos = document.getElementById('precos');
-      if (!precos) return;
-      setActive(precos.getBoundingClientRect().top <= HEADER_H + 80 ? 'precos' : 'inicio');
+      // a última seção cujo topo já passou do cabeçalho é a ativa
+      const limit = HEADER_H + 80;
+      let current = 'inicio';
+      for (const id of ['whatsapp', 'precos']) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top <= limit) current = id;
+      }
+      setActive(current);
     };
     onScroll();
     window.addEventListener('scroll', onScroll, { passive: true });
@@ -849,13 +857,15 @@ export default function Landing() {
   }, []);
   useEffect(() => {
     document.title = 'Pub Mail — WhatsApp, e-mail, webchat, Telegram, quizzes e WordPress';
-    if (window.location.hash === '#precos') setTimeout(() => scrollToId('precos'), 150);
+    const hash = window.location.hash.replace('#', '');
+    if (['precos', 'whatsapp'].includes(hash)) setTimeout(() => scrollToId(hash), 150);
   }, []);
   const onNav = useMemo(() => (id) => scrollToId(id), []);
   return (
     <Box sx={{ bgcolor: 'background.default', color: 'text.primary' }}>
       <Header active={active} onNav={onNav} isAuthenticated={isAuthenticated} />
       <Hero onNav={onNav} />
+      <WhatsAppShowcase onNav={onNav} />
       <Pricing />
       <Contact />
       <Footer />

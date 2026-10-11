@@ -147,7 +147,7 @@ export default function TranslatorPlugin() {
       const d = await post('/wordpress/translator/rotate');
       setData(d);
       setConfirmRotate(false);
-      toast.success('Nova chave criada. Baixe o plugin de novo e instale nos seus sites.');
+      toast.success('Nova chave criada. Baixe os plugins de novo e instale nos seus sites.');
     } catch (e) {
       toast.error(errMsg(e, 'Não foi possível trocar a chave.'));
     } finally {
@@ -373,7 +373,8 @@ export default function TranslatorPlugin() {
             </Box>
           )}
           <Typography variant="body2" sx={{ color: 'text.secondary', mt: 1.25 }}>
-            Vai dentro do plugin baixado. Se o arquivo vazar, troque a chave: os sites com a chave antiga param até receberem o plugin novo.
+            Vai dentro do plugin baixado. É a mesma chave do Push In Play: trocar aqui troca para os dois. Se o arquivo vazar, gere outra:
+            os sites com a chave antiga param até receberem os plugins novos.
           </Typography>
           {canManage ? (
             <Button variant="outlined" color="error" size="small" sx={{ mt: 2 }} onClick={() => setConfirmRotate(true)} disabled={loading}>
@@ -390,7 +391,7 @@ export default function TranslatorPlugin() {
         loading={rotating}
         danger
         title="Gerar nova chave?"
-        message="Os sites que usam o plugin atual param de traduzir até você baixar o plugin de novo e instalar nesses sites."
+        message="A chave vale para o Tradutor Invisível E para o Push In Play. Os sites que usam os plugins atuais param até você baixar os plugins de novo e instalar neles."
         confirmLabel="Gerar nova chave"
       />
     </Box>
