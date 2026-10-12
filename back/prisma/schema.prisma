@@ -1566,6 +1566,8 @@ model whatsapp_contacts {
   notes                String?   @db.VarChar(500)
   source               String    @default("session") @db.VarChar(16)
   profile_pic_media_id String?   @db.Char(36)
+  profile_pic_url      String?   @db.VarChar(500)
+  profile_pic_checked_at DateTime? @db.DateTime(3)
   last_message_at      DateTime? @db.DateTime(3)
   synced_at            DateTime? @db.DateTime(3)
   created_at           DateTime  @default(now()) @db.DateTime(0)

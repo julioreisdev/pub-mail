@@ -27,6 +27,11 @@ export class OpenChatDto {
   @IsString() phone: string;
   @IsOptional() @IsString() name?: string; // salva o contato com esse nome (conversa nova com número que não está na agenda)
 }
+export class RefreshPhotoDto {
+  @IsOptional() @IsString() chat_id?: string; // uuid da conversa
+  @IsOptional() @IsString() jid?: string;
+  @IsOptional() @IsString() session_id?: string;
+}
 export class SyncChatsDto {
   @IsString() session_id: string;
 }

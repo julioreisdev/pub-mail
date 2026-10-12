@@ -160,6 +160,7 @@ export class WhatsAppPresenter {
       pinned: c.pinned,
       muted: c.muted,
       group_meta: c.kind === 'group' ? { participants_count: meta.participants_count ?? (Array.isArray(meta.participants) ? meta.participants.length : undefined), is_admin: meta.is_admin, subject: meta.subject, description: meta.description } : null,
+      photo_v: contact?.profile_pic_media_id ? String(contact.profile_pic_media_id).slice(0, 8) : meta.photo_media_id ? String(meta.photo_media_id).slice(0, 8) : null,
       contact: contact ? { id: contact.id, saved: contact.saved, tags: Array.isArray(contact.tags) ? contact.tags : [], opted_out: Boolean(contact.opted_out_at) } : null,
       tags,
       service: {

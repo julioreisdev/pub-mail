@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { NotFoundException, BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -18,7 +18,7 @@ import { WhatsAppContactStatusesService } from './whatsapp-contact-statuses.serv
 import { WaAccessService } from './wa-access.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppSessionsService } from './whatsapp-sessions.service';
-import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto, RunActionDto, RepliesQueryDto } from './dto/whatsapp-crud.dto';
+import { AudienceDto, BroadcastDto, BulkContactsDto, ChatFlagDto, CopiesDto, CreateContactDto, CreateStatusDto, EditMessageDto, ForwardDto, OpenChatDto, PatchContactDto, PatchStatusDto, ReactDto, RefreshPhotoDto, RunsQueryDto, SendLocationDto, SendPollDto, SendTextDto, SyncChatsDto, RunActionDto, RepliesQueryDto } from './dto/whatsapp-crud.dto';
 import { serveWaFile } from './crypto/wa-file-serve';
 
 const MB = 1024 * 1024;
@@ -31,7 +31,7 @@ const MB = 1024 * 1024;
 @UseGuards(JwtAuthGuard)
 @Controller('whatsapp')
 export class WhatsAppChatController {
-  constructor(private readonly chat: WhatsAppChatService, private readonly contactsSvc: WhatsAppContactsService, private readonly attendance: WhatsAppAttendanceService, private readonly access: WaAccessService, private readonly sessions: WhatsAppSessionsService) {}
+  constructor(private readonly chat: WhatsAppChatService, private readonly contactsSvc: WhatsAppContactsService, private readonly attendance: WhatsAppAttendanceService, private readonly access: WaAccessService, private readonly sessions: WhatsAppSessionsService, private readonly presenter: WhatsAppPresenter) {}
 
   private async guardChat(req: any, chatUuid: string) {
     const chat = await this.chat.chatRow(req.user.organizationId, chatUuid);
@@ -68,6 +68,23 @@ export class WhatsAppChatController {
     if (!p) return res.status(404).end();
     res.setHeader('Content-Type', p.mime); res.setHeader('Cache-Control', 'private, max-age=86400');
     return serveWaFile(p.path, req, res);
+  }
+  // "Atualizar foto": força a releitura no gateway (a pessoa trocou a foto agora) e devolve a versão nova
+  @Post('photo/refresh')
+  async refreshPhoto(@Req() req: any, @Body() dto: RefreshPhotoDto) {
+    const orgId = req.user.organizationId;
+    let target: any;
+    if (dto.chat_id) {
+      const chat = await this.chat.chatRow(orgId, dto.chat_id);
+      if (!(await this.access.canUse(req.user, chat.session_id))) throw new NotFoundException('Conversa não encontrada.');
+      target = { chatUuid: chat.id };
+    } else {
+      if (dto.session_id && !(await this.access.canUse(req.user, dto.session_id))) throw new NotFoundException('Número não encontrado.');
+      target = { jid: String(dto.jid || ''), sessionId: dto.session_id || null };
+    }
+    const p = await this.contactsSvc.photo(orgId, target, { force: true });
+    if (dto.chat_id) { const chat = await this.chat.chatRow(orgId, dto.chat_id); this.presenter.chat(orgId, chat.session_id, chat.chat_id); }
+    return { ok: true, has_photo: Boolean(p), photo_v: p?.id ? String(p.id).slice(0, 8) : null };
   }
   @Get('chats/:chatId/photo')
   async chatPhoto(@Req() req: any, @Param('chatId') chatId: string, @Res() res: Response) {

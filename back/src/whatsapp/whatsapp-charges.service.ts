@@ -654,7 +654,11 @@ export class WhatsAppChargesService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.prisma.whatsapp_charges.findMany({ where, orderBy: { created_at: 'desc' }, take: 2000 });
     const custs = rows.length ? await this.prisma.whatsapp_customers.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.customer_id))] } }, select: { id: true, name: true } }) : [];
     const name = new Map(custs.map((c) => [c.id, c.name]));
-    const smap = rows.length ? await this.presenter.sessionMap(orgId) : new Map<string, any>();
-    return rows.map((r) => ({ id: r.id, channel: 'whatsapp', title: r.description, source_name: r.origin === 'recurring' ? 'Cobrança recorrente' : r.origin === 'bot' ? 'Bot' : 'Cobrança manual', customer: name.get(r.customer_id) || phoneFromJid(r.chat_id) || '—', amount_cents: r.amount_cents, amount_label: formatBRL(r.amount_cents), status: r.status, provider: r.provider, delivered: r.status === 'PAID', paid_at: r.paid_at, created_at: r.created_at, session_id: r.session_id || null, session: (r.session_id && smap.get(r.session_id)) || null }));
+    // PIX gerados pelo Fluxo do Bot (whatsapp_payments) também são vendas do canal
+    const botRows = await this.prisma.whatsapp_payments.findMany({ where, orderBy: { created_at: 'desc' }, take: 2000 }).catch(() => [] as any[]);
+    const smap = rows.length || botRows.length ? await this.presenter.sessionMap(orgId) : new Map<string, any>();
+    const crm = rows.map((r) => ({ id: r.id, channel: 'whatsapp', title: r.description, source_name: r.origin === 'recurring' ? 'Cobrança recorrente' : r.origin === 'bot' ? 'Bot' : 'Cobrança manual', customer: name.get(r.customer_id) || phoneFromJid(r.chat_id) || '—', amount_cents: r.amount_cents, amount_label: formatBRL(r.amount_cents), status: r.status, provider: r.provider, delivered: r.status === 'PAID', paid_at: r.paid_at, created_at: r.created_at, session_id: r.session_id || null, session: (r.session_id && smap.get(r.session_id)) || null }));
+    const bot = botRows.map((r: any) => ({ id: r.id, channel: 'whatsapp', title: r.description || 'PIX do bot', source_name: 'Fluxo do Bot (PIX)', customer: phoneFromJid(r.chat_id) || '—', amount_cents: r.amount_cents, amount_label: formatBRL(r.amount_cents), status: r.status, provider: r.provider, delivered: r.status === 'PAID', paid_at: r.paid_at, created_at: r.created_at, session_id: r.session_id || null, session: (r.session_id && smap.get(r.session_id)) || null }));
+    return [...crm, ...bot].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }
 }

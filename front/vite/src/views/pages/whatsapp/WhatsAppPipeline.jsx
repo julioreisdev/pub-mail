@@ -43,6 +43,11 @@ import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'vie
 import WaChatPicker from './WaChatPicker';
 import { WaNumberChip, WaPageHeader, useNow, useWaSessions } from './waKit';
 import { errMsg, fmtAgo, fmtPhone, tint } from './waShared';
+import { THIN_SCROLL } from './chat/chatKit';
+
+// foto do contato/grupo (proxy autenticado; `photo_v` muda quando a pessoa troca a foto)
+const chatPhoto = (c) =>
+  c?.chat_id ? `/whatsapp/chats/${encodeURIComponent(c.chat_id)}/photo${c?.photo_v ? `?v=${c.photo_v}` : ''}` : undefined;
 import { CrmKpi, CrmModal, MoneyField, WaNumberFilter, chatUrl, formatBRL, useSessionFilter, useXs, waPrimaryBtn } from './crm/crmKit';
 
 // ============================================================================
@@ -495,7 +500,7 @@ function Card({ c, now, onOpen, onMenu, dragging, multi }) {
     >
       <Stack direction="row" spacing={1} alignItems="flex-start">
         <IconGripVertical size={14} style={{ opacity: 0.35, marginTop: 4, flexShrink: 0 }} />
-        <TgAvatar name={c.name} size={34} kind={c.kind === 'group' ? 'group' : 'contact'} />
+        <TgAvatar name={c.name} photoPath={chatPhoto(c)} size={34} kind={c.kind === 'group' ? 'group' : 'contact'} />
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <Typography variant="body2" sx={{ fontWeight: 700, flex: 1, minWidth: 0 }} noWrap>
@@ -826,7 +831,8 @@ export default function WhatsAppPipeline() {
         <TgEmptyState icon={IconLayoutKanban} title="Nenhuma etapa" description="Crie as etapas do seu funil para começar." />
       ) : (
         <Box
-          sx={{
+          sx={(t) => ({
+            ...THIN_SCROLL(t),
             display: 'flex',
             gap: 1.5,
             width: '100%',
@@ -839,7 +845,7 @@ export default function WhatsAppPipeline() {
             alignItems: 'flex-start',
             scrollSnapType: { xs: 'x mandatory', md: 'none' },
             scrollPaddingLeft: 2
-          }}
+          })}
         >
           {board.columns.map((col) => {
             const st = col.stage;
@@ -897,7 +903,7 @@ export default function WhatsAppPipeline() {
                     {col.deal_label} em {col.total} conversa{col.total === 1 ? '' : 's'}
                   </Typography>
                 ) : null}
-                <Stack spacing={1} sx={{ p: 1, overflowY: 'auto', flex: 1 }}>
+                <Stack spacing={1} sx={(t) => ({ ...THIN_SCROLL(t), p: 1, overflowY: 'auto', flex: 1 })}>
                   {col.cards.map((c) => (
                     <Card
                       key={c.chat_id}

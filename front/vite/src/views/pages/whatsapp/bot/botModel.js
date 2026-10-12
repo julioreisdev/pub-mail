@@ -729,7 +729,7 @@ export function validateFlow(nodes, edges, ctx = {}) {
         msgs.forEach((m, i) => {
           const label = msgs.length > 1 ? `Mensagem ${i + 1}` : 'A mensagem';
           if (m.kind === 'text' && isBlank(m.text)) add(n.id, 'error', `${label} está vazia.`);
-          if (m.kind !== 'text' && !m.media?.url) add(n.id, 'error', `${label} está sem arquivo.`);
+          if (m.kind !== 'text' && !m.media?.url && !m.media?.id) add(n.id, 'error', `${label} está sem arquivo.`);
         });
         break;
       }

@@ -32,6 +32,7 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
     private readonly contacts: WhatsAppContactsService,
   ) {}
   private readonly lastResolve = new Map<string, number>();
+  private readonly lastPhotos = new Map<string, number>();
 
   // Baileys: as não lidas do gateway não servem (ver inbound.recomputeUnread). Na 1ª passada
   // de cada número neste processo, recalcula as conversas que estão marcadas com não lidas.
@@ -87,6 +88,12 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
       this.lastResolve.set(sessionId, Date.now());
       const r = await this.contacts.resolveLids(orgId, row).catch(() => ({ merged: 0, pending: 0 }));
       if (r.merged) this.presenter.sync(orgId, { session_id: sessionId, kind: 'chats' });
+    }
+    // fotos de perfil que mudaram (compara a URL em lote; só baixa as diferentes) — a cada 10 min por número
+    if (Date.now() - (this.lastPhotos.get(sessionId) || 0) > 10 * 60_000) {
+      this.lastPhotos.set(sessionId, Date.now());
+      const changed = await this.contacts.refreshPhotos(orgId, row).catch(() => [] as string[]);
+      for (const jid of changed) this.presenter.chat(orgId, sessionId, jid);
     }
     // telefone → @lid só no whatsapp-web.js (lá as conversas individuais ficam pelo @lid); no Baileys o canônico é o telefone
     const lids = localUnread ? [] : await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, lid: { not: null }, phone: { not: null } }, select: { phone: true, lid: true } });

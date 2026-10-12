@@ -243,7 +243,8 @@ const replaceTmp = (prev, tmpId, real) => {
 };
 
 // foto do chat (indivíduo ou grupo) via proxy autenticado; AuthImage cacheia por path (chat_id)
-const chatPhoto = (c) => (c?.chat_id ? `/whatsapp/chats/${enc(c.chat_id)}/photo` : undefined);
+// `photo_v` muda quando a pessoa troca a foto → URL nova → o navegador e o cache do AuthImage buscam de novo
+const chatPhoto = (c) => (c?.chat_id ? `/whatsapp/chats/${enc(c.chat_id)}/photo${c?.photo_v ? `?v=${c.photo_v}` : ''}` : undefined);
 // chats por privacy-id sem contato conhecido vêm como "Contato sem nome" → mostra o telefone se houver
 // nome vazio/placeholder ou só dígitos (o back devolve `+55…` quando não há nome) → telefone formatado
 const chatLabel = (c) =>

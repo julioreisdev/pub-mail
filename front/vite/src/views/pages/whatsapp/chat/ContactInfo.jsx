@@ -10,7 +10,7 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import { IconAddressBook, IconCheck, IconCopy, IconMessages, IconPencil, IconUserDollar, IconX } from '@tabler/icons-react';
+import { IconAddressBook, IconCheck, IconCopy, IconMessages, IconPencil, IconRefresh, IconUserDollar, IconX } from '@tabler/icons-react';
 
 import { get, patch, post } from 'api/api';
 import { TgAvatar, TgListSkeleton } from 'views/pages/telegram/ui';
@@ -27,7 +27,26 @@ export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenC
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
+  const [refreshingPhoto, setRefreshingPhoto] = useState(false);
   const open = Boolean(target);
+
+  // a pessoa trocou a foto agora: força a releitura no gateway e troca a URL do avatar (nova versão)
+  const refreshPhoto = async () => {
+    if (!info || refreshingPhoto) return;
+    setRefreshingPhoto(true);
+    try {
+      const body = info.chat?.chat_id ? { chat_id: info.chat.chat_id } : { jid: info.jid || target?.jid, session_id: target?.session_id || undefined };
+      const r = await post('/whatsapp/photo/refresh', body);
+      const base = String(info.photo_path || '').split('?')[0];
+      const v = r?.photo_v ? `?v=${r.photo_v}` : `?v=${Date.now()}`;
+      setState((st) => (st.info ? { ...st, info: { ...st.info, photo_path: r?.has_photo ? `${base}${v}` : null } } : st));
+      toast.success(r?.has_photo ? 'Foto atualizada.' : 'Esse contato não tem foto de perfil.');
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Não foi possível atualizar a foto.');
+    } finally {
+      setRefreshingPhoto(false);
+    }
+  };
 
   useEffect(() => {
     if (!target?.jid) return undefined;
@@ -134,7 +153,29 @@ export default function ContactInfoDrawer({ target, onClose, onOpenChat, onOpenC
       ) : info ? (
         <Box sx={{ overflowY: 'auto' }}>
           <Stack alignItems="center" spacing={1} sx={{ p: 3, textAlign: 'center' }}>
-            <TgAvatar name={name} photoPath={info.photo_path} size={96} kind="contact" />
+            <Box sx={{ position: 'relative' }}>
+              <TgAvatar name={name} photoPath={info.photo_path} size={96} kind="contact" />
+              <Tooltip title="Atualizar foto (a pessoa trocou a foto de perfil)">
+                <IconButton
+                  size="small"
+                  onClick={refreshPhoto}
+                  disabled={refreshingPhoto}
+                  sx={{
+                    position: 'absolute',
+                    right: -6,
+                    bottom: -2,
+                    bgcolor: 'background.paper',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    '&:hover': { bgcolor: 'background.paper' },
+                    '@keyframes pmspin': { from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } },
+                    '& svg': refreshingPhoto ? { animation: 'pmspin 1s linear infinite' } : undefined
+                  }}
+                >
+                  <IconRefresh size={15} />
+                </IconButton>
+              </Tooltip>
+            </Box>
             {editing ? (
               <Stack direction="row" spacing={0.5} alignItems="center" sx={{ width: '100%' }}>
                 <TextField

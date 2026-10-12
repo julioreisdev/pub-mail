@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { promises as fsp } from 'fs';
 import { join } from 'path';
@@ -27,6 +28,10 @@ function normTags(raw: unknown): string[] {
 }
 
 type SessionLike = { id: string; engine?: string | null; openwa_session_id?: string | null; phone?: string | null; status?: string | null; organization_id?: string } | string | null | undefined;
+
+// foto de perfil: reconfere a URL (barato) a cada 1 h quando alguém vê a foto; varredura em lote a cada 6 h por contato
+const PHOTO_RECHECK_MS = 60 * 60_000;
+const PHOTO_SWEEP_MS = 6 * 3600_000;
 
 @Injectable()
 export class WhatsAppContactsService {
@@ -305,7 +310,7 @@ export class WhatsAppContactsService {
       chat,
       chats,
       customer,
-      photo_path: chat ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo` : `/whatsapp/photo?${photoQuery.toString()}`,
+      photo_path: chat ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo${contact?.profile_pic_media_id ? `?v=${String(contact.profile_pic_media_id).slice(0, 8)}` : ''}` : `/whatsapp/photo?${photoQuery.toString()}`,
     };
   }
 
@@ -655,7 +660,19 @@ export class WhatsAppContactsService {
     }
   }
 
-  async photo(orgId: string, target: { contactId?: string; chatUuid?: string; jid?: string; sessionId?: string | null }) {
+  /** Versão curta da foto (entra na URL do avatar para o navegador/front buscarem de novo quando ela muda). */
+  static photoVersion(contact?: any, chat?: any) {
+    const id = contact?.profile_pic_media_id || (chat?.group_meta as any)?.photo_media_id || null;
+    return id ? String(id).slice(0, 8) : null;
+  }
+
+  /**
+   * Foto de perfil (contato ou grupo) com cache em `whatsapp_media kind=avatar`.
+   * Revalidação: a URL que o gateway devolve muda quando a pessoa troca a foto → a cada
+   * `PHOTO_RECHECK_MS` (ou com `force`) compara a URL atual com a guardada e só baixa de novo se mudou.
+   * Antes disso a foto ficava presa por 7 dias (bug relatado em 12/10/2026).
+   */
+  async photo(orgId: string, target: { contactId?: string; chatUuid?: string; jid?: string; sessionId?: string | null }, opts: { force?: boolean } = {}) {
     let waId = target.jid ? normJid(target.jid) : '';
     let sessionId = target.sessionId || null;
     let contact: any = null;
@@ -673,50 +690,119 @@ export class WhatsAppContactsService {
     if (!contact && !group) {
       contact = await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ wa_id: waId }, { lid: waId }, ...(phoneFromJid(waId) ? [{ phone: phoneFromJid(waId) }] : [])] }, orderBy: { saved: 'desc' } });
     }
-    const cachedId = group ? (chat?.group_meta as any)?.photo_media_id : contact?.profile_pic_media_id;
+    const meta: any = (chat?.group_meta as any) || {};
+    const cachedId = group ? meta.photo_media_id : contact?.profile_pic_media_id;
+    const storedUrl: string | null = group ? meta.photo_url || null : contact?.profile_pic_url || null;
+    const checkedAt = group ? (meta.photo_checked_at ? new Date(meta.photo_checked_at).getTime() : 0) : contact?.profile_pic_checked_at ? new Date(contact.profile_pic_checked_at).getTime() : 0;
+    let cached: { path: string; mime: string; id: string; sha1?: string | null } | null = null;
     if (cachedId) {
       const m = await this.prisma.whatsapp_media.findUnique({ where: { id: cachedId } });
-      if (m && (!m.expires_at || m.expires_at > new Date())) return { path: this.media.absPath(m), mime: m.mime, id: m.id };
+      if (m && (!m.expires_at || m.expires_at > new Date())) cached = { path: this.media.absPath(m), mime: m.mime, id: m.id, sha1: m.sha1 };
     }
+    const fresh = checkedAt && Date.now() - checkedAt < PHOTO_RECHECK_MS;
+    if (cached && fresh && !opts.force) return cached;
     const row = await this.sessions.anyReady(orgId, sessionId);
-    if (!row?.openwa_session_id) return null;
+    if (!row?.openwa_session_id) return cached;
     const missKey = `${orgId}|${waId}`;
     const missUntil = this.photoMiss.get(missKey);
-    if (missUntil && missUntil > Date.now()) return null;
-    let buf: Buffer | null = null, mime = 'image/jpeg';
+    if (!opts.force && missUntil && missUntil > Date.now()) return cached;
+    const markChecked = async (url: string | null, mediaId?: string | null) => {
+      const now = new Date();
+      if (group && chat) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { group_meta: { ...meta, photo_url: url, photo_checked_at: now.toISOString(), ...(mediaId !== undefined ? { photo_media_id: mediaId } : {}) } } }).catch(() => undefined);
+      else if (contact) await this.prisma.whatsapp_contacts.update({ where: { id: contact.id }, data: { profile_pic_url: url, profile_pic_checked_at: now, ...(mediaId !== undefined ? { profile_pic_media_id: mediaId } : {}) } }).catch(() => undefined);
+    };
+    let buf: Buffer | null = null, mime = 'image/jpeg', url: string | null = null, unchanged = false;
     try {
       await this.photoSlot(async () => {
         if (group) {
           const r: any = await this.openwa.groupPicture(row.openwa_session_id!, waId);
           if (r?.buffer?.length && /^image\//.test(r.mime)) { buf = r.buffer; mime = r.mime; }
-          else if (r?.buffer?.length) { const j = JSON.parse(r.buffer.toString('utf8')); if (j?.url) ({ buf, mime } = await this.fetchImage(j.url)); }
+          else if (r?.buffer?.length) { const j = JSON.parse(r.buffer.toString('utf8')); if (j?.url) { url = String(j.url); if (cached && storedUrl === url) unchanged = true; else ({ buf, mime } = await this.fetchImage(j.url)); } }
         } else {
           const r = await this.openwa.profilePicture(row.openwa_session_id!, waId);
-          if (r?.url) ({ buf, mime } = await this.fetchImage(r.url));
+          url = r?.url ? String(r.url) : null;
+          if (url && cached && storedUrl === url) unchanged = true;
+          else if (url) ({ buf, mime } = await this.fetchImage(url));
         }
       });
     } catch (e: any) {
       const limited = (e as any)?.status === 429 || /too many/i.test(String(e?.message || ''));
       this.photoMiss.set(missKey, Date.now() + (limited ? 60_000 : 10 * 60_000));
       this.logger.debug(`photo ${waId}: ${e?.message || e}`);
-      return null;
+      return cached;
+    }
+    if (unchanged && cached) {
+      await markChecked(url);
+      await this.prisma.whatsapp_media.update({ where: { id: cached.id }, data: { expires_at: new Date(Date.now() + 7 * 86_400_000) } }).catch(() => undefined);
+      return cached;
     }
     if (!buf || !(buf as Buffer).length) {
-      this.photoMiss.set(missKey, Date.now() + 6 * 3600_000); // sem foto de perfil
+      // sem foto de perfil (ou a pessoa removeu a que tinha)
+      this.photoMiss.set(missKey, Date.now() + 6 * 3600_000);
       if (this.photoMiss.size > 20_000) this.photoMiss.clear();
+      await markChecked(null, cached ? null : undefined);
       return null;
+    }
+    // grupo: o gateway devolve o binário direto; se é o mesmo arquivo, não troca
+    if (group && cached?.sha1 && createHash('sha1').update(buf as Buffer).digest('hex') === cached.sha1) {
+      await markChecked(url);
+      return cached;
     }
     const m = await this.media.store(orgId, buf, mime, null, 'avatar');
     await this.prisma.whatsapp_media.update({ where: { id: m.id }, data: { expires_at: new Date(Date.now() + 7 * 86_400_000) } });
-    if (group && chat) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { group_meta: { ...((chat.group_meta as any) || {}), photo_media_id: m.id } } });
-    else if (contact) await this.prisma.whatsapp_contacts.update({ where: { id: contact.id }, data: { profile_pic_media_id: m.id } });
+    if (group && chat) await this.prisma.whatsapp_chats.update({ where: { id: chat.id }, data: { group_meta: { ...meta, photo_media_id: m.id, photo_url: url, photo_checked_at: new Date().toISOString() } } });
+    else if (contact) await this.prisma.whatsapp_contacts.update({ where: { id: contact.id }, data: { profile_pic_media_id: m.id, profile_pic_url: url, profile_pic_checked_at: new Date() } });
     else if (!group) {
       // pessoa sem linha de contato ainda → cria pra guardar o cache
       await this.prisma.whatsapp_contacts
-        .create({ data: { organization_id: orgId, wa_id: waId, phone: phoneFromJid(waId) || null, source: 'session', profile_pic_media_id: m.id } })
+        .create({ data: { organization_id: orgId, wa_id: waId, phone: phoneFromJid(waId) || null, source: 'session', profile_pic_media_id: m.id, profile_pic_url: url, profile_pic_checked_at: new Date() } })
         .catch(() => undefined);
     }
+    if (cached?.id && cached.id !== m.id) await this.prisma.whatsapp_media.update({ where: { id: cached.id }, data: { expires_at: new Date() } }).catch(() => undefined); // a antiga vence já
     return { path: this.media.absPath(m), mime: m.mime, id: m.id };
+  }
+
+  /**
+   * Varredura periódica (chamada pelo WhatsAppChatSyncRunner): compara, em lote, a URL atual da foto
+   * dos contatos com conversa recente neste número e baixa de novo só as que mudaram.
+   * Devolve os jids cuja foto mudou (o runner reemite a conversa para a lista atualizar).
+   */
+  async refreshPhotos(orgId: string, row: { id: string; openwa_session_id: string | null }, limit = 50): Promise<string[]> {
+    if (!row.openwa_session_id) return [];
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const stale = new Date(Date.now() - PHOTO_SWEEP_MS);
+    const chats = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: row.id, kind: 'individual', last_message_at: { gte: since } }, select: { chat_id: true }, orderBy: { last_message_at: 'desc' }, take: 400 });
+    if (!chats.length) return [];
+    const ids = chats.map((c) => c.chat_id);
+    const contacts = await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, wa_id: { in: ids }, profile_pic_media_id: { not: null }, OR: [{ profile_pic_checked_at: null }, { profile_pic_checked_at: { lt: stale } }] }, select: { id: true, wa_id: true, profile_pic_url: true }, take: limit });
+    if (!contacts.length) return [];
+    let pics: Record<string, string | null> = {};
+    try {
+      const r = await this.openwa.profilePictures(row.openwa_session_id, contacts.map((c) => c.wa_id));
+      pics = r?.pictures || {};
+    } catch (e: any) {
+      this.logger.debug(`refreshPhotos ${row.id}: ${e?.message || e}`);
+      return [];
+    }
+    const changed: string[] = [];
+    const now = new Date();
+    for (const c of contacts) {
+      const url = pics[c.wa_id] ?? null;
+      if (url && url === c.profile_pic_url) {
+        await this.prisma.whatsapp_contacts.update({ where: { id: c.id }, data: { profile_pic_checked_at: now } }).catch(() => undefined);
+        continue;
+      }
+      if (!url) {
+        // removeu a foto
+        await this.prisma.whatsapp_contacts.update({ where: { id: c.id }, data: { profile_pic_media_id: null, profile_pic_url: null, profile_pic_checked_at: now } }).catch(() => undefined);
+        changed.push(c.wa_id);
+        continue;
+      }
+      const r = await this.photo(orgId, { jid: c.wa_id, sessionId: row.id }, { force: true }).catch(() => null);
+      if (r) changed.push(c.wa_id);
+    }
+    if (changed.length) this.logger.log(`fotos de perfil atualizadas número=${row.id}: ${changed.length}`);
+    return changed;
   }
 
   private async fetchImage(url: string): Promise<{ buf: Buffer; mime: string }> {

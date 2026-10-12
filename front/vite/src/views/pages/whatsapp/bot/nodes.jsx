@@ -196,7 +196,8 @@ function MediaPreview({ m }) {
   const kind = m.kind;
   const url = m.media?.url;
   const name = m.media?.filename;
-  if (!url) {
+  // Mídia com `id` mas sem URL (link assinado vencido) ainda é um arquivo válido: mostra o nome.
+  if (!url && !m.media?.id) {
     const Icon = { image: IconPhoto, video: IconVideo, audio: IconMicrophone, document: IconFile }[kind] || IconFile;
     const label = { image: 'Imagem', video: 'Vídeo', audio: 'Áudio', document: 'Documento' }[kind] || 'Arquivo';
     return (
@@ -220,7 +221,7 @@ function MediaPreview({ m }) {
       </Box>
     );
   }
-  if (kind === 'image')
+  if (kind === 'image' && url)
     return (
       <Box
         component="img"
