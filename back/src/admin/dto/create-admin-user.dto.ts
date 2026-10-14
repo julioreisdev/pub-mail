@@ -1,5 +1,5 @@
 import { IsArray, IsEmail, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
-import { MODULES } from '../../platform-billing/modules.const';
+import { MODULES, SUB_PERMISSIONS } from '../../platform-billing/modules.const';
 
 export class CreateAdminUserDto {
   @IsString()
@@ -22,7 +22,7 @@ export class CreateAdminUserDto {
   // Módulos liberados p/ ESTE usuário (herda nada da org — é por usuário).
   @IsOptional()
   @IsArray()
-  @IsIn(MODULES, { each: true })
+  @IsIn([...MODULES, ...SUB_PERMISSIONS, 'whatsapp:basic'], { each: true })
   modules?: string[];
 
   // Números do WhatsApp liberados p/ este usuário (ids de `whatsapp_sessions` da MESMA org).

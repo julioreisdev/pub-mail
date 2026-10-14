@@ -19,6 +19,7 @@ const fmtPhone = (jid?: string | null) => {
   if (d.startsWith('55') && d.length >= 12) return `+55 (${d.slice(2, 4)}) ${d.slice(4, -4)}-${d.slice(-4)}`;
   return `+${d}`;
 };
+const FINANCE = 'whatsapp:finance'; // sub-permissão que vê valores (P7-18)
 const money = (cents: unknown) => (Number(cents || 0) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 @Injectable()
@@ -45,6 +46,73 @@ export class WhatsAppNotifyBridge implements OnModuleInit {
     this.hooks.on('rating', (e) => this.onRating(e));
     this.hooks.on('broadcast_done', (e) => this.onBroadcastDone(e));
     this.hooks.on('broadcast_paused', (e) => this.onBroadcastPaused(e));
+    // Fase 6 (agenda)
+    this.hooks.on('appointment_booked', (e) => this.onAppointment('appointment_booked', e));
+    this.hooks.on('appointment_canceled', (e) => this.onAppointment('appointment_canceled', e));
+    this.hooks.on('appointment_no_show', (e) => this.onAppointment('appointment_no_show', e));
+    // Fase 6B (chamados)
+    this.hooks.on('ticket_created', (e) => this.onTicket('ticket_created', e));
+    this.hooks.on('ticket_assigned', (e) => this.onTicket('ticket_assigned', e));
+    this.hooks.on('ticket_sla', (e) => this.onTicket('ticket_sla', e));
+    // Fase 7 (pedidos)
+    this.hooks.on('order_created', (e) => this.onOrder('order_created', e));
+    this.hooks.on('order_paid', (e) => this.onOrder('order_paid', e));
+  }
+
+  // ---------------------------------------------------------------- pedidos
+  private async onOrder(kind: 'order_created' | 'order_paid', e: { orgId: string; order: any; user_id?: string | null; manual?: boolean }) {
+    const o = e?.order;
+    if (!o?.id || (kind === 'order_paid' && e.manual)) return;
+    const who = o.customer?.name || o.contact?.name || (o.jid ? fmtPhone(o.jid) : 'Cliente');
+    const title = kind === 'order_created' ? `Novo pedido ${o.code} · ${o.total_label}` : `Pedido ${o.code} pago · ${o.total_label}`;
+    const body = `${who} · ${o.items_count} ${o.items_count === 1 ? 'item' : 'itens'} · ${o.delivery?.mode === 'delivery' ? 'entrega' : 'retirada'} · ${o.payment_method_label}.`;
+    // P7-18: quem não tem `whatsapp:finance` recebe o aviso sem o valor
+    const restricted = { permission: FINANCE, title: kind === 'order_created' ? `Novo pedido ${o.code}` : `Pedido ${o.code} pago`, body };
+    await this.notifications.notify(e.orgId, { kind, title, body, url: `/whatsapp/orders?order=${encodeURIComponent(o.id)}`, tag: `order:${o.id}:${kind}`, sessionId: o.session_id || null, data: { order_id: o.id, chat_id: o.chat_id || null }, to: null, exclude: e.user_id ? [e.user_id] : null, restricted });
+  }
+
+  // ---------------------------------------------------------------- chamados
+  /** Novo: responsável (se houver) ou todos com o módulo. Atribuído: só quem recebeu. Prazo: responsável ou todos. */
+  private async onTicket(kind: 'ticket_created' | 'ticket_assigned' | 'ticket_sla', e: { orgId: string; ticket: any; by?: string | null; user_id?: string | null; phase?: string }) {
+    const t = e?.ticket;
+    if (!t?.id) return;
+    const actor = e.user_id || null;
+    const who = t.customer?.name || t.contact?.name || (t.jid ? fmtPhone(t.jid) : 'Cliente');
+    let to: string[] | null = t.assigned_user_id ? [t.assigned_user_id] : null;
+    let title: string;
+    let body: string;
+    if (kind === 'ticket_assigned') {
+      if (!t.assigned_user_id || t.assigned_user_id === actor) return; // pegou para si: não avisa a si mesmo
+      to = [t.assigned_user_id];
+      title = `Chamado ${t.protocol} atribuído a você`;
+      body = `${t.category_label} · ${t.subject} — ${who}.`;
+    } else if (kind === 'ticket_created') {
+      title = `Novo chamado ${t.protocol} · ${t.category_label}`;
+      body = `${who}: ${t.subject}${t.priority === 'urgent' ? ' · URGENTE' : t.priority === 'high' ? ' · prioridade alta' : ''}.`;
+    } else {
+      const late = e.phase === 'breached';
+      title = late ? `Prazo estourado: chamado ${t.protocol}` : `Chamado ${t.protocol} vence ${t.sla_relative || 'em breve'}`;
+      body = `${t.category_label} · ${t.subject} — ${who}${t.assigned?.name ? ` · com ${t.assigned.name}` : ' · sem responsável'}.`;
+    }
+    await this.notifications.notify(e.orgId, { kind, title, body, url: `/whatsapp/tickets?ticket=${encodeURIComponent(t.id)}`, tag: `ticket:${t.id}:${kind}`, sessionId: t.session_id || null, data: { ticket_id: t.id, chat_id: t.chat_id || null }, to, exclude: actor && kind !== 'ticket_sla' ? [actor] : null });
+  }
+
+  // ---------------------------------------------------------------- agenda
+  /** Para o profissional do recurso (`resource.user_id`) ou, sem profissional, para todos com o módulo. */
+  private async onAppointment(kind: 'appointment_booked' | 'appointment_canceled' | 'appointment_no_show', e: { orgId: string; appointment: any; by?: string | null; user_id?: string | null; notify_staff?: boolean; credit_cents?: number }) {
+    const a = e?.appointment;
+    if (!a?.id || e.notify_staff === false) return;
+    if (kind === 'appointment_canceled' && a.cancel_reason === 'remarcado') return; // remarcação não é cancelamento
+    const who = a.customer?.name || a.contact?.name || (a.jid ? fmtPhone(a.jid) : 'Cliente');
+    const when = `${a.date_label} ${a.time_label}`;
+    const actor = e.user_id || (typeof e.by === 'string' && /^[0-9a-f-]{36}$/i.test(e.by) ? e.by : null);
+    const to = a.resource?.user_id ? [a.resource.user_id] : null;
+    const title = kind === 'appointment_booked' ? `Novo agendamento: ${a.service_name} · ${when}` : kind === 'appointment_canceled' ? `Agendamento cancelado: ${a.service_name} · ${when}` : `Falta: ${who} · ${when}`;
+    const body =
+      kind === 'appointment_booked' ? `${who} com ${a.resource?.name || '—'}${a.status === 'pending_payment' ? ' · aguardando pagamento' : ''}.`
+      : kind === 'appointment_canceled' ? `${who} · ${e.by === 'customer' ? 'cancelado pelo cliente' : e.by === 'system' ? 'cancelado automaticamente' : 'cancelado pela equipe'}${e.credit_cents ? ` · crédito de ${money(e.credit_cents)}` : ''}.`
+      : `${a.service_name} com ${a.resource?.name || '—'}${e.by === 'system' ? ' · marcado automaticamente — corrija na Agenda se o cliente veio' : ''}.`;
+    await this.notifications.notify(e.orgId, { kind, title, body, url: `/whatsapp/agenda?appointment=${encodeURIComponent(a.id)}`, tag: `appt:${a.id}`, sessionId: a.session_id || null, data: { appointment_id: a.id, chat_id: a.chat_id || null }, to, exclude: actor ? [actor] : null });
   }
 
   private chatRow(orgId: string, sessionId: string, jid: string) {
@@ -158,7 +226,10 @@ export class WhatsAppNotifyBridge implements OnModuleInit {
     const c = e.charge;
     const chat = c.session_id && c.chat_id ? await this.chatRow(e.orgId, c.session_id, c.chat_id) : null;
     const who = e.customer?.name || chat?.name || fmtPhone(c.chat_id);
-    await this.notifications.notify(e.orgId, { kind: 'charge_paid', title: `Pagamento confirmado: ${money(c.amount_cents)}`, body: `${who} pagou ${c.description ? `"${c.description}"` : 'a cobrança'} (${e.via === 'manual' ? 'marcado como pago' : e.via.toUpperCase()}).`, url: '/whatsapp/charges', tag: `charge:${c.id}`, sessionId: c.session_id || null, chat: chat ? this.chatCtx(chat, c.chat_id) : null, data: { charge_id: c.id, chat_id: chat?.id || null } });
+    const body = `${who} pagou ${c.description ? `"${c.description}"` : 'a cobrança'} (${e.via === 'manual' ? 'marcado como pago' : String(e.via || '').toUpperCase()}).`;
+    // P7-18: sem `whatsapp:finance` = sem o valor e com o link da conversa (a tela de cobranças é bloqueada para ele)
+    const restricted = { permission: FINANCE, title: 'Pagamento confirmado', body, url: chat?.id ? this.chatUrl(chat.id) : '/whatsapp/chat' };
+    await this.notifications.notify(e.orgId, { kind: 'charge_paid', title: `Pagamento confirmado: ${money(c.amount_cents)}`, body, url: '/whatsapp/charges', tag: `charge:${c.id}`, sessionId: c.session_id || null, chat: chat ? this.chatCtx(chat, c.chat_id) : null, data: { charge_id: c.id, chat_id: chat?.id || null }, restricted });
   }
 
   private async onChargeOverdue(e: { orgId: string; charge: any }) {
@@ -166,7 +237,9 @@ export class WhatsAppNotifyBridge implements OnModuleInit {
     const customer = c.customer_id ? await this.prisma.whatsapp_customers.findUnique({ where: { id: c.customer_id } }).catch(() => null) : null;
     const chat = c.session_id && c.chat_id ? await this.chatRow(e.orgId, c.session_id, c.chat_id) : null;
     const who = customer?.name || chat?.name || fmtPhone(c.chat_id);
-    await this.notifications.notify(e.orgId, { kind: 'charge_overdue', title: `Cobrança vencida: ${money(c.amount_cents)}`, body: `${who} não pagou ${c.description ? `"${c.description}"` : 'a cobrança'} até o vencimento.`, url: '/whatsapp/charges?status=overdue', tag: `charge:${c.id}`, sessionId: c.session_id || null, chat: chat ? this.chatCtx(chat, c.chat_id) : null, data: { charge_id: c.id, chat_id: chat?.id || null } });
+    const body = `${who} não pagou ${c.description ? `"${c.description}"` : 'a cobrança'} até o vencimento.`;
+    const restricted = { permission: FINANCE, title: 'Cobrança vencida', body, url: chat?.id ? this.chatUrl(chat.id) : '/whatsapp/chat' };
+    await this.notifications.notify(e.orgId, { kind: 'charge_overdue', title: `Cobrança vencida: ${money(c.amount_cents)}`, body, url: '/whatsapp/charges?status=overdue', tag: `charge:${c.id}`, sessionId: c.session_id || null, chat: chat ? this.chatCtx(chat, c.chat_id) : null, data: { charge_id: c.id, chat_id: chat?.id || null }, restricted });
   }
 
   // ---------------------------------------------------------------- funil

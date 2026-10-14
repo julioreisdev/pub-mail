@@ -58,6 +58,9 @@ import AttendanceCard from './settings/AttendanceCard';
 import TagsCard from './settings/TagsCard';
 import QuickRepliesCard from './settings/QuickRepliesCard';
 import DiagnosticsCard from './settings/DiagnosticsCard';
+import TemplatesCard from './settings/TemplatesCard';
+import CustomFieldsCard from './settings/CustomFieldsCard';
+import OutboxCard from './settings/OutboxCard';
 import { SettingsCardHeader, cardSx } from './settings/settingsKit';
 
 // ============================================================================
@@ -1993,9 +1996,14 @@ export default function WhatsAppSettings() {
           gridTemplateColumns: { xs: 'minmax(0, 1fr)', lg: 'repeat(2, minmax(0, 1fr))' }
         }}
       >
+        {/* Fase 7: modelos prontos por ramo (só dono/admin) e campos personalizados por cadastro */}
+        {canEdit ? <TemplatesCard canEdit={canEdit} onApplied={() => setOrgVersion((v) => v + 1)} /> : null}
         <AttendanceCard canEdit={canEdit} />
+        {/* Fase 8: fila de envios (pausa e ritmo por número) */}
+        <OutboxCard canEdit={canEdit} />
         <TagsCard key={`tags-${orgVersion}`} canEdit={canEdit} />
         <QuickRepliesCard />
+        <CustomFieldsCard canEdit={canEdit} />
         <DataCard summary={orgSummary} canEdit={canEdit} busy={false} onPurge={onOrgPurge} />
       </Box>
 

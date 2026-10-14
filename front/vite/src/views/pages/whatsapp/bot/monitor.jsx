@@ -26,7 +26,31 @@ const WAITING = {
   menu: 'Aguardando uma opção',
   question: 'Aguardando a resposta',
   pix: 'Aguardando o pagamento',
-  wait: 'Em espera programada'
+  wait: 'Em espera programada',
+  'ticket:category': 'Escolhendo a categoria do chamado',
+  'ticket:subject': 'Informando o assunto do chamado',
+  'ticket:description': 'Descrevendo o chamado',
+  'ticket:photo': 'Mandando fotos do chamado',
+  'ticket:choose': 'Escolhendo um chamado',
+  'ticket:action': 'Vendo um chamado',
+  'ticket:info': 'Mandando mais informações do chamado',
+  'ticket:wait': 'Abrindo/consultando o chamado',
+  'ticket:custom': 'Respondendo um campo do chamado',
+  charge: 'Aguardando o pagamento',
+  'order:category': 'Escolhendo a categoria do pedido',
+  'order:product': 'Escolhendo um produto',
+  'order:qty': 'Informando a quantidade',
+  'order:cart': 'No carrinho',
+  'order:delivery': 'Escolhendo entrega ou retirada',
+  'order:address': 'Escolhendo o endereço de entrega',
+  'order:address_text': 'Digitando o endereço de entrega',
+  'order:address_confirm': 'Confirmando o endereço de entrega',
+  'order:custom': 'Respondendo um campo do pedido',
+  'order:notes': 'Escrevendo a observação do pedido',
+  'order:payment': 'Escolhendo a forma de pagamento',
+  'order:confirm': 'Conferindo o resumo do pedido',
+  'order:choose': 'Escolhendo um pedido',
+  'order:wait': 'Criando/consultando o pedido'
 };
 
 export default function BotMonitor({ flowId, flowName, sessions = [], byId, nodes = [] }) {

@@ -401,18 +401,33 @@ export class WhatsAppMediaService {
   constructor(private readonly prisma: PrismaService) {}
 
   // Mídias usadas por CONFIGURAÇÕES da org (anexo de resposta rápida, mídia do fluxo do bot,
-  // mídia das copies de broadcast). Não vencem nem são apagadas pela limpeza de dados do número.
+  // mídia das copies de broadcast, arquivo digital das regras de acesso dos produtos). Não vencem nem são apagadas pela limpeza de dados do número.
   async referencedIds(orgIds?: string[]): Promise<Set<string>> {
     const where = orgIds?.length ? { organization_id: { in: orgIds } } : {};
-    const [replies, flows, copies, team] = await Promise.all([
+    const [replies, flows, copies, team, products] = await Promise.all([
       this.prisma.whatsapp_quick_replies.findMany({ where: { ...where, media_id: { not: null } }, select: { media_id: true } }),
       this.prisma.whatsapp_bot_flows.findMany({ where, select: { definition: true } }),
       this.prisma.whatsapp_broadcast_copies.findMany({ where, select: { messages: true } }),
       this.prisma.team_messages.findMany({ where: { ...where, media_id: { not: null }, deleted_at: null }, select: { media_id: true } }).catch(() => [] as { media_id: string | null }[]),
+      this.prisma.whatsapp_products.findMany({ where, select: { entitlement: true } }).catch(() => [] as { entitlement: any }[]), // Fase 5: arquivo digital do direito de acesso
+    ]);
+    // Fase 6/6B: anexos de chamados (do chamado e dos eventos) e foto dos recursos da agenda — limpar dados não pode apagá-los
+    const [tickets, ticketEvents, resources] = await Promise.all([
+      this.prisma.whatsapp_tickets.findMany({ where, select: { media_ids: true } }).catch(() => [] as { media_ids: any }[]),
+      this.prisma.whatsapp_ticket_events.findMany({ where: { ...where, media_id: { not: null } }, select: { media_id: true } }).catch(() => [] as { media_id: string | null }[]),
+      this.prisma.whatsapp_resources.findMany({ where: { ...where, photo_media_id: { not: null } }, select: { photo_media_id: true } }).catch(() => [] as { photo_media_id: string | null }[]),
     ]);
     const ids = new Set<string>();
     for (const r of replies) if (r.media_id) ids.add(r.media_id);
     for (const r of team) if (r.media_id) ids.add(r.media_id);
+    for (const t of tickets) for (const m of Array.isArray(t.media_ids) ? (t.media_ids as any[]) : []) if (m) ids.add(String(m));
+    for (const e of ticketEvents) if (e.media_id) ids.add(e.media_id);
+    for (const r of resources) if (r.photo_media_id) ids.add(r.photo_media_id);
+    for (const p of products) {
+      const e: any = p.entitlement;
+      const rules: any[] = Array.isArray(e) ? e : Array.isArray(e?.rules) ? e.rules : e?.kind ? [e] : [];
+      for (const r of rules) if (r?.kind === 'digital_file' && r.ref) ids.add(String(r.ref));
+    }
     const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
     for (const json of [...flows.map((f) => f.definition), ...copies.map((c) => c.messages)]) {
       for (const m of JSON.stringify(json ?? null).match(uuid) || []) ids.add(m.toLowerCase());

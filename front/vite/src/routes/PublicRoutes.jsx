@@ -15,6 +15,7 @@ const PublicWebchat = Loadable(lazy(() => import('views/pages/webchat/PublicWebc
 const SplitRedirect = Loadable(lazy(() => import('views/pages/webchat/SplitRedirect')));
 const QuizSplitRedirect = Loadable(lazy(() => import('views/pages/quiz/QuizSplitRedirect')));
 const PublicQuiz = Loadable(lazy(() => import('views/pages/quiz/PublicQuiz')));
+const PublicPay = Loadable(lazy(() => import('views/pages/pay/PublicPay')));
 const PrivacyPolicy = Loadable(lazy(() => import('views/pages/legal/PrivacyPolicy')));
 const TermsOfUse = Loadable(lazy(() => import('views/pages/legal/TermsOfUse')));
 
@@ -57,6 +58,9 @@ const PublicRoutes = {
 
     // /quiz/:slug -> página pública do quiz
     { path: 'quiz/:slug', element: <PublicQuiz /> },
+
+    // /pay/:token -> link de pagamento de uma cobrança do WhatsApp (PIX, boleto e cartão)
+    { path: 'pay/:token', element: <PublicPay /> },
 
     // /webchat/:slug -> pagina publica do webchat
     { path: 'webchat/:slug', element: <PublicWebchat /> },

@@ -2,7 +2,7 @@ import { ENCRYPTED_FIELDS, EXTRA_ENC_KEY, EXTRA_SECRET_KEYS, TEXT_PREFIX, WaKeyr
 
 // =============================================================================
 // Extensão do Prisma que cifra/decifra as mensagens do WhatsApp em UM lugar só:
-// todo create/update/upsert de whatsapp_messages, whatsapp_chats e whatsapp_contact_statuses
+// todo create/update/upsert de whatsapp_messages, whatsapp_chats, whatsapp_contact_statuses, whatsapp_customers (doc), whatsapp_payment_methods (token do cartão), org_webhooks (segredo), org_webhook_deliveries (corpo), whatsapp_tickets (descrição) e whatsapp_ticket_events (comentários)
 // passa pelos campos de ENCRYPTED_FIELDS (e pelas chaves sensíveis do JSON `extra`) antes de
 // ir ao banco, e todo resultado volta decifrado. Os serviços continuam lendo e gravando texto
 // normal — nenhum deles precisa saber que existe criptografia.
@@ -152,6 +152,12 @@ export function waCryptoExtension(kr: WaKeyring, base: any) {
       whatsapp_messages: { $allOperations: handler('whatsapp_messages') },
       whatsapp_chats: { $allOperations: handler('whatsapp_chats') },
       whatsapp_contact_statuses: { $allOperations: handler('whatsapp_contact_statuses') },
+      whatsapp_customers: { $allOperations: handler('whatsapp_customers') },
+      whatsapp_payment_methods: { $allOperations: handler('whatsapp_payment_methods') },
+      org_webhooks: { $allOperations: handler('org_webhooks') }, // Fase 5: segredo do webhook de saída
+      org_webhook_deliveries: { $allOperations: handler('org_webhook_deliveries') }, // Fase 5: corpo da entrega
+      whatsapp_tickets: { $allOperations: handler('whatsapp_tickets') }, // Fase 6B: descrição do chamado
+      whatsapp_ticket_events: { $allOperations: handler('whatsapp_ticket_events') }, // Fase 6B: comentários
     },
   };
 }

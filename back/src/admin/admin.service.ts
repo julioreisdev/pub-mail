@@ -4,6 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { rm } from 'fs/promises';
+import { join } from 'path';
 import * as bcrypt from 'bcryptjs';
 import { Prisma, users_role, wallets_status } from 'generated/prisma/client';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
@@ -15,7 +17,11 @@ import { AccessService, normalizeWhatsAppSessions } from '../platform-billing/ac
 import { WhatsAppSessionsService } from '../whatsapp/whatsapp-sessions.service';
 import { WaAccessService } from '../whatsapp/wa-access.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { ALL_MODULES, normalizeModules } from '../platform-billing/modules.const';
+import { ALL_MODULES, normalizeModules, normalizeModuleList, normalizeSubPermissions } from '../platform-billing/modules.const';
+import { asaasDeleteWebhook } from '../payments/providers/asaas';
+import { cancelChargeRemote, crmProvidersOf, webhookUrlFor } from '../payments/gateways.util';
+import { OrgApiKeysService } from '../org-api/org-api-keys.service';
+import { OrgWebhooksService } from '../org-webhooks/org-webhooks.service';
 
 const userSelect = {
   id: true,
@@ -206,6 +212,18 @@ export class AdminService {
     const org = await this.prisma.organizations.findUnique({ where: { id } });
     if (!org) throw new NotFoundException('Organização não encontrada.');
 
+    // Pagamentos: cobranças em aberto do WhatsApp saem dos gateways e o webhook da org sai da conta do Asaas (best-effort)
+    try {
+      const gw = await this.prisma.telegram_payment_settings.findUnique({ where: { organization_id: id } });
+      if (gw) {
+        const open = await this.prisma.whatsapp_charges.findMany({ where: { organization_id: id, status: 'PENDING' }, take: 300 });
+        for (const c of open) await cancelChargeRemote(gw, c);
+        const asaasKey = crmProvidersOf(gw).tokens?.asaas;
+        if (asaasKey) await asaasDeleteWebhook(asaasKey, webhookUrlFor('asaas', id));
+      }
+    } catch {
+      /* best-effort */
+    }
     await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=0');
@@ -295,8 +313,34 @@ export class AdminService {
           await tx.whatsapp_tasks.deleteMany(where); // CRM do WhatsApp (tarefas, notas, funil, cobranças, assinaturas, clientes, produtos)
           await tx.whatsapp_chat_notes.deleteMany(where);
           await tx.whatsapp_pipeline_stages.deleteMany(where);
+          await tx.whatsapp_outbox.deleteMany(where); // fila de envio (Fase 3 das assinaturas)
+          await tx.whatsapp_entitlements.deleteMany(where); // Fase 5: direito de acesso (FK → customers/subscriptions; FK-check off, então antes)
+          await tx.org_api_keys.deleteMany(where); // Fase 5: chaves da API pública
+          await tx.org_webhook_deliveries.deleteMany(where); // Fase 5: entregas ANTES dos webhooks (FK)
+          await tx.org_webhooks.deleteMany(where);
+          // Fase 8: auditoria e importações (o arquivo da importação sai do disco depois da transação)
+          await tx.org_audit_log.deleteMany(where);
+          await tx.whatsapp_import_jobs.deleteMany(where);
+          // Fase 7: pedidos e unidades
+          await tx.whatsapp_orders.deleteMany(where);
+          await tx.whatsapp_units.deleteMany(where);
+          // Fase 6B: chamados (eventos antes dos chamados; contador do protocolo)
+          await tx.whatsapp_ticket_events.deleteMany(where);
+          await tx.whatsapp_tickets.deleteMany(where);
+          await tx.whatsapp_counters.deleteMany(where);
+          // Fase 6: agenda (agendamentos, lista de espera, bloqueios, recursos, usos de plano, créditos) — antes de cobranças/assinaturas/clientes
+          await tx.whatsapp_appointments.deleteMany(where);
+          await tx.whatsapp_waitlist.deleteMany(where);
+          await tx.whatsapp_resource_blocks.deleteMany(where);
+          await tx.whatsapp_resources.deleteMany(where);
+          await tx.whatsapp_subscription_usage.deleteMany(where);
+          await tx.whatsapp_customer_credits.deleteMany(where);
           await tx.whatsapp_charges.deleteMany(where);
+          await tx.whatsapp_payment_methods.deleteMany(where); // cartões salvos (Fase 4; FK → customers)
+          await tx.whatsapp_subscription_events.deleteMany(where); // auditoria (FK → subscriptions; FK-check off, então antes)
           await tx.whatsapp_subscriptions.deleteMany(where);
+          await tx.whatsapp_coupons.deleteMany(where);
+          await tx.whatsapp_customer_contacts.deleteMany({ where: { customer: where.where } }); // vínculos cliente↔número (FK-check está off: cascade não roda)
           await tx.whatsapp_customers.deleteMany(where);
           await tx.whatsapp_products.deleteMany(where);
           await tx.whatsapp_crm_settings.deleteMany(where);
@@ -364,6 +408,10 @@ export class AdminService {
       },
       { timeout: 30000 },
     );
+    // A-15: chaves de API e webhooks da org apagada deixam de valer NA HORA (os caches em memória duram até 60 s)
+    try { OrgApiKeysService.forgetOrganization(id); OrgWebhooksService.forgetOrganization(id); } catch { /* cache é cortesia */ }
+    // Fase 8: arquivos de importação da org (protected/imports/<org>/)
+    if (/^[0-9a-f-]{36}$/i.test(id)) await rm(join(process.cwd(), 'protected', 'imports', id), { recursive: true, force: true }).catch(() => undefined);
 
     return { id, deleted: true };
   }
@@ -383,7 +431,7 @@ export class AdminService {
     const orgIds = [...new Set(users.map((u) => u.organization_id))];
     const accessRows = orgIds.length ? await this.prisma.organization_access.findMany({ where: { organization_id: { in: orgIds } } }) : [];
     const amap = new Map(accessRows.map((r) => [r.organization_id, r] as [string, any]));
-    return users.map((u: any) => ({ ...this.shapeUser(u), modules: normalizeModules(u.modules), access: this.accessSummary(amap.get(u.organization_id)) }));
+    return users.map((u: any) => ({ ...this.shapeUser(u), modules: normalizeModules(u.modules), permissions: normalizeSubPermissions(u.modules), access: this.accessSummary(amap.get(u.organization_id)) }));
   }
 
   private accessSummary(row: any) {
@@ -410,7 +458,7 @@ export class AdminService {
     const existing = await this.prisma.users.findUnique({ where: { email } });
     if (existing) throw new BadRequestException('Já existe um usuário com esse e-mail.');
     const role = asRole(dto.role, users_role.OWNER);
-    const modules = normalizeModules(dto.modules);
+    const modules = normalizeModuleList(dto.modules);
     // Org nova = ainda sem números: null = todos (quando conectar), array = nenhum até o admin liberar.
     const waSessions = normalizeWhatsAppSessions(dto.whatsapp_sessions) === null ? null : [];
     const password_hash = await bcrypt.hash(String(dto.password), 12);
@@ -462,7 +510,7 @@ export class AdminService {
           password_hash,
           role,
           active: true,
-          modules: normalizeModules(dto.modules),
+          modules: normalizeModuleList(dto.modules),
           whatsapp_sessions: this.waSessionsData(waSessions),
         },
         select: userSelect,
@@ -484,7 +532,7 @@ export class AdminService {
     if (dto.name !== undefined) data.name = String(dto.name).trim();
     if (dto.role !== undefined) data.role = asRole(dto.role, user.role);
     if (dto.active !== undefined) data.active = dto.active === true;
-    if (dto.modules !== undefined) data.modules = normalizeModules(dto.modules);
+    if (dto.modules !== undefined) data.modules = normalizeModuleList(dto.modules);
     let waSessions: string[] | null | undefined;
     if (dto.whatsapp_sessions !== undefined) {
       waSessions = await this.normalizeWaSessions(user.organization_id, dto.whatsapp_sessions);

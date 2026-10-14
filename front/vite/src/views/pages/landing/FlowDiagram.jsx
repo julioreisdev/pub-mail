@@ -25,9 +25,9 @@ export const CHANNELS = [
     items: [
       'Vários números por empresa',
       'Chat multiatendente + bot',
-      'CRM, funil e cobranças PIX',
-      'Broadcasts anti-bloqueio',
-      'Status, agendas e métricas'
+      'Assinaturas e autoatendimento',
+      'Cobrança PIX, boleto e cartão',
+      'Agenda, chamados e pedidos'
     ]
   },
   {

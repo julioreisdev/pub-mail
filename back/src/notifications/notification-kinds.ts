@@ -17,7 +17,7 @@ export const VIBRATION_PATTERNS: Record<Vibration, number[]> = {
   none: [],
 };
 
-export type KindGroup = 'messages' | 'attendance' | 'tasks' | 'billing' | 'pipeline' | 'connection' | 'other';
+export type KindGroup = 'messages' | 'attendance' | 'tasks' | 'agenda' | 'tickets' | 'orders' | 'billing' | 'pipeline' | 'connection' | 'other';
 
 export type KindMeta = {
   key: string;
@@ -32,6 +32,9 @@ export const KIND_GROUPS: Record<KindGroup, { label: string; description: string
   messages: { label: 'Mensagens', description: 'O que chega nas conversas do WhatsApp.' },
   attendance: { label: 'Atendimento', description: 'Fila, atribuições e transferências entre atendentes.' },
   tasks: { label: 'Tarefas', description: 'Prazos e tarefas atribuídas a você.' },
+  agenda: { label: 'Agenda', description: 'Agendamentos de serviços (os seus, se você é o profissional).' },
+  tickets: { label: 'Chamados', description: 'Protocolos abertos pelos clientes, atribuições e prazos.' },
+  orders: { label: 'Pedidos', description: 'Pedidos feitos pelo WhatsApp (bot, painel ou API) e pagamentos deles.' },
   billing: { label: 'Cobranças', description: 'Pagamentos e vencimentos dos clientes.' },
   pipeline: { label: 'Funil', description: 'Movimentação das conversas no funil de vendas.' },
   connection: { label: 'Conexão', description: 'Estado dos números conectados.' },
@@ -48,6 +51,14 @@ export const KINDS: KindMeta[] = [
   { key: 'handoff', group: 'attendance', label: 'Bot pediu um humano', description: 'O fluxo do bot encaminhou a conversa para atendimento.' },
   { key: 'task_due', group: 'tasks', label: 'Tarefa no prazo', description: 'Lembrete quando o prazo da tarefa chega.' },
   { key: 'task_assigned', group: 'tasks', label: 'Tarefa atribuída a você', description: 'Alguém criou ou passou uma tarefa para você.' },
+  { key: 'appointment_booked', group: 'agenda', label: 'Novo agendamento', description: 'Um cliente (ou a equipe) marcou um horário.' },
+  { key: 'appointment_canceled', group: 'agenda', label: 'Agendamento cancelado', description: 'Um horário foi cancelado pelo cliente ou pela equipe.' },
+  { key: 'appointment_no_show', group: 'agenda', label: 'Falta', description: 'Um cliente não compareceu (marcado pela equipe ou automaticamente).' },
+  { key: 'ticket_created', group: 'tickets', label: 'Novo chamado', description: 'Um cliente (ou a equipe) abriu um chamado — para o responsável da categoria ou para todos.' },
+  { key: 'ticket_assigned', group: 'tickets', label: 'Chamado atribuído a você', description: 'Um colega (ou a categoria) passou um chamado para você.' },
+  { key: 'ticket_sla', group: 'tickets', label: 'Prazo do chamado', description: 'Um chamado está perto de vencer ou passou do prazo.', important: true },
+  { key: 'order_created', group: 'orders', label: 'Novo pedido', description: 'Um cliente fez um pedido (pelo bot, painel ou API).', important: true },
+  { key: 'order_paid', group: 'orders', label: 'Pedido pago', description: 'O PIX de um pedido foi confirmado.' },
   { key: 'charge_paid', group: 'billing', label: 'Pagamento confirmado', description: 'PIX ou boleto de um cliente foi pago.', important: true },
   { key: 'charge_overdue', group: 'billing', label: 'Cobrança venceu', description: 'Uma cobrança passou do vencimento sem pagamento.' },
   { key: 'pipeline_moved', group: 'pipeline', label: 'Mudou de etapa', description: 'Uma conversa foi movida no funil.' },
@@ -92,6 +103,14 @@ export type Prefs = {
   handoff: boolean;
   task_due: boolean;
   task_assigned: boolean;
+  appointment_booked: boolean;
+  appointment_canceled: boolean;
+  appointment_no_show: boolean;
+  ticket_created: boolean;
+  ticket_assigned: boolean;
+  ticket_sla: boolean;
+  order_created: boolean;
+  order_paid: boolean;
   charge_paid: boolean;
   charge_overdue: boolean;
   pipeline: { enabled: boolean; stages: string[] | null };
@@ -124,6 +143,14 @@ export const DEFAULT_PREFS: Prefs = {
   handoff: true,
   task_due: true,
   task_assigned: true,
+  appointment_booked: true,
+  appointment_canceled: true,
+  appointment_no_show: true,
+  ticket_created: true,
+  ticket_assigned: true,
+  ticket_sla: true,
+  order_created: true,
+  order_paid: true,
   charge_paid: true,
   charge_overdue: true,
   pipeline: { enabled: false, stages: null },
@@ -192,6 +219,14 @@ export function normalizePrefs(raw: any, base: Prefs = DEFAULT_PREFS): Prefs {
     handoff: bool(r.handoff, base.handoff),
     task_due: bool(r.task_due, base.task_due),
     task_assigned: bool(r.task_assigned, base.task_assigned),
+    appointment_booked: bool(r.appointment_booked, base.appointment_booked),
+    appointment_canceled: bool(r.appointment_canceled, base.appointment_canceled),
+    appointment_no_show: bool(r.appointment_no_show, base.appointment_no_show),
+    ticket_created: bool(r.ticket_created, base.ticket_created),
+    ticket_assigned: bool(r.ticket_assigned, base.ticket_assigned),
+    ticket_sla: bool(r.ticket_sla, base.ticket_sla),
+    order_created: bool(r.order_created, base.order_created),
+    order_paid: bool(r.order_paid, base.order_paid),
     charge_paid: bool(r.charge_paid, base.charge_paid),
     charge_overdue: bool(r.charge_overdue, base.charge_overdue),
     pipeline: { enabled: bool(pipeline.enabled, base.pipeline.enabled), stages: pipeline.stages === undefined ? base.pipeline.stages : idList(pipeline.stages) },

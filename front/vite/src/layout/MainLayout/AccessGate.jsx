@@ -6,6 +6,7 @@ import useAccess from 'hooks/useAccess';
 import { useAuth } from 'contexts/AuthContext';
 import PaymentLockScreen from 'views/pages/access/PaymentLockScreen';
 import WelcomeModal from 'views/pages/access/WelcomeModal';
+import { permissionLabel } from 'views/pages/access/modules';
 import RenewalReminder from 'views/pages/access/RenewalReminder';
 
 // Portão de acesso do painel (dentro do MainLayout, em volta do <Outlet/>):
@@ -26,11 +27,20 @@ export default function AccessGate({ children }) {
     const onMod = (e) => {
       toast.error(e?.detail?.message || 'Módulo não incluído no seu acesso.', { id: 'module-disabled' });
     };
+    // Fase 7: sub-permissão do WhatsApp negada (403 PERMISSION_DENIED) — só avisa, 1 toast por permissão
+    const onPerm = (e) => {
+      const p = e?.detail?.permission;
+      toast.error(p ? `Seu acesso não inclui "${permissionLabel(p)}".` : e?.detail?.message || 'Ação não permitida no seu acesso.', {
+        id: `permission-denied-${p || 'x'}`
+      });
+    };
     window.addEventListener('pm:payment-required', onPay);
     window.addEventListener('pm:module-disabled', onMod);
+    window.addEventListener('pm:permission-denied', onPerm);
     return () => {
       window.removeEventListener('pm:payment-required', onPay);
       window.removeEventListener('pm:module-disabled', onMod);
+      window.removeEventListener('pm:permission-denied', onPerm);
     };
   }, [refreshAccess]);
 

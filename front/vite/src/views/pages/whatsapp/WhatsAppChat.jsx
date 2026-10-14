@@ -95,6 +95,7 @@ import { WaSessionBanner } from './waKit';
 import WaChatPicker from './WaChatPicker';
 import { useRealtimeEvent, useRealtimeStatus } from 'realtime/useRealtime';
 import { useAuth } from 'contexts/AuthContext';
+import useAccess from 'hooks/useAccess';
 import ScrollChipsRow from './chat/ScrollChipsRow';
 import AudioPlayer from './chat/AudioPlayer';
 import { contactsOfMessage } from './chat/vcard';
@@ -2253,6 +2254,9 @@ export default function WhatsAppChat() {
   );
   const [customerOpen, setCustomerOpen] = useState(false); // painel "Cliente" (CRM)
   const [charge, setCharge] = useState(null); // {customer, products} → diálogo "Cobrar"
+  // "Cobrar" só para quem tem a permissão de cobranças (o back recusa /whatsapp/charges sem ela)
+  const { hasPermission: hasWaPermission } = useAccess();
+  const canCharge = hasWaPermission('whatsapp:finance');
   const [chargeBusy, setChargeBusy] = useState(false);
   const openCharge = async () => {
     if (!active?.chat_id || chargeBusy) return;
@@ -4535,7 +4539,7 @@ export default function WhatsAppChat() {
                       </IconButton>
                     </Tooltip>
                   ) : null}
-                  {isIndividual && !isNarrow ? (
+                  {isIndividual && !isNarrow && canCharge ? (
                     <Tooltip title="Cobrar (PIX / boleto na conversa)">
                       <span>
                         <IconButton size="small" onClick={openCharge} aria-label="Cobrar" disabled={chargeBusy}>
@@ -5226,7 +5230,7 @@ export default function WhatsAppChat() {
             <ListItemText>Cliente (cadastro e assinaturas)</ListItemText>
           </MenuItem>
         ) : null}
-        {isNarrow && isIndividual ? (
+        {isNarrow && isIndividual && canCharge ? (
           <MenuItem
             disabled={chargeBusy}
             onClick={() => {
@@ -5789,6 +5793,8 @@ export default function WhatsAppChat() {
         open={Boolean(charge)}
         onClose={() => setCharge(null)}
         customer={charge?.customer || null}
+        chatId={active?.chat_id}
+        chat={active}
         products={charge?.products || []}
       />
 

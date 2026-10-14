@@ -21,7 +21,7 @@ function MenuList() {
   const drawerOpen = menuMaster.isDashboardDrawerOpened;
   const { user } = useAuth();
   const role = user?.user?.role;
-  const { has } = useAccess();
+  const { has, hasPermission } = useAccess();
 
   const [selectedID, setSelectedID] = useState('');
 
@@ -29,9 +29,14 @@ function MenuList() {
 
   // Esconde grupos restritos por role (ex.: Administração só p/ SUPER_ADMIN)
   // e por MÓDULO liberado pro usuário (requiredModule: email|webchat|quiz|telegram|settings).
-  const items = menuItems.items.filter(
-    (item) => (!item.requiredRole || item.requiredRole === role) && (!item.requiredModule || has(item.requiredModule))
-  );
+  // Fase 7: `requiredPermission` (sub-permissão do WhatsApp) no grupo ou em cada item filho.
+  const allowedItem = (item) =>
+    (!item.requiredRole || item.requiredRole === role) &&
+    (!item.requiredModule || has(item.requiredModule)) &&
+    (!item.requiredPermission || hasPermission(item.requiredPermission));
+  const items = menuItems.items
+    .filter(allowedItem)
+    .map((item) => (Array.isArray(item.children) ? { ...item, children: item.children.filter(allowedItem) } : item));
 
   let lastItemIndex = items.length - 1;
   let remItems = [];

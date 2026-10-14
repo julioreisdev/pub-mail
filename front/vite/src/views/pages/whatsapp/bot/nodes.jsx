@@ -8,26 +8,84 @@ import { EdgeLabelRenderer, Handle, Position, getBezierPath, useUpdateNodeIntern
 import { Box, IconButton, InputBase, Menu, MenuItem, Stack, Tooltip, Typography } from '@mui/material';
 import {
   IconAlertTriangle,
+  IconCalendarEvent,
+  IconCalendarPlus,
   IconCircleX,
+  IconClipboardList,
+  IconClockPlus,
   IconCopy,
+  IconCreditCard,
   IconDeviceFloppy,
   IconDots,
   IconFile,
   IconFlag3,
   IconHeadset,
   IconHourglass,
+  IconInfoCircle,
   IconMicrophone,
   IconPhoto,
   IconPlayerPlay,
   IconQrcode,
+  IconReceipt,
+  IconReceipt2,
+  IconShoppingCart,
+  IconTicket,
   IconTrash,
   IconUserCheck,
+  IconUserSearch,
   IconVideo,
   IconX
 } from '@tabler/icons-react';
 
-import { OP_LABEL, fmtBRL, fmtMinutes, outputsOf, toneOfHandle, validateMeta, waitLabel } from './botModel';
-import { NODE_META, TONE, TagChip, TypingDots, VarToken, WA_DARK, WA_GREEN, WaText, hexA, useBot, waBg, waFg } from './botUi';
+import {
+  APPOINTMENT_KEYS,
+  BOOK_RESOURCE_MODES,
+  CANCEL_POLICIES,
+  CRM_TEXTS,
+  TICKET_PRIORITY_OPTIONS,
+  TICKET_SHOW_MODES,
+  WAITLIST_PERIOD_MODES,
+  WAITLIST_PRODUCT_MODES,
+  bookDefault,
+  ticketDefault,
+  CUSTOMER_STATUS_OPTIONS,
+  IDENTIFY_MODES,
+  INFO_WHATS,
+  INVOICE_METHODS,
+  INVOICE_WHICH,
+  OP_LABEL,
+  ORDER_PAYMENT_OPTIONS,
+  ORDER_SHOW_MODES,
+  askedCustomFields,
+  orderDefault,
+  customerKeyMeta,
+  customerKeyOf,
+  fmtBRL,
+  fmtMinutes,
+  outputsOf,
+  productLabel,
+  productsFor,
+  registerFieldMeta,
+  toneOfHandle,
+  validateMeta,
+  waitLabel
+} from './botModel';
+import {
+  NODE_META,
+  TONE,
+  TagChip,
+  TypingDots,
+  VarToken,
+  WA_DARK,
+  WA_GREEN,
+  WaText,
+  hexA,
+  useBookCatalog,
+  useBot,
+  useTicketCatalog,
+  waBg,
+  waFg
+} from './botUi';
 
 const NODE_W = 284;
 const HANDLE = { width: 13, height: 13, border: '2.5px solid var(--wa-handle-border, #fff)' };
@@ -383,6 +441,58 @@ function QuestionBody({ data }) {
   );
 }
 
+function CustomerRuleText({ rule }) {
+  const { products, crmSettings } = useBot();
+  const ck = customerKeyOf(rule.key);
+  const meta = customerKeyMeta(rule.key);
+  if (ck === 'status') {
+    const st = CUSTOMER_STATUS_OPTIONS.find((o) => o.id === rule.value);
+    return (
+      <>
+        Cliente {rule.op === 'is_not' ? 'não está' : 'está'} <b>{st?.label?.toLowerCase() || '…'}</b>
+      </>
+    );
+  }
+  if (ck === 'product') {
+    const p = (products || []).find((x) => x.id === rule.value);
+    return (
+      <>
+        Cliente {rule.op === 'is_not' ? 'não tem' : 'tem'} o plano <b>{p?.name || (rule.value ? 'Produto removido' : '…')}</b>
+      </>
+    );
+  }
+  if (ck === 'days_overdue' || ck === 'no_shows')
+    return (
+      <>
+        {ck === 'no_shows' ? 'Faltas' : 'Dias em atraso'} {OP_LABEL[rule.op] || rule.op} <b>{rule.value || '…'}</b>
+      </>
+    );
+  if (ck === 'verified' || ck === 'has_open_charge' || ck === 'has_subscription') {
+    const yes = rule.value !== 'false';
+    return (
+      <>
+        {ck === 'verified' ? (yes ? 'Documento verificado' : 'Documento não verificado') : null}
+        {ck === 'has_open_charge' ? (yes ? 'Tem cobrança em aberto' : 'Não tem cobrança em aberto') : null}
+        {ck === 'has_subscription' ? (yes ? 'Tem assinatura ativa' : 'Não tem assinatura ativa') : null}
+      </>
+    );
+  }
+  const key = String(rule.key || '').slice(7);
+  const cf = (crmSettings?.custom_fields || []).find((f) => f.key === key);
+  const needs = !['empty', 'not_empty'].includes(rule.op);
+  return (
+    <>
+      <b>{cf?.label || key || meta.label}</b> {OP_LABEL[rule.op] || rule.op}
+      {needs ? (
+        <>
+          {' '}
+          <b>“{rule.value || '…'}”</b>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 function RuleLine({ rule }) {
   const { tagsById } = useBot();
   let content;
@@ -398,6 +508,47 @@ function RuleLine({ rule }) {
     content = rule.op === 'closed' ? 'Fora do horário de atendimento' : 'Dentro do horário de atendimento';
   } else if (rule.source === 'contact_saved') {
     content = rule.value === 'false' ? 'Contato não está salvo na agenda' : 'Contato está salvo na agenda';
+  } else if (rule.source === 'customer') {
+    content = <CustomerRuleText rule={rule} />;
+  } else if (rule.source === 'appointment') {
+    const yes = rule.value !== 'false';
+    content =
+      rule.key === 'next_in_hours' ? (
+        <>
+          Próximo agendamento {rule.op === 'gt' ? 'daqui a mais de' : 'em até'} <b>{rule.value || '…'} h</b>
+        </>
+      ) : rule.key === 'has_pending' ? (
+        yes ? (
+          'Tem agendamento aguardando pagamento'
+        ) : (
+          'Não tem agendamento aguardando pagamento'
+        )
+      ) : yes ? (
+        'Tem agendamento marcado'
+      ) : (
+        'Não tem agendamento marcado'
+      );
+    if (!APPOINTMENT_KEYS.some((k) => k.id === rule.key)) content = 'Agendamento';
+  } else if (rule.source === 'ticket') {
+    const yes = rule.value !== 'false';
+    content =
+      rule.key === 'pending_customer'
+        ? yes
+          ? 'Tem chamado aguardando resposta do cliente'
+          : 'Não tem chamado aguardando resposta do cliente'
+        : yes
+          ? 'Tem chamado em andamento'
+          : 'Não tem chamado em andamento';
+  } else if (rule.source === 'order') {
+    const yes = rule.value !== 'false';
+    content =
+      rule.key === 'awaiting_payment'
+        ? yes
+          ? 'Tem pedido aguardando o PIX'
+          : 'Não tem pedido aguardando o PIX'
+        : yes
+          ? 'Tem pedido em andamento'
+          : 'Não tem pedido em andamento';
   } else {
     const subject =
       rule.source === 'var' ? rule.key ? <VarToken name={rule.key} /> : <i style={{ opacity: 0.7 }}>variável</i> : 'Mensagem do cliente';
@@ -627,10 +778,589 @@ function EndBody({ data }) {
 }
 
 function MenuBody({ data }) {
+  const { products } = useBot();
+  const isProducts = data.source === 'products';
+  const list = isProducts ? productsFor(products || [], data.product_ids) : [];
   return (
-    <Wallpaper>
-      <TextBubble text={data.text} placeholder="Escreva o texto acima das opções…" lines={3} />
-    </Wallpaper>
+    <>
+      <Wallpaper>
+        <TextBubble text={data.text} placeholder="Escreva o texto acima das opções…" lines={3} />
+      </Wallpaper>
+      {isProducts ? (
+        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ px: 1.25, pt: 1 }}>
+          <MiniChip color="#4F46E5">
+            <IconCreditCard size={11} /> Produtos do catálogo
+          </MiniChip>
+          {products ? (
+            <MiniChip color={list.length ? '#4F46E5' : '#B45309'}>
+              {list.length ? `${list.length} ${list.length === 1 ? 'ativo' : 'ativos'}` : 'nenhum produto ativo'}
+            </MiniChip>
+          ) : null}
+        </Stack>
+      ) : null}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blocos de Cliente (CRM)
+// ---------------------------------------------------------------------------
+function CrmChips({ children }) {
+  return (
+    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ px: 1.25, pt: 1 }}>
+      {children}
+    </Stack>
+  );
+}
+
+function CrmBubbles({ children }) {
+  return <Wallpaper>{children}</Wallpaper>;
+}
+
+function IdentifyBody({ data }) {
+  const { crmSettings } = useBot();
+  const color = NODE_META.crm_identify.color;
+  const mode = IDENTIFY_MODES.find((m) => m.id === data.mode) || IDENTIFY_MODES[0];
+  const eff = data.mode === 'org' ? (crmSettings ? (crmSettings.identity?.require_doc ? 'ask_doc' : 'phone') : null) : data.mode;
+  const effLabel =
+    eff === 'phone'
+      ? 'pelo número do WhatsApp'
+      : eff === 'ask_doc'
+        ? 'perguntando o CPF/CNPJ'
+        : eff === 'ask_code'
+          ? `perguntando o ${crmSettings?.identity?.code_label || 'código'}`
+          : 'conforme a organização';
+  const asks = eff === 'ask_doc' || eff === 'ask_code';
+  return (
+    <>
+      {asks || !eff ? (
+        <CrmBubbles>
+          <TextBubble
+            text={
+              data.ask_text ||
+              (eff === 'ask_code'
+                ? `Qual é o seu ${crmSettings?.identity?.code_label || 'código de cliente'}?`
+                : crmSettings?.identity?.ask_doc_text || 'Para continuar, me informe o seu CPF ou CNPJ (só números).')
+            }
+            lines={3}
+          />
+        </CrmBubbles>
+      ) : (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1.25, pt: 1.1 }}>
+          <Box
+            sx={{
+              width: 30,
+              height: 30,
+              borderRadius: '50%',
+              display: 'grid',
+              placeItems: 'center',
+              color,
+              bgcolor: hexA(color, 0.14),
+              flexShrink: 0
+            }}
+          >
+            <IconUserSearch size={16} />
+          </Box>
+          <Typography sx={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>
+            Reconhece o cliente pelo número, sem perguntar nada
+          </Typography>
+        </Stack>
+      )}
+      <CrmChips>
+        <MiniChip color={color}>{data.mode === 'org' ? `Org · ${effLabel}` : mode.label}</MiniChip>
+        {asks ? <MiniChip color={color}>{data.retries || 3} tentativas</MiniChip> : null}
+      </CrmChips>
+    </>
+  );
+}
+
+function FieldsBody({ data, color, intro }) {
+  const { crmSettings } = useBot();
+  const fields = data.fields || [];
+  const customFields = crmSettings?.custom_fields || [];
+  return (
+    <>
+      {intro ? (
+        <CrmBubbles>
+          <TextBubble text={intro} lines={2} />
+        </CrmBubbles>
+      ) : null}
+      <Box sx={{ px: 1.25, pt: 1 }}>
+        <Typography sx={{ fontSize: 10.5, fontWeight: 700, color: 'text.secondary', mb: 0.5 }}>PERGUNTA, NA ORDEM</Typography>
+        {fields.length ? (
+          <Stack spacing={0.4}>
+            {fields.slice(0, 6).map((f, i) => {
+              const meta = registerFieldMeta(f.key, customFields);
+              return (
+                <Stack key={f.id || f.key} direction="row" spacing={0.75} alignItems="center">
+                  <Box
+                    sx={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: '50%',
+                      display: 'grid',
+                      placeItems: 'center',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      color,
+                      bgcolor: hexA(color, 0.14),
+                      flexShrink: 0
+                    }}
+                  >
+                    {i + 1}
+                  </Box>
+                  <Typography noWrap sx={{ fontSize: 12, fontWeight: 600, minWidth: 0, flex: 1 }}>
+                    {f.label || meta.label}
+                  </Typography>
+                  {f.required === false ? <MiniChip color="#64748B">opcional</MiniChip> : null}
+                </Stack>
+              );
+            })}
+            {fields.length > 6 ? (
+              <Typography sx={{ fontSize: 11, color: 'text.secondary', pl: 3.25 }}>+ {fields.length - 6} campos</Typography>
+            ) : null}
+          </Stack>
+        ) : (
+          <Typography sx={{ fontSize: 12, color: 'text.secondary', fontStyle: 'italic' }}>Nenhum campo — clique para adicionar</Typography>
+        )}
+      </Box>
+      <CrmChips>
+        <MiniChip color={color}>{data.confirm !== false ? 'Confirma antes de salvar' : 'Salva sem confirmar'}</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+const RegisterBody = ({ data }) => <FieldsBody data={data} color={NODE_META.crm_register.color} intro={data.intro_text} />;
+const UpdateBody = ({ data }) => <FieldsBody data={data} color={NODE_META.crm_update.color} />;
+
+function ProductChip({ id, color }) {
+  const { products } = useBot();
+  const p = (products || []).find((x) => x.id === id);
+  if (!products) return <MiniChip color={color}>Produto…</MiniChip>;
+  return <MiniChip color={p ? color : '#B45309'}>{p ? productLabel(p) : 'Produto removido'}</MiniChip>;
+}
+
+function SubscribeBody({ data }) {
+  const { products, gateway } = useBot();
+  const color = NODE_META.crm_subscribe.color;
+  const pid = data.product_id || 'choose';
+  const list = pid === 'choose' ? productsFor(products || [], data.product_ids) : [];
+  const notReady = data.charge_now !== false && data.method !== 'boleto' && gateway && gateway.ready === false;
+  return (
+    <>
+      <CrmBubbles>
+        {pid === 'choose' ? (
+          <Bubble>
+            <Box sx={clampSx(2)}>
+              <WaText text={data.choose_text || CRM_TEXTS.subscribe.choose_text} vars />
+            </Box>
+            <Box sx={{ mt: 0.5, fontSize: 11.5, opacity: 0.85 }}>
+              {products ? (
+                list.length ? (
+                  list.slice(0, 4).map((p, i) => <div key={p.id}>{`${i + 1}. ${productLabel(p)}`}</div>)
+                ) : (
+                  <i>nenhum produto ativo</i>
+                )
+              ) : (
+                <i>carregando produtos…</i>
+              )}
+              {list.length > 4 ? <div>…</div> : null}
+            </Box>
+          </Bubble>
+        ) : null}
+        <TextBubble text={data.confirm_text || CRM_TEXTS.subscribe.confirm_text} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        {pid === 'choose' ? (
+          <MiniChip color={color}>Cliente escolhe o plano</MiniChip>
+        ) : pid === 'from_var' ? (
+          <MiniChip color={color}>Plano do menu anterior</MiniChip>
+        ) : (
+          <ProductChip id={pid} color={color} />
+        )}
+        <MiniChip color={color}>{data.method === 'ask' ? 'PIX ou boleto' : data.method === 'boleto' ? 'Boleto' : 'PIX'}</MiniChip>
+        {data.charge_now === false ? <MiniChip color="#64748B">Sem cobrar agora</MiniChip> : null}
+      </CrmChips>
+      {notReady ? (
+        <Stack
+          direction="row"
+          spacing={0.75}
+          alignItems="center"
+          sx={{ mx: 1.25, mt: 1, px: 1, py: 0.6, borderRadius: 1.5, color: '#B45309', bgcolor: hexA('#F59E0B', 0.14), fontSize: 11 }}
+        >
+          <IconAlertTriangle size={14} />
+          <span>Gateway PIX não configurado</span>
+        </Stack>
+      ) : null}
+    </>
+  );
+}
+
+function InfoBody({ data }) {
+  const color = NODE_META.crm_info.color;
+  const what = INFO_WHATS.find((w) => w.id === data.what) || INFO_WHATS[0];
+  const text = data.what === 'custom' ? data.template : data.template || CRM_TEXTS.info[data.what] || CRM_TEXTS.info.status;
+  return (
+    <>
+      <CrmBubbles>
+        <TextBubble text={text} placeholder="Escreva o texto com as variáveis do cliente…" lines={5} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{what.label}</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+function InvoiceBody({ data }) {
+  const color = NODE_META.crm_invoice.color;
+  const which = INVOICE_WHICH.find((w) => w.id === data.which) || INVOICE_WHICH[0];
+  const method = INVOICE_METHODS.find((m) => m.id === data.method) || INVOICE_METHODS[0];
+  return (
+    <>
+      <CrmBubbles>
+        <Bubble>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Box
+              sx={{
+                width: 34,
+                height: 34,
+                borderRadius: 1.5,
+                display: 'grid',
+                placeItems: 'center',
+                color: '#fff',
+                bgcolor: color,
+                flexShrink: 0
+              }}
+            >
+              <IconReceipt2 size={19} />
+            </Box>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography sx={{ fontWeight: 800, fontSize: 13, lineHeight: 1.2 }}>Reenvia a cobrança</Typography>
+              <Typography noWrap sx={{ fontSize: 11, opacity: 0.75, maxWidth: 180 }}>
+                {which.label}
+              </Typography>
+            </Box>
+          </Stack>
+        </Bubble>
+        <TextBubble text={data.sent_text || CRM_TEXTS.invoice.sent_text} lines={2} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{method.label}</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+function CancelBody({ data }) {
+  const color = NODE_META.crm_cancel.color;
+  const policy = CANCEL_POLICIES.find((p) => p.id === data.policy) || CANCEL_POLICIES[0];
+  const reasons = data.reasons || [];
+  return (
+    <>
+      <CrmBubbles>
+        {data.ask_reason !== false ? <TextBubble text={data.reason_text || CRM_TEXTS.cancel.reason_text} lines={2} /> : null}
+        {data.retention_text?.trim() ? <TextBubble text={data.retention_text} lines={3} /> : null}
+        <TextBubble text={data.confirm_text || CRM_TEXTS.cancel.confirm_text} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{policy.label}</MiniChip>
+        {data.ask_reason !== false ? (
+          <MiniChip color={color}>{reasons.length ? `${reasons.length} motivos` : 'Motivos da org'}</MiniChip>
+        ) : null}
+        {data.retention_text?.trim() ? <MiniChip color="#16A34A">Com retenção</MiniChip> : null}
+      </CrmChips>
+    </>
+  );
+}
+
+function PauseBody({ data }) {
+  const color = NODE_META.crm_pause.color;
+  return (
+    <>
+      <CrmBubbles>
+        {data.ask_until !== false ? (
+          <TextBubble
+            text={(data.ask_text || CRM_TEXTS.pause.ask_text).replace(/\{\{\s*max_dias\s*\}\}/g, String(data.max_days || 30))}
+            lines={2}
+          />
+        ) : null}
+        <TextBubble text={data.paused_text || CRM_TEXTS.pause.paused_text} lines={2} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>
+          {data.ask_until !== false
+            ? `Cliente escolhe (até ${data.max_days || 30} dias)`
+            : `${data.days || data.max_days || 30} dias fixos`}
+        </MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+function ChangePlanBody({ data }) {
+  const { products } = useBot();
+  const color = NODE_META.crm_change_plan.color;
+  const list = productsFor(products || [], data.product_ids);
+  return (
+    <>
+      <CrmBubbles>
+        <Bubble>
+          <Box sx={clampSx(2)}>
+            <WaText text={data.choose_text || CRM_TEXTS.change_plan.choose_text} vars />
+          </Box>
+          <Box sx={{ mt: 0.5, fontSize: 11.5, opacity: 0.85 }}>
+            {products ? (
+              list.length ? (
+                list.slice(0, 4).map((p, i) => <div key={p.id}>{`${i + 1}. ${productLabel(p)}`}</div>)
+              ) : (
+                <i>nenhum produto ativo</i>
+              )
+            ) : (
+              <i>carregando produtos…</i>
+            )}
+            {list.length > 4 ? <div>…</div> : null}
+          </Box>
+        </Bubble>
+        <TextBubble text={data.changed_text || CRM_TEXTS.change_plan.changed_text} lines={2} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>
+          {(data.product_ids || []).length ? `${(data.product_ids || []).length} planos permitidos` : 'Qualquer plano ativo'}
+        </MiniChip>
+        <MiniChip color={color}>{data.confirm !== false ? 'Confirma antes' : 'Sem confirmação'}</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blocos de Agenda (Fase 6)
+// ---------------------------------------------------------------------------
+const bt = (type, data, key) => String(data?.texts?.[key] || '').trim() || bookDefault(type, key);
+
+function AgendaHead({ color, Icon, title, sub }) {
+  return (
+    <Bubble>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Box
+          sx={{
+            width: 34,
+            height: 34,
+            borderRadius: 1.5,
+            display: 'grid',
+            placeItems: 'center',
+            color: '#fff',
+            bgcolor: color,
+            flexShrink: 0
+          }}
+        >
+          <Icon size={19} />
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontWeight: 800, fontSize: 13, lineHeight: 1.2 }}>{title}</Typography>
+          {sub ? (
+            <Typography noWrap sx={{ fontSize: 11, opacity: 0.75, maxWidth: 180 }}>
+              {sub}
+            </Typography>
+          ) : null}
+        </Box>
+      </Stack>
+    </Bubble>
+  );
+}
+
+function BookServiceBody({ data }) {
+  const { services, resources } = useBookCatalog();
+  const color = NODE_META.book_service.color;
+  const ids = data.services || [];
+  const names = ids.map((id) => (services || []).find((x) => x.id === id)?.name || (services ? 'Serviço removido' : '…'));
+  const mode = BOOK_RESOURCE_MODES.find((m) => m.id === data.resource);
+  const fixed = !mode ? (resources || []).find((r) => r.id === data.resource)?.name || 'Profissional removido' : null;
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead
+          color={color}
+          Icon={IconCalendarPlus}
+          title="Agenda um serviço"
+          sub={ids.length ? names.join(', ') : 'Todos os serviços'}
+        />
+        <TextBubble text={bt('book_service', data, 'choose_day')} lines={2} />
+        <Bubble>
+          <Typography sx={{ fontSize: 11.5, opacity: 0.85 }}>1️⃣ qua 15/10 · 6 horários</Typography>
+          <Typography sx={{ fontSize: 11.5, opacity: 0.85 }}>2️⃣ qui 16/10 · 4 horários</Typography>
+        </Bubble>
+        <TextBubble text={bt('book_service', data, 'booked')} lines={2} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{fixed ? `Com ${fixed}` : mode?.id === 'ask' ? 'Pergunta com quem' : 'Profissional automático'}</MiniChip>
+        <MiniChip color={color}>{`${data.days_ahead || 14} dias`}</MiniChip>
+        {data.confirm === false ? <MiniChip color={color}>Sem confirmação</MiniChip> : null}
+      </CrmChips>
+    </>
+  );
+}
+
+function MyAppointmentsBody({ data }) {
+  const color = NODE_META.my_appointments.color;
+  const acts = [
+    data.allow_confirm !== false ? 'Confirmar' : null,
+    data.allow_reschedule !== false ? 'Remarcar' : null,
+    data.allow_cancel !== false ? 'Cancelar' : null
+  ].filter(Boolean);
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead color={color} Icon={IconCalendarEvent} title="Próximos agendamentos" sub="do contato e dos clientes dele" />
+        <TextBubble text={bt('my_appointments', data, 'choose_action')} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        {acts.length ? (
+          acts.map((a) => (
+            <MiniChip key={a} color={color}>
+              {a}
+            </MiniChip>
+          ))
+        ) : (
+          <MiniChip color={color}>Só mostra</MiniChip>
+        )}
+      </CrmChips>
+    </>
+  );
+}
+
+function WaitlistBody({ data }) {
+  const { services } = useBookCatalog();
+  const color = NODE_META.waitlist_join.color;
+  const pm = WAITLIST_PRODUCT_MODES.find((m) => m.id === data.product_id);
+  const svc = pm ? null : (services || []).find((x) => x.id === data.product_id)?.name || (services ? 'Serviço removido' : '…');
+  const per = WAITLIST_PERIOD_MODES.find((m) => m.id === data.period) || WAITLIST_PERIOD_MODES[0];
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead
+          color={color}
+          Icon={IconClockPlus}
+          title="Entra na lista de espera"
+          sub={svc || (pm?.id === 'ask' ? 'Pergunta o serviço' : 'Serviço do "Agendar"')}
+        />
+        {data.period === 'ask' ? <TextBubble text={bt('waitlist_join', data, 'choose_period')} lines={2} /> : null}
+        <TextBubble text={bt('waitlist_join', data, 'done')} lines={2} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{per.label}</MiniChip>
+        <MiniChip color={color}>{`${data.days_ahead || 14} dias`}</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blocos de Chamados (Fase 6B)
+// ---------------------------------------------------------------------------
+const tkt = (type, data, key) => String(data?.texts?.[key] || '').trim() || ticketDefault(type, key);
+
+function OpenTicketBody({ data }) {
+  const { categories } = useTicketCatalog();
+  const color = NODE_META.open_ticket.color;
+  const ask = (data.category || 'ask') === 'ask';
+  const cat = ask ? null : (categories || []).find((c) => c.key === data.category);
+  const catLabel = ask ? 'Pergunta a categoria' : cat ? cat.label : categories ? 'Categoria removida' : data.category;
+  const prio = TICKET_PRIORITY_OPTIONS.find((o) => o.id === (data.priority || 'default'));
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead color={color} Icon={IconTicket} title="Abre um chamado" sub={catLabel} />
+        {ask ? <TextBubble text={tkt('open_ticket', data, 'choose_category')} lines={2} /> : null}
+        <TextBubble text={tkt('open_ticket', data, 'ask_description')} lines={2} />
+        <TextBubble text={tkt('open_ticket', data, 'created')} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        {data.ask_subject ? <MiniChip color={color}>Pergunta o assunto</MiniChip> : null}
+        <MiniChip color={color}>{data.ask_photo !== false ? 'Aceita até 3 fotos' : 'Sem fotos'}</MiniChip>
+        {prio && prio.id !== 'default' ? <MiniChip color={color}>{`Prioridade ${prio.label.toLowerCase()}`}</MiniChip> : null}
+        {!ask && categories && cat && cat.active === false ? <MiniChip color="#DC2626">Categoria desativada</MiniChip> : null}
+      </CrmChips>
+    </>
+  );
+}
+
+function MyTicketsBody({ data }) {
+  const color = NODE_META.my_tickets.color;
+  const show = TICKET_SHOW_MODES.find((m) => m.id === data.show) || TICKET_SHOW_MODES[0];
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead color={color} Icon={IconClipboardList} title="Chamados do contato" sub={show.label} />
+        <TextBubble text={tkt('my_tickets', data, 'details')} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{data.allow_add_info !== false ? 'Enviar mais informações' : 'Só consulta'}</MiniChip>
+        <MiniChip color={color}>Protocolo digitado</MiniChip>
+      </CrmChips>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blocos de Pedidos (Fase 7)
+// ---------------------------------------------------------------------------
+const ord = (type, data, key) => String(data?.texts?.[key] || '').trim() || orderDefault(type, key);
+
+function OrderCartBody({ data }) {
+  const { customFieldMap } = useBot();
+  const color = NODE_META.order_cart.color;
+  const all = data.categories === 'all' || data.categories == null;
+  const cats = Array.isArray(data.categories) ? data.categories : [];
+  const sub = all ? 'Todas as categorias' : cats.length ? cats.join(', ') : 'Nenhuma categoria escolhida';
+  const pay = ORDER_PAYMENT_OPTIONS.find((o) => o.id === (data.payment || 'ask')) || ORDER_PAYMENT_OPTIONS[0];
+  const recv = [data.allow_delivery !== false ? 'Entrega' : null, data.allow_pickup !== false ? 'Retirada' : null].filter(Boolean);
+  const asked = askedCustomFields(customFieldMap, 'order');
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead color={color} Icon={IconShoppingCart} title="Monta um pedido" sub={sub} />
+        <TextBubble text={ord('order_cart', data, 'choose_product')} lines={2} />
+        <Bubble>
+          <Typography sx={{ fontSize: 11.5, opacity: 0.85 }}>1. X-Burguer · R$ 25,00</Typography>
+          <Typography sx={{ fontSize: 11.5, opacity: 0.85 }}>2. X-Salada · R$ 28,00</Typography>
+          <Typography sx={{ fontSize: 11.5, opacity: 0.85 }}>3. 🛒 Ver carrinho</Typography>
+        </Bubble>
+        <TextBubble text={ord('order_cart', data, 'summary')} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{all ? 'Categorias: todas' : `${cats.length} ${cats.length === 1 ? 'categoria' : 'categorias'}`}</MiniChip>
+        {recv.length ? (
+          <MiniChip color={color}>{recv.join(' + ')}</MiniChip>
+        ) : (
+          <MiniChip color="#DC2626">Sem entrega nem retirada</MiniChip>
+        )}
+        <MiniChip color={color}>
+          {pay.id === 'ask' ? 'Pagamento: pergunta' : pay.id === 'pix' ? 'Pagamento: PIX' : 'Pagamento: na entrega'}
+        </MiniChip>
+        {data.ask_notes ? <MiniChip color={color}>Pede observação</MiniChip> : null}
+        {asked.length ? (
+          <MiniChip color={color}>{`Pergunta ${asked.length} ${asked.length === 1 ? 'campo' : 'campos'} do pedido`}</MiniChip>
+        ) : null}
+      </CrmChips>
+    </>
+  );
+}
+
+function MyOrdersBody({ data }) {
+  const color = NODE_META.my_orders.color;
+  const show = ORDER_SHOW_MODES.find((m) => m.id === data.show) || ORDER_SHOW_MODES[0];
+  return (
+    <>
+      <CrmBubbles>
+        <AgendaHead color={color} Icon={IconReceipt} title="Pedidos do contato" sub={show.label} />
+        <TextBubble text={ord('my_orders', data, 'details')} lines={3} />
+      </CrmBubbles>
+      <CrmChips>
+        <MiniChip color={color}>{show.id === 'all' ? 'Todos (últimos 5)' : 'Em andamento'}</MiniChip>
+      </CrmChips>
+    </>
   );
 }
 
@@ -643,7 +1373,23 @@ const BODY = {
   wait: WaitBody,
   pix: PixBody,
   handoff: HandoffBody,
-  end: EndBody
+  end: EndBody,
+  crm_identify: IdentifyBody,
+  crm_register: RegisterBody,
+  crm_subscribe: SubscribeBody,
+  crm_info: InfoBody,
+  crm_invoice: InvoiceBody,
+  crm_cancel: CancelBody,
+  crm_pause: PauseBody,
+  crm_change_plan: ChangePlanBody,
+  crm_update: UpdateBody,
+  book_service: BookServiceBody,
+  my_appointments: MyAppointmentsBody,
+  waitlist_join: WaitlistBody,
+  open_ticket: OpenTicketBody,
+  my_tickets: MyTicketsBody,
+  order_cart: OrderCartBody,
+  my_orders: MyOrdersBody
 };
 
 // ---------------------------------------------------------------------------
@@ -683,6 +1429,7 @@ function OutputRow({ out, first }) {
 function IssueBadge({ issues }) {
   if (!issues?.length) return null;
   const hasError = issues.some((i) => i.level === 'error');
+  const onlyInfo = issues.every((i) => i.level === 'info');
   return (
     <Tooltip
       title={
@@ -705,12 +1452,12 @@ function IssueBadge({ issues }) {
           borderRadius: '50%',
           display: 'grid',
           placeItems: 'center',
-          bgcolor: hasError ? '#DC2626' : '#F59E0B',
+          bgcolor: hasError ? '#DC2626' : onlyInfo ? '#2563EB' : '#F59E0B',
           color: '#fff',
           boxShadow: '0 0 0 2px rgba(255,255,255,0.85)'
         }}
       >
-        <IconAlertTriangle size={13} stroke={2.4} />
+        {onlyInfo ? <IconInfoCircle size={13} stroke={2.4} /> : <IconAlertTriangle size={13} stroke={2.4} />}
       </Box>
     </Tooltip>
   );
@@ -718,11 +1465,11 @@ function IssueBadge({ issues }) {
 
 function BotNode({ id, type, data, selected }) {
   const updateNodeInternals = useUpdateNodeInternals();
-  const { settings, issuesByNode, simNodeId, actions } = useBot();
+  const { settings, products, issuesByNode, simNodeId, actions } = useBot();
   const [menuEl, setMenuEl] = useState(null);
   const meta = NODE_META[type] || NODE_META.message;
   const Icon = meta.icon;
-  const outputs = useMemo(() => outputsOf(type, data, settings), [type, data, settings]);
+  const outputs = useMemo(() => outputsOf(type, data, settings, products), [type, data, settings, products]);
   const outKey = outputs.map((o) => o.id).join('|');
   const issues = issuesByNode?.[id];
   const Body = BODY[type];
@@ -942,7 +1689,23 @@ export const nodeTypes = {
   wait: BotNode,
   pix: BotNode,
   handoff: BotNode,
-  end: BotNode
+  end: BotNode,
+  crm_identify: BotNode,
+  crm_register: BotNode,
+  crm_subscribe: BotNode,
+  crm_info: BotNode,
+  crm_invoice: BotNode,
+  crm_cancel: BotNode,
+  crm_pause: BotNode,
+  crm_change_plan: BotNode,
+  crm_update: BotNode,
+  book_service: BotNode,
+  my_appointments: BotNode,
+  waitlist_join: BotNode,
+  open_ticket: BotNode,
+  my_tickets: BotNode,
+  order_cart: BotNode,
+  my_orders: BotNode
 };
 
 // ---------------------------------------------------------------------------

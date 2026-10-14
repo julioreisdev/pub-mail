@@ -30,8 +30,8 @@ export class PaymentsController {
   @Post('settings/test')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')
-  test(@Req() req: any) {
-    return this.settings.test(req.user.organizationId);
+  test(@Req() req: any, @Body() dto: any) {
+    return this.settings.test(req.user.organizationId, dto?.provider || null);
   }
 
   @Get('sales')

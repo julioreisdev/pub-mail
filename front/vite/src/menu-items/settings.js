@@ -1,8 +1,18 @@
 // assets
-import { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings, IconCreditCard } from '@tabler/icons-react';
+import {
+  IconUserCircle,
+  IconWorld,
+  IconPlugConnected,
+  IconActivityHeartbeat,
+  IconSparkles,
+  IconSettings,
+  IconCreditCard,
+  IconApi,
+  IconShieldCheck
+} from '@tabler/icons-react';
 
 // constant
-const icons = { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings, IconCreditCard };
+const icons = { IconUserCircle, IconWorld, IconPlugConnected, IconActivityHeartbeat, IconSparkles, IconSettings, IconCreditCard, IconApi, IconShieldCheck };
 
 // ==============================|| CONFIGURAÇÕES MENU ITEMS ||============================== //
 
@@ -43,6 +53,23 @@ const settings = {
       type: 'item',
       url: '/settings/payments',
       icon: icons.IconCreditCard,
+      target: false
+    },
+    {
+      id: 'settings-api',
+      title: 'API e Webhooks',
+      type: 'item',
+      url: '/settings/api',
+      icon: icons.IconApi,
+      target: false
+    },
+    {
+      // só dono/admin/superadmin (o menu não filtra por lista de papéis: a página mostra o aviso para os demais)
+      id: 'settings-audit',
+      title: 'Auditoria',
+      type: 'item',
+      url: '/settings/audit',
+      icon: icons.IconShieldCheck,
       target: false
     },
     {

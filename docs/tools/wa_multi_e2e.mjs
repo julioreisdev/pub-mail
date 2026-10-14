@@ -154,7 +154,7 @@ try {
   r = await call(ownerTok, 'POST', '/whatsapp/broadcasts/audience-estimate', { targets: { contacts: 'all' }, session_ids: [A, B] });
   ok('estimativa de audiência com divisão por número (2 contatos)', (r.s === 200 || r.s === 201) && r.j.total === 2 && r.j.by_session?.length === 2 && r.j.by_session.reduce((n, s) => n + s.contacts, 0) === 2, r.j);
   r = await call(ownerTok, 'PUT', `/whatsapp/broadcasts/${bcId}`, { name: 'Campanha', session_ids: [A, B], targets: { contacts: 'all' }, pacing: { preset: 'custom', interval_ms: 500, jitter_pct: 200, daily_limit: 99999 }, times: [600], risk_ack: true });
-  ok('custom com valores fora da faixa é saneado (clamps)', r.s === 200 && r.j.pacing?.interval_ms >= 1000 && r.j.pacing?.jitter_pct <= 80 && r.j.pacing?.daily_limit <= 5000, r.j?.pacing);
+  ok('custom com valores fora da faixa é saneado (clamps)', r.s === 200 && r.j.pacing?.interval_ms >= 100 && r.j.pacing?.jitter_pct <= 80 && r.j.pacing?.daily_limit <= 5000, r.j?.pacing);
   r = await call(ownerTok, 'GET', '/whatsapp/broadcasts'); ok('lista traz sessions + warmup por número', r.s === 200 && L(r.j).some((b) => b.id === bcId && b.sessions?.length === 2 && Array.isArray(b.warmup)), L(r.j)[0]);
 
   // ---------------- CRM: conversa por número

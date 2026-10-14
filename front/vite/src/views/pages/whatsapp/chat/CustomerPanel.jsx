@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
@@ -27,12 +27,17 @@ import {
 } from '@tabler/icons-react';
 
 import { get } from 'api/api';
+import useAccess from 'hooks/useAccess';
 import { TgAvatar, TgListSkeleton } from 'views/pages/telegram/ui';
 import { WaNumberChip, useWaSessions } from '../waKit';
 import { WA_DARK, errMsg, fmtPhone, tint } from '../waShared';
 import CustomerDialog from '../crm/CustomerDialog';
 import ChargeDialog from '../crm/ChargeDialog';
 import { NotesTab, StageTab, TasksTab } from './ChatCrmTabs';
+import ChatAgendaTab from '../agenda/ChatAgendaTab';
+import ChatTicketsTab from '../tickets/ChatTicketsTab';
+import ChatOrdersTab from '../orders/ChatOrdersTab';
+import { HIDE_SCROLL } from './chatKit';
 import { BILLING_STATUS, StatusChip, SUB_STATUS, billingShort, dueText, fmtCep, fmtDoc, waPrimaryBtn } from '../crm/crmKit';
 
 // ============================================================================
@@ -41,6 +46,8 @@ import { BILLING_STATUS, StatusChip, SUB_STATUS, billingShort, dueText, fmtCep, 
 // Multi-número: `chat.chat_id` é o uuid da conversa ativa (usado em by-chat, funil, tarefas,
 // notas e cobranças); `chat.session` = número (chip no cabeçalho). "Cobrar" passa `chatId`
 // para a cobrança sair pelo número desta conversa.
+// Sub-permissões (revisão 14/10/2026, P7-6): sem `whatsapp:finance` não busca nem mostra cobranças/valores e some o
+// "Cobrar"; sem `whatsapp:crm` some o editar/cadastrar (a leitura do cliente pela conversa continua liberada).
 // ============================================================================
 
 const CHARGE_STATUS = {
@@ -67,11 +74,15 @@ function Row({ icon: Icon, children }) {
 
 export default function CustomerPanel({ open, onClose, chat, canDelete }) {
   const navigate = useNavigate();
-  const [state, setState] = useState({ loading: true, customer: null, contact: null });
+  const { hasPermission } = useAccess();
+  const canFinance = hasPermission('whatsapp:finance');
+  const canCrm = hasPermission('whatsapp:crm');
+  const [state, setState] = useState({ loading: true, customer: null, contact: null, customers: [] });
+  const [chosen, setChosen] = useState(null); // vários clientes no mesmo número: qual está aberto
   const [products, setProducts] = useState([]);
   const [fields, setFields] = useState([]);
   const [dlg, setDlg] = useState(false);
-  const [tab, setTab] = useState('customer'); // customer | stage | tasks | notes
+  const [tab, setTab] = useState('customer'); // customer | stage | tasks | notes | agenda | tickets | orders
   const [chargeDlg, setChargeDlg] = useState(false);
   const [charges, setCharges] = useState(null); // últimas cobranças do cliente
   const chatId = chat?.chat_id; // uuid da conversa
@@ -79,33 +90,48 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
   const { sessions, byId: sessionsById } = useWaSessions(open ? 60000 : 0);
   const multi = sessions.length > 1;
   const chatSession = chat?.session || (chat?.session_id ? sessionsById.get(chat.session_id) : null) || null;
+  // sequência das buscas: ao trocar de conversa rápido, a resposta antiga (que chega depois) é ignorada
+  const loadSeq = useRef(0);
+  const chargesSeq = useRef(0);
+
+  // trocou de conversa → esquece o cliente escolhido da conversa anterior (vários clientes no mesmo número)
+  useEffect(() => {
+    setChosen(null);
+  }, [chatId]);
 
   const loadCharges = useCallback(async () => {
-    if (!customerId) {
+    const seq = ++chargesSeq.current;
+    if (!customerId || !canFinance) {
       setCharges(null);
       return;
     }
     try {
       const r = await get('/whatsapp/charges', { params: { customer_id: customerId, page_size: 5 } });
+      if (seq !== chargesSeq.current) return;
       setCharges(r?.items || []);
     } catch {
-      setCharges([]);
+      if (seq === chargesSeq.current) setCharges([]);
     }
-  }, [customerId]);
+  }, [customerId, canFinance]);
   useEffect(() => {
     if (open) loadCharges();
   }, [open, loadCharges]);
 
   const load = useCallback(async () => {
     if (!chatId) return;
+    const seq = ++loadSeq.current;
     try {
-      const r = await get(`/whatsapp/customers/by-chat/${encodeURIComponent(chatId)}`);
-      setState({ loading: false, customer: r?.customer || null, contact: r?.contact || null });
+      const r = await get(`/whatsapp/customers/by-chat/${encodeURIComponent(chatId)}`, {
+        params: chosen ? { customer_id: chosen } : undefined
+      });
+      if (seq !== loadSeq.current) return;
+      setState({ loading: false, customer: r?.customer || null, contact: r?.contact || null, customers: r?.customers || [] });
     } catch (e) {
-      setState({ loading: false, customer: null, contact: null });
+      if (seq !== loadSeq.current) return;
+      setState({ loading: false, customer: null, contact: null, customers: [] });
       toast.error(errMsg(e, 'Não foi possível carregar o cliente.'));
     }
-  }, [chatId]);
+  }, [chatId, chosen]);
 
   useEffect(() => {
     if (!open) return;
@@ -115,12 +141,19 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
       .then((r) => setProducts(Array.isArray(r) ? r : []))
       .catch(() => undefined);
     get('/whatsapp/crm-settings')
-      .then((r) => setFields(r?.custom_fields || []))
+      .then((r) => setFields(Array.isArray(r?.custom_fields) ? r.custom_fields : r?.custom_fields?.customer || r?.customer_fields || []))
       .catch(() => undefined);
   }, [open, load]);
 
   const c = state.customer;
-  const contactForCreate = state.contact || (chat ? { name: chat.name, phone: chat.phone } : null);
+  // identidade estável: o CustomerDialog só reinicia o formulário quando o id muda, não a cada render
+  const hasChat = Boolean(chat);
+  const chatName = chat?.name;
+  const chatPhone = chat?.phone;
+  const contactForCreate = useMemo(
+    () => state.contact || (hasChat ? { name: chatName, phone: chatPhone } : null),
+    [state.contact, hasChat, chatName, chatPhone]
+  );
   const addr = c?.address;
   const addrText = addr
     ? [
@@ -147,32 +180,38 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
             </Typography>
             {multi && chatSession ? <WaNumberChip session={chatSession} showPhone /> : null}
           </Box>
-          {c && tab === 'customer' ? (
+          {c && tab === 'customer' && canCrm ? (
             <Tooltip title="Editar cadastro">
               <IconButton size="small" onClick={() => setDlg(true)}>
                 <IconPencil size={18} />
               </IconButton>
             </Tooltip>
           ) : null}
-          <IconButton size="small" onClick={onClose}>
+          <IconButton size="small" onClick={onClose} aria-label="Fechar">
             <IconX size={18} />
           </IconButton>
         </Stack>
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
-          variant="fullWidth"
+          variant="scrollable"
+          scrollButtons={false}
           sx={{
             borderBottom: '1px solid',
             borderColor: 'divider',
             minHeight: 40,
-            '& .MuiTab-root': { textTransform: 'none', fontWeight: 700, minHeight: 40, fontSize: 13 }
+            flexShrink: 0,
+            '& .MuiTabs-scroller': HIDE_SCROLL,
+            '& .MuiTab-root': { textTransform: 'none', fontWeight: 700, minHeight: 40, fontSize: 13, minWidth: 0, px: 1, flex: '1 0 auto' }
           }}
         >
           <Tab value="customer" label="Cliente" />
           <Tab value="stage" label="Funil" />
           <Tab value="tasks" label="Tarefas" />
           <Tab value="notes" label="Notas" />
+          <Tab value="agenda" label="Agenda" />
+          <Tab value="tickets" label="Chamados" />
+          <Tab value="orders" label="Pedidos" />
         </Tabs>
 
         {tab === 'stage' ? (
@@ -187,31 +226,85 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
           <Box sx={{ overflowY: 'auto', flex: 1 }}>
             <NotesTab chat={chat} open={open} />
           </Box>
+        ) : tab === 'agenda' ? (
+          <Box sx={{ overflowY: 'auto', flex: 1 }}>
+            <ChatAgendaTab chat={chat} customer={c} open={open} />
+          </Box>
+        ) : tab === 'tickets' ? (
+          <Box sx={{ overflowY: 'auto', flex: 1 }}>
+            <ChatTicketsTab chat={chat} customer={c} open={open} />
+          </Box>
+        ) : tab === 'orders' ? (
+          <Box sx={{ overflowY: 'auto', flex: 1 }}>
+            <ChatOrdersTab chat={chat} customer={c} open={open} />
+          </Box>
         ) : state.loading ? (
           <Box sx={{ p: 2 }}>
             <TgListSkeleton rows={5} />
           </Box>
         ) : !c ? (
           <Stack alignItems="center" spacing={1.5} sx={{ p: 3, textAlign: 'center' }}>
-            <TgAvatar name={chat?.name || chat?.phone} size={72} kind="contact" />
+            <TgAvatar
+              name={chat?.name || chat?.phone}
+              photoPath={
+                chat?.chat_id
+                  ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo${chat?.photo_v ? `?v=${chat.photo_v}` : ''}`
+                  : undefined
+              }
+              size={72}
+              kind="contact"
+            />
             <Typography sx={{ fontWeight: 800, fontSize: 17 }}>{chat?.name || fmtPhone(chat?.phone)}</Typography>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-              Este contato ainda não é cliente. Cadastre para registrar o que ele usa ou paga, vencimentos e observações da equipe.
+              {canCrm
+                ? 'Este contato ainda não é cliente. Cadastre para registrar o que ele usa ou paga, vencimentos e observações da equipe.'
+                : 'Este contato ainda não é cliente. Cadastrar clientes exige a permissão "Clientes, produtos e assinaturas".'}
             </Typography>
-            <Button
-              variant="contained"
-              disableElevation
-              startIcon={<IconUserPlus size={18} />}
-              onClick={() => setDlg(true)}
-              sx={waPrimaryBtn}
-            >
-              Tornar cliente
-            </Button>
+            {canCrm ? (
+              <Button
+                variant="contained"
+                disableElevation
+                startIcon={<IconUserPlus size={18} />}
+                onClick={() => setDlg(true)}
+                sx={waPrimaryBtn}
+              >
+                Tornar cliente
+              </Button>
+            ) : null}
           </Stack>
         ) : (
           <Box sx={{ overflowY: 'auto', flex: 1 }}>
+            {state.customers.length > 1 ? (
+              <Box sx={{ px: 2, pt: 1.5 }}>
+                <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700 }}>
+                  Este número está em {state.customers.length} clientes
+                </Typography>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                  {state.customers.map((x) => (
+                    <Chip
+                      key={x.id}
+                      size="small"
+                      label={`${x.name}${x.role_label ? ` · ${x.role_label}` : ''}`}
+                      color={x.id === c.id ? 'primary' : 'default'}
+                      variant={x.id === c.id ? 'filled' : 'outlined'}
+                      onClick={() => setChosen(x.id)}
+                      sx={{ fontWeight: 600, borderRadius: 1.5 }}
+                    />
+                  ))}
+                </Stack>
+              </Box>
+            ) : null}
             <Stack alignItems="center" spacing={1} sx={{ p: 3, pb: 2, textAlign: 'center' }}>
-              <TgAvatar name={c.name} size={80} kind="contact" />
+              <TgAvatar
+                name={c.name}
+                photoPath={
+                  chat?.chat_id
+                    ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo${chat?.photo_v ? `?v=${chat.photo_v}` : ''}`
+                    : undefined
+                }
+                size={80}
+                kind="contact"
+              />
               <Typography sx={{ fontWeight: 800, fontSize: 18 }}>{c.name}</Typography>
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                 {fmtPhone(c.phone)}
@@ -228,7 +321,7 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
                   />
                 ) : null}
               </Stack>
-              {c.monthly_cents ? (
+              {c.monthly_cents && canFinance ? (
                 <Typography variant="body2" sx={{ fontWeight: 700, color: WA_DARK }}>
                   {c.monthly_label}/mês em assinaturas
                 </Typography>
@@ -264,8 +357,8 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
                         <StatusChip map={SUB_STATUS} status={s.status} />
                       </Stack>
                       <Typography variant="caption" sx={{ color: 'text.secondary' }} display="block">
-                        {s.price_label}
-                        {billingShort(s.billing)}
+                        {canFinance ? s.price_label : ''}
+                        {canFinance ? billingShort(s.billing) : ''}
                         {s.next_due_label ? ` · vence ${s.next_due_label}` : ''}
                         {s.due_day && !s.next_due_label ? ` · dia ${s.due_day}` : ''}
                       </Typography>
@@ -282,14 +375,16 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
                   {canceled.length} cancelada{canceled.length === 1 ? '' : 's'}: {canceled.map((s) => s.product_name).join(', ')}
                 </Typography>
               ) : null}
-              <Button
-                size="small"
-                startIcon={<IconPencil size={14} />}
-                onClick={() => setDlg(true)}
-                sx={{ mt: 1, fontWeight: 700, textTransform: 'none' }}
-              >
-                Gerenciar assinaturas
-              </Button>
+              {canCrm ? (
+                <Button
+                  size="small"
+                  startIcon={<IconPencil size={14} />}
+                  onClick={() => setDlg(true)}
+                  sx={{ mt: 1, fontWeight: 700, textTransform: 'none' }}
+                >
+                  Gerenciar assinaturas
+                </Button>
+              ) : null}
             </Box>
             <Divider />
 
@@ -341,79 +436,93 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
                 </Box>
               </>
             ) : null}
+            {canFinance ? (
+              <>
+                <Divider />
+                <Box sx={{ p: 2 }}>
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                    <Typography
+                      variant="caption"
+                      sx={{ fontWeight: 800, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.4, flex: 1 }}
+                    >
+                      Últimas cobranças
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      disableElevation
+                      startIcon={<IconReceipt2 size={14} />}
+                      onClick={() => setChargeDlg(true)}
+                      sx={{ ...waPrimaryBtn, py: 0.25 }}
+                    >
+                      Cobrar
+                    </Button>
+                  </Stack>
+                  {charges === null ? (
+                    <TgListSkeleton rows={2} />
+                  ) : charges.length ? (
+                    <Stack spacing={0.75}>
+                      {charges.map((ch) => (
+                        <Stack key={ch.id} direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
+                              {ch.description}
+                            </Typography>
+                            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Typography variant="caption" sx={{ color: 'text.secondary', minWidth: 0 }} noWrap>
+                                {ch.amount_label} · vence {ch.due_label}
+                                {ch.status === 'PAID' && ch.paid_at ? ` · pago ${new Date(ch.paid_at).toLocaleDateString('pt-BR')}` : ''}
+                              </Typography>
+                              {multi && ch.session && ch.session_id !== chat?.session_id ? <WaNumberChip session={ch.session} /> : null}
+                            </Stack>
+                          </Box>
+                          <StatusChip map={CHARGE_STATUS} status={ch.overdue ? 'OVERDUE' : ch.status} />
+                        </Stack>
+                      ))}
+                      <Button
+                        size="small"
+                        endIcon={<IconExternalLink size={14} />}
+                        onClick={() => navigate('/whatsapp/charges')}
+                        sx={{ alignSelf: 'flex-start', fontWeight: 700, textTransform: 'none' }}
+                      >
+                        Ver todas
+                      </Button>
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                      Nenhuma cobrança ainda.
+                    </Typography>
+                  )}
+                </Box>
+              </>
+            ) : null}
             <Divider />
-            <Box sx={{ p: 2 }}>
-              <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-                <Typography
-                  variant="caption"
-                  sx={{ fontWeight: 800, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: 0.4, flex: 1 }}
-                >
-                  Últimas cobranças
-                </Typography>
+            {canCrm ? (
+              <Box sx={{ p: 2 }}>
                 <Button
                   size="small"
-                  variant="contained"
-                  disableElevation
-                  startIcon={<IconReceipt2 size={14} />}
-                  onClick={() => setChargeDlg(true)}
-                  sx={{ ...waPrimaryBtn, py: 0.25 }}
+                  endIcon={<IconExternalLink size={14} />}
+                  onClick={() => navigate('/whatsapp/customers')}
+                  sx={{ fontWeight: 700, textTransform: 'none' }}
                 >
-                  Cobrar
+                  Ver todos os clientes
                 </Button>
-              </Stack>
-              {charges === null ? (
-                <TgListSkeleton rows={2} />
-              ) : charges.length ? (
-                <Stack spacing={0.75}>
-                  {charges.map((ch) => (
-                    <Stack key={ch.id} direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
-                      <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
-                          {ch.description}
-                        </Typography>
-                        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-                          <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                            {ch.amount_label} · vence {ch.due_label}
-                            {ch.status === 'PAID' && ch.paid_at ? ` · pago ${new Date(ch.paid_at).toLocaleDateString('pt-BR')}` : ''}
-                          </Typography>
-                          {multi && ch.session && ch.session_id !== chat?.session_id ? <WaNumberChip session={ch.session} /> : null}
-                        </Stack>
-                      </Box>
-                      <StatusChip map={CHARGE_STATUS} status={ch.overdue ? 'OVERDUE' : ch.status} />
-                    </Stack>
-                  ))}
-                  <Button
-                    size="small"
-                    endIcon={<IconExternalLink size={14} />}
-                    onClick={() => navigate('/whatsapp/charges')}
-                    sx={{ alignSelf: 'flex-start', fontWeight: 700, textTransform: 'none' }}
-                  >
-                    Ver todas
-                  </Button>
-                </Stack>
-              ) : (
-                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                  Nenhuma cobrança ainda.
-                </Typography>
-              )}
-            </Box>
-            <Divider />
-            <Box sx={{ p: 2 }}>
-              <Button
-                size="small"
-                endIcon={<IconExternalLink size={14} />}
-                onClick={() => navigate('/whatsapp/customers')}
-                sx={{ fontWeight: 700, textTransform: 'none' }}
-              >
-                Ver todos os clientes
-              </Button>
-            </Box>
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => setDlg('another')}
+                  sx={{ fontWeight: 600, textTransform: 'none', display: 'block' }}
+                >
+                  Cadastrar outro cliente neste número
+                </Button>
+              </Box>
+            ) : null}
           </Box>
         )}
       </Drawer>
 
       <ChargeDialog
-        open={chargeDlg}
+        open={chargeDlg && canFinance}
         onClose={() => setChargeDlg(false)}
         customer={c}
         chatId={chatId}
@@ -422,15 +531,25 @@ export default function CustomerPanel({ open, onClose, chat, canDelete }) {
         onCreated={loadCharges}
       />
       <CustomerDialog
-        open={dlg}
+        open={Boolean(dlg)}
         onClose={() => setDlg(false)}
-        customer={c}
-        contact={!c ? contactForCreate : null}
+        customer={dlg === 'another' ? null : c}
+        contact={!c || dlg === 'another' ? contactForCreate : null}
+        another={dlg === 'another'}
         products={products}
         fields={fields}
         canDelete={canDelete}
-        onSaved={(saved) => setState((s) => ({ ...s, customer: saved }))}
-        onDeleted={() => setState((s) => ({ ...s, customer: null }))}
+        onChargesChanged={loadCharges}
+        onSaved={(saved) => {
+          if (dlg === 'another') setChosen(saved?.id || null);
+          setState((s) => ({ ...s, customer: saved }));
+          load();
+        }}
+        onDeleted={() => {
+          setChosen(null);
+          setState((s) => ({ ...s, customer: null }));
+          load();
+        }}
       />
     </>
   );

@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { promises as fsp } from 'node:fs';
+import { docHash } from '../wa-doc.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WhatsAppMediaService } from '../whatsapp-media.service';
 import { FILE_MAGIC, TEXT_PREFIX, waKeyring } from './wa-keyring';
@@ -43,9 +44,10 @@ export class WaEncryptionMigrator implements OnModuleInit {
       const msgs = await this.messages();
       const chats = await this.chats();
       const statuses = await this.statuses();
+      const customers = await this.customers();
       const files = await this.files();
-      if (msgs || chats || statuses || files) {
-        this.logger.log(`Cifrados: ${msgs} mensagens, ${chats} prévias de conversa, ${statuses} legendas de status, ${files} arquivos (${Math.round((Date.now() - t0) / 1000)} s)`);
+      if (msgs || chats || statuses || customers || files) {
+        this.logger.log(`Cifrados: ${msgs} mensagens, ${chats} prévias de conversa, ${statuses} legendas de status, ${customers} documentos de cliente, ${files} arquivos (${Math.round((Date.now() - t0) / 1000)} s)`);
       }
     } catch (e: any) {
       this.logger.error(`migração da criptografia parou: ${e?.message || e}`);
@@ -119,6 +121,28 @@ export class WaEncryptionMigrator implements OnModuleInit {
       const rows = await this.prisma.whatsapp_contact_statuses.findMany({ where: { id: { in: ids.map((r) => r.id) } }, select: { id: true, organization_id: true, caption: true } });
       for (const r of rows) {
         await this.prisma.whatsapp_contact_statuses.update({ where: { id: r.id, organization_id: r.organization_id }, data: { caption: r.caption } });
+        n++;
+      }
+      cursor = ids[ids.length - 1].id;
+      await sleep(150);
+    }
+    return n;
+  }
+
+  /** CPF/CNPJ de clientes gravados em claro (antes da Fase 1 das assinaturas): cifra e garante o doc_hash. */
+  private async customers() {
+    let cursor = '';
+    let n = 0;
+    const like = `${TEXT_PREFIX}%`;
+    for (;;) {
+      const ids: { id: string }[] = await this.prisma.$queryRaw`
+        SELECT id FROM whatsapp_customers
+        WHERE id > ${cursor} AND doc IS NOT NULL AND doc <> '' AND doc NOT LIKE ${like}
+        ORDER BY id LIMIT 200`;
+      if (!ids.length) break;
+      const rows = await this.prisma.whatsapp_customers.findMany({ where: { id: { in: ids.map((r) => r.id) } }, select: { id: true, organization_id: true, doc: true, doc_hash: true, updated_at: true } });
+      for (const r of rows) {
+        await this.prisma.whatsapp_customers.update({ where: { id: r.id, organization_id: r.organization_id }, data: { doc: r.doc, doc_hash: r.doc_hash || docHash(r.organization_id, r.doc), updated_at: r.updated_at } });
         n++;
       }
       cursor = ids[ids.length - 1].id;

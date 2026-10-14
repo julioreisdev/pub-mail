@@ -34,7 +34,10 @@ import {
   IconCheck,
   IconCircleCheck,
   IconCopy,
+  IconCreditCard,
   IconDotsVertical,
+  IconLink,
+  IconScale,
   IconExternalLink,
   IconHourglass,
   IconMessage,
@@ -55,7 +58,9 @@ import { TgAvatar, TgCard, TgConfirmDialog, TgEmptyState, TgFilterBar, TgListSke
 import { WaNumberChip, WaPageHeader, useWaSessions } from './waKit';
 import { WA_DARK, errMsg, fmtDateTime, fmtPhone, tint } from './waShared';
 import ChargeDialog from './crm/ChargeDialog';
+import ReconcileDialog from './crm/ReconcileDialog';
 import { CrmKpi, CrmModal, StatusChip, WaNumberFilter, chatUrl, dueText, useSessionFilter, useXs, waPrimaryBtn } from './crm/crmKit';
+import { customSummary, useCustomFieldDefs } from './crm/customFields';
 
 // ============================================================================
 // WhatsApp → Cobranças: PIX/boleto enviados na conversa (manuais e recorrentes),
@@ -75,7 +80,49 @@ const STATUS = {
   FAILED: { label: 'Falhou', token: 'error', color: '#B91C1C', dark: '#F87171' }
 };
 const ORIGIN = { manual: 'Manual', recurring: 'Recorrente', bot: 'Bot' };
-const KIND = { pix: 'PIX', boleto: 'Boleto', both: 'PIX + Boleto' };
+const KIND = { pix: 'PIX', boleto: 'Boleto', both: 'PIX + Boleto', card: 'Cartão' };
+const PAID_VIA = { pix: 'PIX', boleto: 'boleto', card: 'cartão', manual: 'manual', credit: 'crédito' };
+
+// Cartão (Fase 4): cartão salvo (cobra sozinho; mostra tentativas/recusa) ou página segura do Asaas.
+function CardChip({ c, h = 24 }) {
+  if (!c.card) return null;
+  const k = c.card;
+  const label = k.saved
+    ? k.error && c.status === 'PENDING'
+      ? `Cartão recusado${k.attempts ? ` · ${k.attempts}×` : ''}`
+      : 'Cartão salvo'
+    : k.installments > 1
+      ? `Cartão · ${k.installments}×`
+      : 'Cartão';
+  const tip = k.saved
+    ? k.error && c.status === 'PENDING'
+      ? `${k.error}${k.next_attempt_at ? ` — nova tentativa em ${fmtDateTime(k.next_attempt_at)}` : ''}`
+      : k.next_attempt_at && c.status === 'PENDING'
+        ? `Debitado sozinho em ${fmtDateTime(k.next_attempt_at)}`
+        : 'Cobrado no cartão salvo do cliente'
+    : k.url
+      ? 'Abrir a página segura do cartão'
+      : 'Cartão';
+  return (
+    <Tooltip title={tip}>
+      <Chip
+        size="small"
+        icon={<IconCreditCard size={13} />}
+        label={label}
+        color={k.saved && k.error && c.status === 'PENDING' ? 'warning' : 'default'}
+        onClick={k.url ? () => window.open(k.url, '_blank', 'noopener') : undefined}
+        sx={{ height: h, fontWeight: 700, borderRadius: 1.5 }}
+      />
+    </Tooltip>
+  );
+}
+/** Linha de aviso do cartão salvo recusado (em aberto): o erro + quando tenta de novo. Vazio nos outros casos. */
+const cardHint = (c) => {
+  const k = c.card;
+  if (!k?.saved || !k.error || c.status !== 'PENDING') return '';
+  const next = k.next_attempt_at ? ` · nova tentativa ${fmtDateTime(k.next_attempt_at)}` : '';
+  return `Cartão recusado${k.attempts ? ` (${k.attempts}×)` : ''}: ${k.error}${next}`;
+};
 const statusOf = (c) => (c.overdue ? 'OVERDUE' : c.status);
 
 const copy = async (text, msg) => {
@@ -97,18 +144,81 @@ const TEXT_FIELDS = [
   ['reminder_due', 'Lembrete no dia do vencimento', ''],
   ['reminder_after', 'Lembrete depois do vencimento', 'Usado nos dois lembretes de atraso.'],
   ['paid', 'Recibo (pagamento confirmado)', ''],
-  ['expired', 'Cobrança expirada', 'Não é enviado automaticamente; fica disponível para o futuro.']
+  ['expired', 'Cobrança expirada', 'Não é enviado automaticamente; fica disponível para o futuro.'],
+  [
+    'second_copy',
+    '2ª via com juros e multa',
+    'Reenvio de cobrança vencida. Extras: {{cobranca.valor_original}}, {{cobranca.multa}}, {{cobranca.juros}}, {{cobranca.dias_atraso}}.'
+  ],
+  ['trial_ending', 'Teste grátis acabando', '3 dias antes do fim do teste. Extras: {{assinatura.fim_teste}}.'],
+  ['cancel_scheduled', 'Cancelamento agendado (fim do ciclo)', 'Extras: {{assinatura.fim}}, {{assinatura.fim_texto}}.'],
+  ['canceled', 'Assinatura cancelada', ''],
+  ['paused', 'Assinatura pausada', 'Extras: {{assinatura.pausa_ate}}.'],
+  ['resumed', 'Assinatura retomada', ''],
+  ['plan_changed', 'Troca de plano', ''],
+  ['price_changed', 'Reajuste de valor', 'Extras: {{assinatura.reajuste}}.'],
+  ['card', 'Cobrança no cartão (link seguro)', 'Cobrança só no cartão: vai no lugar da mensagem do PIX. Use {{cobranca.cartao_link}}.'],
+  ['card_reminder', 'Lembrete da cobrança no cartão', ''],
+  [
+    'card_auto',
+    'Aviso de débito no cartão salvo',
+    'Só quando a equipe reenvia antes do vencimento. Extras: {{cartao.bandeira}}, {{cartao.final}}.'
+  ],
+  ['card_declined', 'Cartão recusado', 'A cada recusa do cartão salvo. Extras: {{cartao.bandeira}}, {{cartao.final}}, {{cartao.proxima}}.']
 ];
+const MONTHS = [
+  'Janeiro',
+  'Fevereiro',
+  'Março',
+  'Abril',
+  'Maio',
+  'Junho',
+  'Julho',
+  'Agosto',
+  'Setembro',
+  'Outubro',
+  'Novembro',
+  'Dezembro'
+];
+const DEFAULT_REASONS = ['Está caro', 'Não uso mais', 'Mudei de serviço', 'Problemas no atendimento', 'Outro'];
+const pct = (v, max) => {
+  const n = parseFloat(String(v ?? '').replace(',', '.'));
+  return Number.isFinite(n) ? Math.min(max, Math.max(0, Math.round(n * 100) / 100)) : 0;
+};
 function SettingsDialog({ open, onClose, settings, onSaved }) {
   const [s, setS] = useState(settings);
   const [busy, setBusy] = useState(false);
+  const [newReason, setNewReason] = useState('');
   useEffect(() => {
-    if (open && settings) setS(JSON.parse(JSON.stringify(settings)));
+    if (!open || !settings) return;
+    const c = JSON.parse(JSON.stringify(settings));
+    // campos da Fase 3 podem faltar se o back ainda for o antigo: completa com os padrões
+    c.late_fee_percent = c.late_fee_percent ?? 2;
+    c.interest_month_percent = c.interest_month_percent ?? 1;
+    c.grace_days_default = c.grace_days_default ?? 0;
+    c.cancel_reasons = Array.isArray(c.cancel_reasons) && c.cancel_reasons.length ? c.cancel_reasons : [...DEFAULT_REASONS];
+    c.readjust = { enabled: false, percent: 0, month: 1, notify: true, ...(c.readjust || {}) };
+    c.outbox_per_minute = c.outbox_per_minute ?? 20;
+    c.texts = c.texts || {};
+    setS(c);
+    setNewReason('');
   }, [open, settings]);
   if (!s) return null;
   const set = (k, v) => setS((x) => ({ ...x, [k]: v }));
   const setRem = (k, p) => setS((x) => ({ ...x, reminders: { ...x.reminders, [k]: { ...x.reminders[k], ...p } } }));
   const setText = (k, v) => setS((x) => ({ ...x, texts: { ...x.texts, [k]: v } }));
+  const setReadjust = (p) => setS((x) => ({ ...x, readjust: { ...x.readjust, ...p } }));
+  const addReason = () => {
+    const r = newReason.trim().slice(0, 80);
+    if (!r) return;
+    setS((x) =>
+      x.cancel_reasons.some((y) => y.toLowerCase() === r.toLowerCase())
+        ? x
+        : { ...x, cancel_reasons: [...x.cancel_reasons, r].slice(0, 20) }
+    );
+    setNewReason('');
+  };
+  const removeReason = (r) => setS((x) => ({ ...x, cancel_reasons: x.cancel_reasons.filter((y) => y !== r) }));
   const save = async () => {
     setBusy(true);
     try {
@@ -121,7 +231,18 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
         send_qr: s.send_qr,
         overdue_tag: s.overdue_tag,
         reminders: s.reminders,
-        texts: s.texts
+        texts: s.texts,
+        late_fee_percent: pct(s.late_fee_percent, 20),
+        interest_month_percent: pct(s.interest_month_percent, 20),
+        grace_days_default: s.grace_days_default,
+        cancel_reasons: s.cancel_reasons,
+        readjust: {
+          enabled: Boolean(s.readjust.enabled),
+          percent: pct(s.readjust.percent, 100),
+          month: s.readjust.month,
+          notify: Boolean(s.readjust.notify)
+        },
+        outbox_per_minute: s.outbox_per_minute
       });
       onSaved(r);
       toast.success('Configurações salvas.');
@@ -149,7 +270,7 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
       open={open}
       onClose={() => !busy && onClose()}
       title="Configurações de cobrança"
-      subtitle="Validade, cobrança recorrente, lembretes e textos. Variáveis: {{cliente.primeiro_nome}}, {{cobranca.valor}}, {{cobranca.descricao}}, {{cobranca.vencimento}}, {{cobranca.pix}}, {{cobranca.boleto_link}}, {{cobranca.boleto_codigo}}."
+      subtitle="Validade, cobrança recorrente, lembretes, juros/multa, cancelamento e textos."
       maxWidth="md"
       disableClose={busy}
       footer={
@@ -250,15 +371,172 @@ function SettingsDialog({ open, onClose, settings, onSaved }) {
         </Box>
         <Divider>
           <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+            Juros, multa e cancelamento
+          </Typography>
+        </Divider>
+        <Box sx={{ display: 'grid', gap: 1.5, gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0,1fr))' } }}>
+          <TextField
+            size="small"
+            type="number"
+            label="Multa por atraso"
+            value={s.late_fee_percent}
+            onChange={(e) => set('late_fee_percent', e.target.value)}
+            onBlur={(e) => set('late_fee_percent', pct(e.target.value, 20))}
+            inputProps={{ min: 0, max: 20, step: 0.1, inputMode: 'decimal' }}
+            InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+            helperText="Cobrada uma vez na 2ª via (máx. 2% no CDC)."
+            fullWidth
+          />
+          <TextField
+            size="small"
+            type="number"
+            label="Juros ao mês"
+            value={s.interest_month_percent}
+            onChange={(e) => set('interest_month_percent', e.target.value)}
+            onBlur={(e) => set('interest_month_percent', pct(e.target.value, 20))}
+            inputProps={{ min: 0, max: 20, step: 0.1, inputMode: 'decimal' }}
+            InputProps={{ endAdornment: <InputAdornment position="end">% a.m.</InputAdornment> }}
+            helperText="Proporcional aos dias de atraso."
+            fullWidth
+          />
+          {num(
+            'grace_days_default',
+            'Carência (dias)',
+            0,
+            90,
+            'Dias depois de vencer antes de marcar a assinatura em atraso. O produto pode ter a sua.'
+          )}
+        </Box>
+        <Box>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>
+            Motivos de cancelamento
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1 }}>
+            Aparecem na lista quando o cliente cancela pelo bot e quando a equipe cancela no painel.
+          </Typography>
+          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+            {s.cancel_reasons.map((r) => (
+              <Chip key={r} label={r} onDelete={() => removeReason(r)} size="small" sx={{ fontWeight: 600, maxWidth: '100%' }} />
+            ))}
+            {!s.cancel_reasons.length ? (
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                Sem motivos: o cliente responde com as próprias palavras.
+              </Typography>
+            ) : null}
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <TextField
+              size="small"
+              placeholder="Novo motivo"
+              value={newReason}
+              onChange={(e) => setNewReason(e.target.value.slice(0, 80))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addReason();
+                }
+              }}
+              sx={{ flex: 1, minWidth: 0 }}
+            />
+            <Button
+              variant="outlined"
+              onClick={addReason}
+              disabled={!newReason.trim() || s.cancel_reasons.length >= 20}
+              startIcon={<IconPlus size={16} />}
+              sx={{ textTransform: 'none', fontWeight: 700, flexShrink: 0 }}
+            >
+              Adicionar
+            </Button>
+          </Stack>
+        </Box>
+        <Box sx={{ p: 1.25, border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+          <FormControlLabel
+            control={
+              <Switch size="small" checked={Boolean(s.readjust.enabled)} onChange={(e) => setReadjust({ enabled: e.target.checked })} />
+            }
+            label={
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                Reajuste anual automático
+              </Typography>
+            }
+          />
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: s.readjust.enabled ? 1.25 : 0 }}>
+            Uma vez por ano, no mês escolhido, o valor das assinaturas ativas sobe o percentual abaixo.
+          </Typography>
+          {s.readjust.enabled ? (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+              <TextField
+                size="small"
+                type="number"
+                label="Percentual"
+                value={s.readjust.percent}
+                onChange={(e) => setReadjust({ percent: e.target.value })}
+                onBlur={(e) => setReadjust({ percent: pct(e.target.value, 100) })}
+                inputProps={{ min: 0, max: 100, step: 0.1, inputMode: 'decimal' }}
+                InputProps={{ endAdornment: <InputAdornment position="end">%</InputAdornment> }}
+                sx={{ width: { xs: '100%', sm: 150 } }}
+              />
+              <TextField
+                select
+                size="small"
+                label="Mês do ano"
+                value={s.readjust.month}
+                onChange={(e) => setReadjust({ month: Number(e.target.value) })}
+                sx={{ width: { xs: '100%', sm: 170 } }}
+              >
+                {MONTHS.map((m, i) => (
+                  <MenuItem key={m} value={i + 1}>
+                    {m}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <FormControlLabel
+                control={
+                  <Switch size="small" checked={Boolean(s.readjust.notify)} onChange={(e) => setReadjust({ notify: e.target.checked })} />
+                }
+                label={<Typography variant="body2">Avisar o cliente</Typography>}
+              />
+            </Stack>
+          ) : null}
+        </Box>
+        <Divider>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+            Ritmo de envio
+          </Typography>
+        </Divider>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'flex-start' }}>
+          <Box sx={{ width: { xs: '100%', sm: 220 }, flexShrink: 0 }}>
+            {num('outbox_per_minute', 'Envios por minuto (por número)', 1, 60, '')}
+          </Box>
+          <Typography variant="caption" sx={{ color: 'text.secondary', pt: { sm: 1 } }}>
+            Cobranças recorrentes, lembretes e avisos automáticos (teste acabando, cancelamento, pausa, reajuste) entram numa fila e saem
+            aos poucos, no máximo esse número por minuto em cada WhatsApp — rajadas de mensagens iguais fazem o WhatsApp restringir o
+            número. Cobranças enviadas na hora pela equipe ou pelo bot não esperam a fila.
+          </Typography>
+        </Stack>
+        <Divider>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
             Textos
           </Typography>
         </Divider>
+        <Alert severity="info" icon={false} sx={{ borderRadius: 2, '& .MuiAlert-message': { overflowWrap: 'anywhere' } }}>
+          <Typography variant="caption" component="div">
+            <b>Cobrança:</b> {'{{cliente.primeiro_nome}}'}, {'{{cliente.nome}}'}, {'{{cobranca.valor}}'}, {'{{cobranca.descricao}}'},{' '}
+            {'{{cobranca.vencimento}}'}, {'{{cobranca.pix}}'}, {'{{cobranca.boleto_link}}'}, {'{{cobranca.boleto_codigo}}'},{' '}
+            {'{{cobranca.link}}'} (página com todos os meios de pagamento), {'{{cobranca.cartao_link}}'}.
+          </Typography>
+          <Typography variant="caption" component="div" sx={{ mt: 0.5 }}>
+            <b>Assinatura:</b> {'{{assinatura.produto}}'}, {'{{assinatura.valor}}'}, {'{{assinatura.vencimento}}'},{' '}
+            {'{{assinatura.status}}'}, {'{{assinatura.fim}}'}, {'{{assinatura.fim_texto}}'}, {'{{assinatura.pausa_ate}}'},{' '}
+            {'{{assinatura.fim_teste}}'}, {'{{assinatura.reajuste}}'}.
+          </Typography>
+        </Alert>
         {TEXT_FIELDS.map(([k, label, help]) => (
           <TextField
             key={k}
             size="small"
             label={label}
-            value={s.texts[k]}
+            value={s.texts[k] ?? ''}
             onChange={(e) => setText(k, e.target.value.slice(0, 1500))}
             fullWidth
             multiline
@@ -295,8 +573,10 @@ export default function WhatsAppCharges() {
   const [cfgDlg, setCfgDlg] = useState(false);
   const [menu, setMenu] = useState(null); // {anchor, charge}
   const [confirm, setConfirm] = useState(null); // {kind:'cancel'|'paid', charge}
+  const [recDlg, setRecDlg] = useState(false);
   const [rowBusy, setRowBusy] = useState({});
   const [runBusy, setRunBusy] = useState(false);
+  const { defs: cfDefs } = useCustomFieldDefs('charge'); // Fase 7: valores dos campos personalizados na linha
   const seqRef = useRef(0);
 
   useEffect(() => {
@@ -346,10 +626,11 @@ export default function WhatsAppCharges() {
   }, [load]);
 
   const patchRow = (c) => setData((d) => ({ ...d, items: d.items.map((x) => (x.id === c.id ? { ...x, ...c } : x)) }));
-  const act = async (c, path, okMsg) => {
+  // `body` opcional (ex.: resend { kind }) — troca o meio e reemite no gateway
+  const act = async (c, path, okMsg, body) => {
     setRowBusy((m) => ({ ...m, [c.id]: true }));
     try {
-      const r = await post(`/whatsapp/charges/${c.id}/${path}`);
+      const r = await post(`/whatsapp/charges/${c.id}/${path}`, body);
       if (r?.id) patchRow(r);
       if (okMsg) toast.success(typeof okMsg === 'function' ? okMsg(r) : okMsg);
       load({ silent: true });
@@ -423,6 +704,18 @@ export default function WhatsAppCharges() {
                     </Button>
                   </span>
                 </Tooltip>
+                {settings?.providers?.card || settings?.providers?.pix === 'asaas' || settings?.providers?.boleto === 'asaas' ? (
+                  <Tooltip title="Compara as cobranças do Asaas com as do Pub Mail e corrige o que ficou diferente.">
+                    <Button
+                      variant="outlined"
+                      startIcon={<IconScale size={18} />}
+                      onClick={() => setRecDlg(true)}
+                      sx={{ fontWeight: 700, borderRadius: 2 }}
+                    >
+                      Conciliar
+                    </Button>
+                  </Tooltip>
+                ) : null}
                 <Button
                   variant="outlined"
                   startIcon={<IconSettings size={18} />}
@@ -449,8 +742,8 @@ export default function WhatsAppCharges() {
 
       {settings && !settings.gateway_ready ? (
         <Alert severity="warning" sx={{ mb: 2, borderRadius: 2.5 }}>
-          Nenhum gateway de pagamento ativo. Configure em <strong>Configurações → Pagamentos</strong> para gerar PIX
-          {settings.provider === 'mercadopago' ? ' e boleto' : ''}.
+          Nenhum gateway de pagamento ativo. Configure em <strong>Configurações → Pagamentos</strong> (Mercado Pago, PushinPay ou Asaas)
+          para gerar PIX, boleto ou cartão.
         </Alert>
       ) : null}
 
@@ -497,6 +790,7 @@ export default function WhatsAppCharges() {
             <MenuItem value="pix">PIX</MenuItem>
             <MenuItem value="boleto">Boleto</MenuItem>
             <MenuItem value="both">PIX + Boleto</MenuItem>
+            <MenuItem value="card">Cartão</MenuItem>
           </TextField>
           <TextField select size="small" label="Origem" value={origin} onChange={(e) => setOrigin(e.target.value)} sx={{ minWidth: 140 }}>
             <MenuItem value="all">Todas</MenuItem>
@@ -523,7 +817,7 @@ export default function WhatsAppCharges() {
         <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
         <Tooltip title="Atualizar">
           <Box component="span" sx={{ alignSelf: { xs: 'flex-end', md: 'center' } }}>
-            <IconButton onClick={() => load()} disabled={loading}>
+            <IconButton onClick={() => load()} disabled={loading} aria-label="Atualizar">
               <IconRefresh size={18} />
             </IconButton>
           </Box>
@@ -593,9 +887,19 @@ export default function WhatsAppCharges() {
                         <Typography variant="body2" sx={{ mt: 0.5, overflowWrap: 'anywhere' }}>
                           {c.description}
                         </Typography>
+                        {cfDefs.length && customSummary(cfDefs, c.custom) ? (
+                          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', overflowWrap: 'anywhere' }}>
+                            {customSummary(cfDefs, c.custom)}
+                          </Typography>
+                        ) : null}
                         {c.error ? (
                           <Typography variant="caption" sx={{ color: 'error.main', display: 'block', overflowWrap: 'anywhere' }}>
                             {c.error}
+                          </Typography>
+                        ) : null}
+                        {cardHint(c) ? (
+                          <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', overflowWrap: 'anywhere' }}>
+                            {cardHint(c)}
                           </Typography>
                         ) : null}
                         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
@@ -629,7 +933,8 @@ export default function WhatsAppCharges() {
                               sx={{ height: 24, fontWeight: 700, borderRadius: 1.5 }}
                             />
                           ) : null}
-                          {!c.pix && !c.boleto ? (
+                          <CardChip c={c} />
+                          {!c.pix && !c.boleto && !c.card ? (
                             <Chip size="small" label={KIND[c.kind] || c.kind} sx={{ height: 24, borderRadius: 1.5 }} />
                           ) : null}
                           <Chip
@@ -650,7 +955,7 @@ export default function WhatsAppCharges() {
                             <>
                               {' '}
                               · pago {fmtDateTime(c.paid_at)}
-                              {c.paid_via ? ` · ${c.paid_via === 'manual' ? 'manual' : c.paid_via.toUpperCase()}` : ''}
+                              {c.paid_via ? ` · ${PAID_VIA[c.paid_via] || c.paid_via}` : ''}
                             </>
                           ) : null}
                         </Typography>
@@ -712,9 +1017,25 @@ export default function WhatsAppCharges() {
                           <Typography variant="body2" noWrap title={c.description}>
                             {c.description}
                           </Typography>
+                          {cfDefs.length && customSummary(cfDefs, c.custom) ? (
+                            <Typography
+                              variant="caption"
+                              sx={{ color: 'text.secondary' }}
+                              noWrap
+                              display="block"
+                              title={customSummary(cfDefs, c.custom)}
+                            >
+                              {customSummary(cfDefs, c.custom)}
+                            </Typography>
+                          ) : null}
                           {c.error ? (
                             <Typography variant="caption" sx={{ color: 'error.main' }} noWrap display="block" title={c.error}>
                               {c.error}
+                            </Typography>
+                          ) : null}
+                          {cardHint(c) ? (
+                            <Typography variant="caption" sx={{ color: 'warning.main' }} noWrap display="block" title={cardHint(c)}>
+                              {cardHint(c)}
                             </Typography>
                           ) : null}
                         </TableCell>
@@ -732,7 +1053,7 @@ export default function WhatsAppCharges() {
                           ) : c.status === 'PAID' && c.paid_at ? (
                             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                               pago {fmtDateTime(c.paid_at)}
-                              {c.paid_via ? ` · ${c.paid_via === 'manual' ? 'manual' : c.paid_via.toUpperCase()}` : ''}
+                              {c.paid_via ? ` · ${PAID_VIA[c.paid_via] || c.paid_via}` : ''}
                             </Typography>
                           ) : null}
                         </TableCell>
@@ -771,7 +1092,8 @@ export default function WhatsAppCharges() {
                                 />
                               </Tooltip>
                             ) : null}
-                            {!c.pix && !c.boleto ? (
+                            <CardChip c={c} h={22} />
+                            {!c.pix && !c.boleto && !c.card ? (
                               <Chip size="small" label={KIND[c.kind] || c.kind} sx={{ height: 22, borderRadius: 1.5 }} />
                             ) : null}
                           </Stack>
@@ -787,7 +1109,7 @@ export default function WhatsAppCharges() {
                         <TableCell align="right">
                           <Tooltip title={c.chat_id ? 'Abrir conversa' : 'Sem conversa aberta neste número'}>
                             <span>
-                              <IconButton size="small" onClick={() => openChat(c)} disabled={!c.chat_id}>
+                              <IconButton size="small" onClick={() => openChat(c)} disabled={!c.chat_id} aria-label="Abrir conversa">
                                 <IconMessage size={17} />
                               </IconButton>
                             </span>
@@ -796,6 +1118,7 @@ export default function WhatsAppCharges() {
                             size="small"
                             onClick={(e) => setMenu({ anchor: e.currentTarget, charge: c })}
                             disabled={rowBusy[c.id]}
+                            aria-label="Ações da cobrança"
                           >
                             {rowBusy[c.id] ? <CircularProgress size={14} /> : <IconDotsVertical size={17} />}
                           </IconButton>
@@ -860,8 +1183,52 @@ export default function WhatsAppCharges() {
                 <ListItemIcon>
                   <IconSend size={18} />
                 </ListItemIcon>
-                <ListItemText>Reenviar na conversa</ListItemText>
+                <ListItemText>Reenviar na conversa (mesmo meio)</ListItemText>
               </MenuItem>,
+              // trocar o meio: reemite no gateway e manda de novo (cartão recusado → PIX/boleto; PIX vencido → cartão…)
+              <MenuItem
+                key="resend-pix"
+                onClick={() => {
+                  const c = menu.charge;
+                  setMenu(null);
+                  act(c, 'resend', 'Cobrança reenviada por PIX.', { kind: 'pix' });
+                }}
+              >
+                <ListItemIcon>
+                  <IconQrcode size={18} />
+                </ListItemIcon>
+                <ListItemText>Reenviar por PIX</ListItemText>
+              </MenuItem>,
+              settings?.boleto_available ? (
+                <MenuItem
+                  key="resend-boleto"
+                  onClick={() => {
+                    const c = menu.charge;
+                    setMenu(null);
+                    act(c, 'resend', 'Cobrança reenviada por boleto.', { kind: 'boleto' });
+                  }}
+                >
+                  <ListItemIcon>
+                    <IconBarcode size={18} />
+                  </ListItemIcon>
+                  <ListItemText>Reenviar por boleto</ListItemText>
+                </MenuItem>
+              ) : null,
+              settings?.card_available ? (
+                <MenuItem
+                  key="resend-card"
+                  onClick={() => {
+                    const c = menu.charge;
+                    setMenu(null);
+                    act(c, 'resend', 'Link do cartão enviado na conversa.', { kind: 'card' });
+                  }}
+                >
+                  <ListItemIcon>
+                    <IconCreditCard size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="Reenviar com link do cartão" secondary="O cliente digita o cartão na página segura" />
+                </MenuItem>
+              ) : null,
               canAdmin ? (
                 <MenuItem
                   key="paid"
@@ -917,10 +1284,37 @@ export default function WhatsAppCharges() {
             <ListItemText>Abrir boleto</ListItemText>
           </MenuItem>
         ) : null}
+        {menu?.charge?.pay_link ? (
+          <MenuItem
+            onClick={() => {
+              copy(menu.charge.pay_link, 'Link de pagamento copiado.');
+              setMenu(null);
+            }}
+          >
+            <ListItemIcon>
+              <IconLink size={18} />
+            </ListItemIcon>
+            <ListItemText primary="Copiar link de pagamento" secondary="Página com PIX, boleto e cartão" />
+          </MenuItem>
+        ) : null}
+        {menu?.charge?.card?.url && menu?.charge?.status === 'PENDING' ? (
+          <MenuItem
+            onClick={() => {
+              window.open(menu.charge.card.url, '_blank', 'noopener');
+              setMenu(null);
+            }}
+          >
+            <ListItemIcon>
+              <IconCreditCard size={18} />
+            </ListItemIcon>
+            <ListItemText>Abrir página do cartão</ListItemText>
+          </MenuItem>
+        ) : null}
       </Menu>
 
       <ChargeDialog open={newDlg} onClose={() => setNewDlg(false)} products={products} onCreated={() => load({ silent: true })} />
       <SettingsDialog open={cfgDlg} onClose={() => setCfgDlg(false)} settings={settings} onSaved={setSettings} />
+      <ReconcileDialog open={recDlg} onClose={() => setRecDlg(false)} onFixed={() => load({ silent: true })} />
       <TgConfirmDialog
         open={Boolean(confirm)}
         onClose={() => setConfirm(null)}

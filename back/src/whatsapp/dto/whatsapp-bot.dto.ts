@@ -31,6 +31,15 @@ export class SimulateBotDto {
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() state?: Record<string, any> | null;
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(4000) input?: string | null;
   @IsOptional() @IsString() @MaxLength(40) event?: string;
+  // blocos de CRM (Fase 2, contrato §1.7): payload do evento (crm_result / charge_paid / charge_expired),
+  // cliente fictício (resolve as ações em memória) ou dados reais da org só para leitura
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() event_payload?: Record<string, any> | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() crm_fixture?: Record<string, any> | null;
+  @IsOptional() @IsIn(['fixture', 'org', 'none']) crm_mode?: 'fixture' | 'org' | 'none';
+  @IsOptional() @IsString() @MaxLength(20) crm_phone?: string;
+  // agenda (Fase 6, contrato §9.4): agenda fictícia do simulador {services?, appointments?, payment?, no_slots?, conflict?}
+  // (também aceita em crm_fixture.scheduling)
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsObject() book_fixture?: Record<string, any> | null;
 }
 
 export class BotSessionsQueryDto {

@@ -297,7 +297,11 @@ export class WhatsAppContactsService {
     const chats = rows.map((c) => ({ chat_id: c.id, jid: c.chat_id, session_id: c.session_id, session: this.sessions.brief(smap.get(c.session_id)), name: c.name, tags: c.tags, service_status: c.service_status, stage_id: c.stage_id, last_message_at: c.last_message_at }));
     const chat = (opts.sessionId ? chats.find((c) => c.session_id === opts.sessionId) : null) || chats[0] || null;
     const contact = info.contact_id ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: info.contact_id } }) : null;
-    const customer = contact ? await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: contact.id }, select: { id: true, name: true, status: true } }) : null;
+    const links = contact ? await this.prisma.whatsapp_customer_contacts.findMany({ where: { contact_id: contact.id } }).catch(() => [] as any[]) : [];
+    const custRows = links.length ? await this.prisma.whatsapp_customers.findMany({ where: { organization_id: orgId, id: { in: links.map((l: any) => l.customer_id) } }, select: { id: true, name: true, status: true, code: true } }) : [];
+    const rank: Record<string, number> = { owner: 0, financial: 1, user: 2, dependent: 3 };
+    const customers = links.map((l: any) => ({ ...(custRows.find((c) => c.id === l.customer_id) || null), role: l.role })).filter((c: any) => c.id).sort((a: any, b: any) => (rank[a.role] ?? 9) - (rank[b.role] ?? 9));
+    const customer = customers[0] ? { id: customers[0].id, name: customers[0].name, status: customers[0].status } : null;
     const name = info.name || (chat?.name && chat.name !== 'Contato sem nome' ? chat.name : null);
     const photoQuery = new URLSearchParams({ jid: baseJid, ...(chat?.session_id ? { session_id: chat.session_id } : sess?.id ? { session_id: sess.id } : {}) });
     return {
@@ -310,6 +314,7 @@ export class WhatsAppContactsService {
       chat,
       chats,
       customer,
+      customers,
       photo_path: chat ? `/whatsapp/chats/${encodeURIComponent(chat.chat_id)}/photo${contact?.profile_pic_media_id ? `?v=${String(contact.profile_pic_media_id).slice(0, 8)}` : ''}` : `/whatsapp/photo?${photoQuery.toString()}`,
     };
   }
@@ -372,8 +377,13 @@ export class WhatsAppContactsService {
           ...(dupe.source !== 'session' && keep.source === 'session' ? { source: dupe.source } : {}),
         },
       });
-      const keepHasCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: keep.id }, select: { id: true } });
-      if (!keepHasCustomer) await this.prisma.whatsapp_customers.updateMany({ where: { organization_id: orgId, contact_id: dupe.id }, data: { contact_id: keep.id } }).catch(() => undefined);
+      // clientes do CRM: o principal e os vínculos (cliente↔número) passam para o contato canônico
+      await this.prisma.whatsapp_customers.updateMany({ where: { organization_id: orgId, contact_id: dupe.id }, data: { contact_id: keep.id } }).catch(() => undefined);
+      const dupeCust = await this.prisma.whatsapp_customer_contacts.findMany({ where: { contact_id: dupe.id } }).catch(() => [] as any[]);
+      for (const l of dupeCust) {
+        await this.prisma.whatsapp_customer_contacts.upsert({ where: { customer_id_contact_id: { customer_id: l.customer_id, contact_id: keep.id } }, create: { customer_id: l.customer_id, contact_id: keep.id, role: l.role, linked_by: l.linked_by }, update: {} }).catch(() => undefined);
+        await this.prisma.whatsapp_customer_contacts.delete({ where: { customer_id_contact_id: { customer_id: l.customer_id, contact_id: dupe.id } } }).catch(() => undefined);
+      }
       const dupeLinks = await this.prisma.whatsapp_contact_sessions.findMany({ where: { contact_id: dupe.id }, select: { session_id: true } }).catch(() => [] as Array<{ session_id: string }>);
       for (const l of dupeLinks) await this.linkToSession(orgId, l.session_id, [keep.id]);
       const stillCustomer = await this.prisma.whatsapp_customers.findFirst({ where: { organization_id: orgId, contact_id: dupe.id }, select: { id: true } });

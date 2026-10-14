@@ -14,7 +14,12 @@ import {
   IconLayoutKanban,
   IconChecklist,
   IconChartBar,
-  IconBellRinging
+  IconBellRinging,
+  IconCalendarEvent,
+  IconUsersGroup,
+  IconTicket,
+  IconShoppingCart,
+  IconReportMoney
 } from '@tabler/icons-react';
 
 const icons = {
@@ -32,7 +37,12 @@ const icons = {
   IconLayoutKanban,
   IconChecklist,
   IconChartBar,
-  IconBellRinging
+  IconBellRinging,
+  IconCalendarEvent,
+  IconUsersGroup,
+  IconTicket,
+  IconShoppingCart,
+  IconReportMoney
 };
 
 // ==============================|| WHATSAPP MENU ITEMS ||============================== //
@@ -50,6 +60,7 @@ const whatsapp = {
       type: 'item',
       url: '/whatsapp/settings',
       icon: icons.IconAdjustmentsHorizontal,
+      requiredPermission: 'whatsapp:settings', // Fase 7: sub-permissão (MenuList filtra)
       target: false
     },
     {
@@ -74,9 +85,53 @@ const whatsapp = {
     { id: 'whatsapp-contacts', title: 'Contatos', type: 'item', url: '/whatsapp/contacts', icon: icons.IconAddressBook, target: false },
     { id: 'whatsapp-pipeline', title: 'Funil', type: 'item', url: '/whatsapp/pipeline', icon: icons.IconLayoutKanban, target: false },
     { id: 'whatsapp-tasks', title: 'Tarefas', type: 'item', url: '/whatsapp/tasks', icon: icons.IconChecklist, target: false },
-    { id: 'whatsapp-customers', title: 'Clientes', type: 'item', url: '/whatsapp/customers', icon: icons.IconUserDollar, target: false },
-    { id: 'whatsapp-products', title: 'Produtos', type: 'item', url: '/whatsapp/products', icon: icons.IconPackage, target: false },
-    { id: 'whatsapp-charges', title: 'Cobranças', type: 'item', url: '/whatsapp/charges', icon: icons.IconReceipt2, target: false },
+    {
+      id: 'whatsapp-customers',
+      title: 'Clientes',
+      type: 'item',
+      url: '/whatsapp/customers',
+      icon: icons.IconUserDollar,
+      requiredPermission: 'whatsapp:crm',
+      target: false
+    },
+    { id: 'whatsapp-agenda', title: 'Agenda', type: 'item', url: '/whatsapp/agenda', icon: icons.IconCalendarEvent, target: false },
+    {
+      id: 'whatsapp-resources',
+      title: 'Recursos',
+      type: 'item',
+      url: '/whatsapp/resources',
+      icon: icons.IconUsersGroup,
+      target: false
+    },
+    { id: 'whatsapp-tickets', title: 'Chamados', type: 'item', url: '/whatsapp/tickets', icon: icons.IconTicket, target: false },
+    { id: 'whatsapp-orders', title: 'Pedidos', type: 'item', url: '/whatsapp/orders', icon: icons.IconShoppingCart, target: false },
+    {
+      id: 'whatsapp-products',
+      title: 'Produtos',
+      type: 'item',
+      url: '/whatsapp/products',
+      icon: icons.IconPackage,
+      requiredPermission: 'whatsapp:crm',
+      target: false
+    },
+    {
+      id: 'whatsapp-charges',
+      title: 'Cobranças',
+      type: 'item',
+      url: '/whatsapp/charges',
+      icon: icons.IconReceipt2,
+      requiredPermission: 'whatsapp:finance',
+      target: false
+    },
+    {
+      id: 'whatsapp-finance',
+      title: 'Financeiro',
+      type: 'item',
+      url: '/whatsapp/finance',
+      icon: icons.IconReportMoney,
+      requiredPermission: 'whatsapp:finance',
+      target: false
+    },
     { id: 'whatsapp-metrics', title: 'Métricas', type: 'item', url: '/whatsapp/metrics', icon: icons.IconChartBar, target: false },
     {
       id: 'whatsapp-broadcasts',

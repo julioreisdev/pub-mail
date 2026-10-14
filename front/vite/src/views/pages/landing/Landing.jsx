@@ -29,6 +29,7 @@ import {
 import { useAuth } from 'contexts/AuthContext';
 import FlowDiagram, { CHANNELS } from './FlowDiagram';
 import WhatsAppShowcase from './WhatsAppShowcase';
+import SubscriptionsShowcase from './SubscriptionsShowcase';
 
 // ================================|| LANDING (/) ||================================ //
 // Cabeçalho fixo (Início · Preços · Entrar) → hero escuro com o fluxograma grande → planos
@@ -57,7 +58,9 @@ const PLANS = [
       'Vários números por empresa',
       'Chat multiatendente, etiquetas e respostas rápidas',
       'Bot de atendimento com PIX',
+      'Assinaturas e autoatendimento pelo bot',
       'CRM: clientes, funil, tarefas e cobranças',
+      'Agenda, chamados e pedidos',
       'Broadcasts com ritmo anti-bloqueio',
       'Status, agendamentos e métricas'
     ]
@@ -163,6 +166,7 @@ function Header({ active, onNav, isAuthenticated }) {
   const items = [
     { id: 'inicio', label: 'Início' },
     { id: 'whatsapp', label: 'WhatsApp' },
+    { id: 'assinaturas', label: 'Assinaturas' },
     { id: 'precos', label: 'Preços' }
   ];
   const NavLink = ({ id, label }) => (
@@ -347,7 +351,7 @@ function Hero({ onNav }) {
           </Typography>
           <Typography sx={{ fontSize: { xs: 16, md: 19 }, color: 'rgba(255,255,255,.72)', maxWidth: 720 }}>
             WhatsApp com vários números, e-mail marketing, webchats com IA, quizzes, Telegram e WordPress — conectados num único painel, com
-            bot, CRM e cobrança por PIX.
+            bot, CRM, assinaturas e cobrança automática por PIX, boleto ou cartão.
           </Typography>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ pt: 1 }}>
             <Button
@@ -845,7 +849,7 @@ export default function Landing() {
       // a última seção cujo topo já passou do cabeçalho é a ativa
       const limit = HEADER_H + 80;
       let current = 'inicio';
-      for (const id of ['whatsapp', 'precos']) {
+      for (const id of ['whatsapp', 'assinaturas', 'precos']) {
         const el = document.getElementById(id);
         if (el && el.getBoundingClientRect().top <= limit) current = id;
       }
@@ -858,7 +862,7 @@ export default function Landing() {
   useEffect(() => {
     document.title = 'Pub Mail — WhatsApp, e-mail, webchat, Telegram, quizzes e WordPress';
     const hash = window.location.hash.replace('#', '');
-    if (['precos', 'whatsapp'].includes(hash)) setTimeout(() => scrollToId(hash), 150);
+    if (['precos', 'whatsapp', 'assinaturas'].includes(hash)) setTimeout(() => scrollToId(hash), 150);
   }, []);
   const onNav = useMemo(() => (id) => scrollToId(id), []);
   return (
@@ -866,6 +870,7 @@ export default function Landing() {
       <Header active={active} onNav={onNav} isAuthenticated={isAuthenticated} />
       <Hero onNav={onNav} />
       <WhatsAppShowcase onNav={onNav} />
+      <SubscriptionsShowcase onNav={onNav} />
       <Pricing />
       <Contact />
       <Footer />

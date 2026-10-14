@@ -283,6 +283,12 @@ export const ENCRYPTED_FIELDS: Record<string, string[]> = {
   whatsapp_messages: ['body', 'quoted_preview'],
   whatsapp_chats: ['last_message_preview'],
   whatsapp_contact_statuses: ['caption'],
+  whatsapp_customers: ['doc'], // CPF/CNPJ (a busca usa a coluna doc_hash)
+  whatsapp_payment_methods: ['provider_token'], // token do cartão no gateway (Fase 4) — nunca em claro no banco
+  org_webhooks: ['secret'], // segredo que assina os webhooks de saída (Fase 5)
+  org_webhook_deliveries: ['payload'], // corpo da entrega (dados do cliente) — Fase 5
+  whatsapp_tickets: ['description'], // relato do cliente no chamado — Fase 6B
+  whatsapp_ticket_events: ['body'], // comentários/mensagens do chamado — Fase 6B (criar SEMPRE direto, nunca aninhado no ticket)
 };
 export const EXTRA_SECRET_KEYS = ['contact', 'location', 'poll', 'mention_names', 'button', 'buttons'];
 export const EXTRA_ENC_KEY = '_wenc';

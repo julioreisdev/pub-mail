@@ -10,22 +10,367 @@ import {
   IconCircleCheck,
   IconCopy,
   IconFile,
+  IconFileText,
   IconHeadset,
   IconHourglass,
   IconInfoCircle,
+  IconPhoto,
   IconPlayerSkipForward,
   IconQrcode,
   IconRefresh,
   IconRobot,
+  IconShoppingCart,
   IconSend2,
   IconTags,
+  IconUserCircle,
   IconVariable,
   IconX
 } from '@tabler/icons-react';
 
 import { post } from 'api/api';
 import { fmtBRL, simNodeOf } from './botModel';
-import { TagChip, TypingDots, WA_ACCENT, WA_DARK, WA_GREEN, WA_TEAL, WaText, hexA, useBot, waBg, waFg } from './botUi';
+import {
+  TagChip,
+  TypingDots,
+  WA_ACCENT,
+  WA_DARK,
+  WA_GREEN,
+  WA_TEAL,
+  WaText,
+  hexA,
+  useBookCatalog,
+  useBot,
+  useTicketCatalog,
+  waBg,
+  waFg
+} from './botUi';
+
+// ---------------------------------------------------------------------------
+// Cliente fictício (crm_fixture do POST /whatsapp/bot/simulate — contrato §1.7).
+// Os blocos de Cliente são resolvidos em memória no servidor com estes dados.
+// ---------------------------------------------------------------------------
+export const SIM_DOC = '52998224725'; // CPF válido de teste
+export const SIM_CODE = 'CLI-001';
+const FAKE_PRODUCTS = [
+  {
+    id: 'sim-prod-1',
+    name: 'Plano Essencial',
+    description: 'Produto de exemplo',
+    price_cents: 9990,
+    price_label: 'R$ 99,90',
+    billing: 'monthly',
+    billing_label: 'Mensal',
+    trial_days: 0,
+    cancel_policy: 'end_of_cycle',
+    active: true
+  },
+  {
+    id: 'sim-prod-2',
+    name: 'Plano Completo',
+    description: 'Produto de exemplo',
+    price_cents: 14990,
+    price_label: 'R$ 149,90',
+    billing: 'monthly',
+    billing_label: 'Mensal',
+    trial_days: 0,
+    cancel_policy: 'end_of_cycle',
+    active: true
+  }
+];
+const ymd = (daysFromNow) => {
+  const d = new Date(Date.now() + daysFromNow * 86400000);
+  return d.toISOString().slice(0, 10);
+};
+const dmy = (s) => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+const PERIOD_LABEL = { monthly: 'Mensal', quarterly: 'Trimestral', yearly: 'Anual', once: 'Avulso' };
+const simProduct = (p) => ({
+  id: p.id,
+  name: p.name,
+  description: p.description ?? null,
+  price_cents: Number(p.price_cents) || 0,
+  price_label: p.price_label || fmtBRL(p.price_cents),
+  billing: p.billing || 'monthly',
+  billing_label: p.billing_label || PERIOD_LABEL[p.billing] || 'Mensal',
+  trial_days: Number(p.trial_days) || 0,
+  cancel_policy: p.cancel_policy === 'immediate' ? 'immediate' : 'end_of_cycle',
+  active: p.active !== false
+});
+const sub = (id, p, patch = {}) => ({
+  id,
+  product_id: p.id,
+  product_name: p.name,
+  price_cents: p.price_cents,
+  price_label: p.price_label,
+  billing: p.billing,
+  status: 'active',
+  next_due_at: ymd(12),
+  next_due_label: dmy(ymd(12)),
+  days_overdue: 0,
+  due_day: 10,
+  cancel_at: null,
+  paused_until: null,
+  ...patch
+});
+const charge = (id, p, patch = {}) => ({
+  id,
+  amount_cents: p.price_cents,
+  amount_label: p.price_label,
+  description: `${p.name} — mensalidade`,
+  due_at: ymd(5),
+  due_label: dmy(ymd(5)),
+  days_overdue: 0,
+  kind: 'pix',
+  pix_code: `000201PIX-SIMULADO-${id}`,
+  boleto_url: null,
+  status: 'pending',
+  ...patch
+});
+
+// ---------------------------------------------------------------------------
+// Agenda fictícia (book_fixture do simulate — contrato §9.4): serviços reais (ou 2 de exemplo no servidor),
+// horários gerados em memória (seg–sáb 9–12 e 14–18), pagamento sobrescrito, agenda lotada, conflito e
+// agendamentos de exemplo para "Meus agendamentos". Nada é reservado.
+// ---------------------------------------------------------------------------
+export const BOOK_PAYMENTS = [
+  { id: null, label: 'Pagamento: como no serviço' },
+  { id: 'on_site', label: 'Pagamento: no local' },
+  { id: 'on_booking', label: 'Pagamento: PIX na reserva' },
+  { id: 'deposit', label: 'Pagamento: sinal' }
+];
+const brtIso = (daysFromNow, hm) => new Date(Date.parse(`${ymd(daysFromNow)}T${hm}:00-03:00`)).toISOString();
+function sampleAppointments(services) {
+  const s = (services || [])[0] || {
+    id: 'sim-svc-1',
+    name: 'Consulta',
+    price_cents: 15000,
+    resources: [{ id: 'sim-res-1', name: 'Dra. Ana' }]
+  };
+  const r = (s.resources || [])[0] || { id: 'sim-res-1', name: 'Profissional' };
+  const mk = (id, days, hm, status, free) => ({
+    id,
+    status,
+    payment: 'on_site',
+    starts_at: brtIso(days, hm),
+    resource: { id: r.id, name: r.name },
+    product_id: s.id,
+    service_name: s.name,
+    price_cents: Number(s.price_cents) || 0,
+    price_label: fmtBRL(s.price_cents),
+    cancel_deadline: new Date(Date.parse(brtIso(days, hm)) - 86400000).toISOString(),
+    can_cancel_free: free,
+    can_reschedule: true
+  });
+  return [mk('sim-ap-a', 1, '10:00', 'booked', false), mk('sim-ap-b', 3, '15:00', 'confirmed', true)];
+}
+export function buildBookFixture(book, services) {
+  const list = (services || []).slice(0, 30);
+  return {
+    ...(list.length ? { services: list } : {}),
+    payment: book.payment || null,
+    no_slots: Boolean(book.no_slots),
+    conflict: Boolean(book.conflict),
+    appointments: book.appts ? sampleAppointments(list) : []
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Chamados fictícios (crm_fixture.tickets do simulate — contrato §10.5): categorias reais (ou 3 de exemplo no
+// servidor), 3 chamados de exemplo para "Meus chamados" (um aguardando o cliente, um aberto, um encerrado) e
+// "falha ao abrir". Nada é gravado.
+// ---------------------------------------------------------------------------
+const year = () => new Date(Date.now() - 3 * 3600000).getUTCFullYear();
+function sampleTickets() {
+  const y = year();
+  return [
+    {
+      id: 'sim-tk-a',
+      protocol: `${y}000041`,
+      status: 'pending',
+      category: 'problema',
+      category_label: 'Problema / reclamação',
+      subject: 'Internet caindo à noite',
+      sla_label: `${dmy(ymd(1)).slice(0, 5)} às 18:00`,
+      last_update: 'Pode mandar uma foto das luzes do roteador?'
+    },
+    {
+      id: 'sim-tk-b',
+      protocol: `${y}000039`,
+      status: 'open',
+      category: 'duvida',
+      category_label: 'Dúvida',
+      subject: 'Fatura de outubro',
+      sla_label: `${dmy(ymd(2)).slice(0, 5)} às 09:00`
+    },
+    { id: 'sim-tk-c', protocol: `${y - 1}000007`, status: 'closed', category: 'duvida', category_label: 'Dúvida', subject: 'Antigo' }
+  ];
+}
+export function buildTicketFixture(tk, categories) {
+  return {
+    ...(Array.isArray(categories) && categories.length ? { categories: categories.slice(0, 40) } : {}),
+    tickets: tk.tickets ? sampleTickets() : [],
+    fail_create: Boolean(tk.fail)
+  };
+}
+// ---------------------------------------------------------------------------
+// Pedidos fictícios (crm_fixture.catalog/order_settings/orders/addresses do simulate — contrato §11.3):
+// catálogo real (ou um de exemplo), configurações reais (ou de exemplo), 2 pedidos anteriores e 1 endereço salvo.
+// Nada é gravado; o PIX do pedido é fictício (botões Pagou/Expirou).
+// ---------------------------------------------------------------------------
+const SAMPLE_CATALOG = {
+  categories: [
+    {
+      name: 'Lanches',
+      products: [
+        { id: 'sim-p1', name: 'X-Burguer', price_cents: 2500 },
+        { id: 'sim-p2', name: 'X-Salada', price_cents: 2800 }
+      ]
+    },
+    { name: 'Bebidas', products: [{ id: 'sim-p3', name: 'Refrigerante lata', price_cents: 600 }] }
+  ]
+};
+const SAMPLE_ORDER_SETTINGS = {
+  enabled: true,
+  delivery: { enabled: true, fee_cents: 500, free_from_cents: 0 },
+  pickup: { enabled: true, address: 'Rua Exemplo, 100' },
+  min_order_cents: 0,
+  payment_methods: ['pix', 'on_delivery'],
+  max_items: 30
+};
+const SIM_ADDRESS = {
+  id: 'sim-a1',
+  kind: 'delivery',
+  label: 'Casa',
+  street: 'Rua das Flores',
+  number: '10',
+  district: 'Centro',
+  city: 'São Paulo',
+  state: 'SP'
+};
+function sampleOrders() {
+  const at = (days) => new Date(Date.now() - days * 86400000).toISOString();
+  return [
+    {
+      id: 'sim-ord-a',
+      number: 1042,
+      status: 'preparing',
+      payment_method: 'pix',
+      payment_status: 'paid',
+      items_text: '2× X-Burguer — R$ 50,00\n1× Refrigerante lata — R$ 6,00',
+      total_cents: 6100,
+      total_label: 'R$ 61,00',
+      delivery_text: '🛵 Entrega: Rua das Flores, 10 · Centro · São Paulo/SP',
+      created_at: at(0)
+    },
+    {
+      id: 'sim-ord-b',
+      number: 1031,
+      status: 'delivered',
+      payment_method: 'on_delivery',
+      payment_status: 'not_required',
+      items_text: '1× X-Salada — R$ 28,00',
+      total_cents: 2800,
+      total_label: 'R$ 28,00',
+      delivery_text: '🏪 Retirada no local: Rua Exemplo, 100',
+      created_at: at(6)
+    }
+  ];
+}
+export function buildOrderFixture(o, orderCatalog, customFieldMap) {
+  const real = orderCatalog?.catalog?.categories || [];
+  const hasProducts = real.some((c) => (c.products || []).length);
+  return {
+    ...(customFieldMap ? { custom_fields: customFieldMap } : {}),
+    catalog: hasProducts ? { categories: real.slice(0, 40) } : SAMPLE_CATALOG,
+    order_settings: orderCatalog?.settings || SAMPLE_ORDER_SETTINGS,
+    orders: o.orders ? sampleOrders() : [],
+    addresses: o.address ? [SIM_ADDRESS] : []
+  };
+}
+const PAY_SHORT = { pix: 'PIX', on_delivery: 'na entrega', none: 'sem pagamento' };
+
+// etapas em que o "cliente" pode mandar um arquivo (blocos de chamado)
+const MEDIA_WAITS = new Set(['ticket:photo', 'ticket:description', 'ticket:info']);
+
+export const FIXTURE_PRESETS = [
+  {
+    id: 'none',
+    label: 'Não é cliente',
+    hint: 'Número sem cadastro: identificar cai em “Não encontrado”; os demais blocos em “Sem cadastro”.'
+  },
+  { id: 'ok', label: 'Cliente em dia', hint: '2 assinaturas ativas e 1 cobrança em aberto (a vencer).' },
+  { id: 'overdue', label: 'Cliente em atraso', hint: '1 assinatura vencida há 12 dias, com cobrança em atraso.' },
+  { id: 'two', label: '2 clientes no número', hint: 'O número tem 2 cadastros: o bot pede para escolher.' }
+];
+
+export function buildFixture(preset, products, { requireDoc, crmSettings } = {}) {
+  const real = (products || []).filter((p) => p && p.active !== false && p.kind !== 'service').map(simProduct);
+  const list = real.length >= 2 ? real : [...real, ...FAKE_PRODUCTS.slice(real.length)].slice(0, Math.max(2, real.length));
+  const [p1, p2] = list;
+  const customFields = crmSettings?.custom_fields || [];
+  const custom = Object.fromEntries(
+    customFields
+      .slice(0, 4)
+      .map((f) => [f.key, f.type === 'number' ? '10' : f.type === 'date' ? '01/01/2026' : f.options?.[0] || 'Exemplo'])
+  );
+  const ok = {
+    id: 'sim-cust-ok',
+    name: 'Maria da Silva',
+    first_name: 'Maria',
+    doc_masked: '***.982.247-**',
+    code: SIM_CODE,
+    email: 'maria@exemplo.com',
+    status: 'ok',
+    verified: true,
+    custom,
+    subscriptions: [sub('sim-sub-1', p1), sub('sim-sub-2', p2, { next_due_at: ymd(20), next_due_label: dmy(ymd(20)), due_day: 20 })],
+    open_charges: [charge('sim-chg-1', p1)]
+  };
+  const overdue = {
+    id: 'sim-cust-late',
+    name: 'João Pereira',
+    first_name: 'João',
+    doc_masked: '***.111.222-**',
+    code: 'CLI-002',
+    email: 'joao@exemplo.com',
+    status: 'overdue',
+    verified: false,
+    custom,
+    subscriptions: [sub('sim-sub-9', p1, { status: 'overdue', days_overdue: 12, next_due_at: ymd(-12), next_due_label: dmy(ymd(-12)) })],
+    open_charges: [charge('sim-chg-9', p1, { days_overdue: 12, due_at: ymd(-12), due_label: dmy(ymd(-12)) })]
+  };
+  const identity = { ...(crmSettings?.identity || {}), require_doc: Boolean(requireDoc) };
+  const base = {
+    products: list,
+    identity,
+    cancel_reasons: ['Está caro', 'Não uso mais', 'Mudei de serviço', 'Problemas no atendimento', 'Outro']
+  };
+  if (preset === 'ok') return { ...base, customer: ok, customers: [ok], lookup: { [SIM_DOC]: ok, [SIM_CODE]: ok } };
+  if (preset === 'overdue') return { ...base, customer: overdue, customers: [overdue], lookup: { [SIM_DOC]: overdue, 'CLI-002': overdue } };
+  if (preset === 'two')
+    return { ...base, customer: ok, customers: [ok, overdue], lookup: { [SIM_DOC]: ok, [SIM_CODE]: ok, 'CLI-002': overdue } };
+  return { ...base, customer: null, customers: [], lookup: {} };
+}
+
+const CRM_ACTION_NOTE = {
+  crm_lookup: (a) => `Procurando o cliente pelo ${a.by === 'code' ? 'código' : 'documento'}…`,
+  crm_create_customer: (a) => `Cadastrando o cliente (${Object.keys(a.fields || {}).length} campos)…`,
+  crm_subscribe: (a) =>
+    `Criando a assinatura${a.charge_now !== false ? ' e a 1ª cobrança' : ''} (${a.method === 'boleto' ? 'boleto' : 'PIX'})…`,
+  crm_send_charge: () => 'Reenviando a cobrança (2ª via)…',
+  charge_check: () => 'Conferindo o pagamento no gateway…',
+  crm_cancel_subscription: (a) =>
+    `Cancelando a assinatura (${a.policy === 'immediate' ? 'imediato' : a.policy === 'end_of_cycle' ? 'fim do ciclo' : 'política do produto'})…`,
+  crm_pause_subscription: (a) => `Pausando por ${a.days} ${a.days === 1 ? 'dia' : 'dias'}…`,
+  crm_change_plan: () => 'Trocando o plano…',
+  crm_update_customer: (a) =>
+    `Atualizando ${Object.keys(a.fields || {}).length} ${Object.keys(a.fields || {}).length === 1 ? 'campo' : 'campos'} do cliente…`,
+  order_catalog: () => 'Buscando o catálogo de produtos…',
+  order_create: (a) => {
+    const n = (a.items || []).reduce((acc, i) => acc + (Number(i.qty) || 0), 0);
+    return `Criando o pedido (${n} ${n === 1 ? 'item' : 'itens'}, ${a.delivery?.mode === 'pickup' ? 'retirada' : 'entrega'}, ${PAY_SHORT[a.payment_method] || a.payment_method || '—'})…`;
+  },
+  order_list: () => 'Consultando os pedidos do cliente…'
+};
 
 const MAX_WAIT = 8000;
 const FAST_WAIT = 350;
@@ -221,6 +566,12 @@ function PixCard({ item }) {
           </Box>
         </Stack>
         <Box sx={{ px: 1.25, py: 1 }}>
+          {item.due_label ? (
+            <Typography sx={{ fontSize: 11, opacity: 0.75, mb: 0.5 }}>
+              Vence em <b>{item.due_label}</b>
+              {item.boleto_url ? ' · boleto disponível' : ''}
+            </Typography>
+          ) : null}
           <Typography sx={{ fontSize: 10.5, fontWeight: 700, opacity: 0.6, mb: 0.4 }}>PIX COPIA E COLA (simulado)</Typography>
           <Box
             sx={{
@@ -255,14 +606,32 @@ function PixCard({ item }) {
 // Simulador
 // ---------------------------------------------------------------------------
 export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNode }) {
-  const { attendants } = useBot();
+  const { attendants, products, crmSettings, customFieldMap, orderCatalog } = useBot();
   const [items, setItems] = useState([]);
   const [typing, setTyping] = useState(false);
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
-  const [pending, setPending] = useState({ pix: false, wait: false });
+  const [pending, setPending] = useState({ pix: false, wait: false, charge: null });
   const [fast, setFast] = useState(false);
   const [startSig, setStartSig] = useState(null);
+  const [preset, setPreset] = useState('ok');
+  const [requireDoc, setRequireDoc] = useState(null); // null = como está na org
+  const [fixtureOpen, setFixtureOpen] = useState(false);
+  const effRequireDoc = requireDoc == null ? Boolean(crmSettings?.identity?.require_doc) : requireDoc;
+  const fixtureRef = useRef(null);
+  fixtureRef.current = buildFixture(preset, products, { requireDoc: effRequireDoc, crmSettings });
+  const { services: bookServices } = useBookCatalog();
+  const [book, setBook] = useState({ payment: null, no_slots: false, conflict: false, appts: true });
+  const bookRef = useRef(null);
+  bookRef.current = buildBookFixture(book, bookServices);
+  const { categories: ticketCategories } = useTicketCatalog();
+  const [tk, setTk] = useState({ tickets: true, fail: false });
+  const ticketRef = useRef(null);
+  ticketRef.current = buildTicketFixture(tk, ticketCategories);
+  const [ordFx, setOrdFx] = useState({ orders: true, address: true });
+  const orderRef = useRef(null);
+  orderRef.current = buildOrderFixture(ordFx, orderCatalog, customFieldMap);
+  const [waitingFor, setWaitingFor] = useState(null); // etapa atual (mostra "Enviar foto" nos blocos de chamado)
 
   const stateRef = useRef(null);
   const endedRef = useRef(false);
@@ -360,6 +729,35 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
           push({ kind: 'pix', amount_cents: a.amount_cents, description: a.description, code: a.code });
           setPending((p) => ({ ...p, pix: true }));
           break;
+        case 'charge': {
+          const c = a.charge || {};
+          push({
+            kind: 'pix',
+            amount_cents: c.amount_cents,
+            description: c.description || 'Cobrança da assinatura',
+            code: c.pix_code || a.code,
+            due_label: c.due_at ? dmy(String(c.due_at).slice(0, 10)) : null,
+            boleto_url: c.boleto_url || null
+          });
+          if (c.id) setPending((p) => ({ ...p, charge: c.id }));
+          break;
+        }
+        case 'crm_lookup':
+        case 'crm_create_customer':
+        case 'crm_subscribe':
+        case 'crm_send_charge':
+        case 'charge_check':
+        case 'crm_cancel_subscription':
+        case 'crm_pause_subscription':
+        case 'crm_change_plan':
+        case 'crm_update_customer':
+          push({ kind: 'note', tone: 'brand', icon: IconUserCircle, text: CRM_ACTION_NOTE[a.type]?.(a) || a.type });
+          break;
+        case 'order_catalog':
+        case 'order_create':
+        case 'order_list':
+          push({ kind: 'note', tone: 'brand', icon: IconShoppingCart, text: CRM_ACTION_NOTE[a.type]?.(a) || a.type });
+          break;
         case 'wait':
           push({ kind: 'note', tone: 'warn', icon: IconHourglass, text: `O bot vai esperar ${secsLabel(a.seconds)} antes de continuar.` });
           setPending((p) => ({ ...p, wait: true }));
@@ -370,10 +768,10 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
     }
   };
 
-  const run = async ({ text, event }) => {
+  const run = async ({ text, event, event_payload, media }) => {
     if (busy) return;
     const t = String(text || '').trim();
-    if (!event && !t) return;
+    if (!event && !t && !media) return;
     const runId = runRef.current;
     let state = stateRef.current;
     if (endedRef.current && !event) {
@@ -383,26 +781,37 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
       endedRef.current = false;
     }
     if (!state && !event) setStartSig(flowSig);
-    if (t) push({ kind: 'user', text: t });
+    if (media) push({ kind: 'user', text: t, media });
+    else if (t) push({ kind: 'user', text: t });
     if (event === 'pix_paid' || event === 'pix_expired') setPending((p) => ({ ...p, pix: false }));
+    if (event === 'charge_paid' || event === 'charge_expired') setPending((p) => ({ ...p, charge: null }));
     if (event === 'wait_done') setPending((p) => ({ ...p, wait: false }));
     setInput('');
     setBusy(true);
     try {
       // fluxo salvo → só flow_id; rascunho alterado → definition/settings atuais (nada vai ao WhatsApp)
-      const body = { ...(getPayload() || {}) };
-      if (state) body.state = state;
-      if (t) body.input = t;
+      const body = {
+        ...(getPayload() || {}),
+        crm_fixture: { ...(fixtureRef.current || {}), ...(orderRef.current || {}), tickets: ticketRef.current },
+        book_fixture: bookRef.current
+      };
+      if (state) body.state = media ? { ...state, __sim_media: media } : state;
+      if (t || media) body.input = t;
       if (event) body.event = event;
+      if (event_payload) body.event_payload = event_payload;
       const r = await post('/whatsapp/bot/simulate', body);
       if (runId !== runRef.current) return;
       stateRef.current = r?.state ?? null;
       endedRef.current = Boolean(r?.ended);
+      setWaitingFor(r?.ended ? null : r?.state?.waiting_for || null);
       onCurrentNode?.(r?.ended ? null : simNodeOf(r?.state));
       await play(r?.actions || [], runId);
       if (runId !== runRef.current) return;
+      // cobrança do bloco "Assinar plano" aguardando pagamento → botões Pagou / Expirou
+      const st = r?.state;
+      setPending((p) => ({ ...p, charge: st?.waiting_for === 'charge' && st?.charge?.id ? st.charge.id : null }));
       if (r?.ended) {
-        setPending({ pix: false, wait: false });
+        setPending({ pix: false, wait: false, charge: null });
         push({ kind: 'end' });
       }
     } catch (e) {
@@ -425,7 +834,8 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
     setItems([]);
     setTyping(false);
     setBusy(false);
-    setPending({ pix: false, wait: false });
+    setPending({ pix: false, wait: false, charge: null });
+    setWaitingFor(null);
     setStartSig(null);
     onCurrentNode?.(null);
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -497,6 +907,254 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
           </Button>
         </Stack>
       ) : null}
+
+      {/* cliente fictício (blocos de Cliente) */}
+      <Box sx={{ borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+        <Stack direction="row" alignItems="center" spacing={0.75} sx={{ px: 1.25, py: 0.6 }}>
+          <Box sx={{ color: '#6D28D9', display: 'flex' }}>
+            <IconUserCircle size={16} />
+          </Box>
+          <Typography sx={{ fontSize: 11.5, fontWeight: 700, flex: 1, minWidth: 0 }} noWrap>
+            Cliente fictício:{' '}
+            <Box component="span" sx={{ color: '#6D28D9' }}>
+              {FIXTURE_PRESETS.find((p) => p.id === preset)?.label}
+            </Box>
+            {effRequireDoc ? ' · org exige CPF' : ''}
+          </Typography>
+          <Button
+            size="small"
+            onClick={() => setFixtureOpen((v) => !v)}
+            sx={{ textTransform: 'none', fontWeight: 700, py: 0, minWidth: 0, color: WA_ACCENT }}
+          >
+            {fixtureOpen ? 'Ocultar' : 'Trocar'}
+          </Button>
+        </Stack>
+        {fixtureOpen ? (
+          <Box sx={{ px: 1.25, pb: 1 }}>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {FIXTURE_PRESETS.map((p) => {
+                const on = p.id === preset;
+                return (
+                  <Tooltip key={p.id} title={p.hint} enterDelay={500}>
+                    <Box
+                      component="button"
+                      type="button"
+                      onClick={() => {
+                        if (p.id === preset) return;
+                        setPreset(p.id);
+                        restart();
+                      }}
+                      sx={{
+                        border: `1px solid ${on ? '#6D28D9' : hexA('#6D28D9', 0.35)}`,
+                        bgcolor: on ? '#6D28D9' : 'transparent',
+                        color: on ? '#fff' : '#6D28D9',
+                        cursor: 'pointer',
+                        borderRadius: 5,
+                        px: 1,
+                        py: 0.35,
+                        fontWeight: 700,
+                        fontSize: 11.5,
+                        fontFamily: 'inherit'
+                      }}
+                    >
+                      {p.label}
+                    </Box>
+                  </Tooltip>
+                );
+              })}
+              <Tooltip
+                title="Simula a organização exigindo CPF/CNPJ (o bloco “Identificar cliente” no modo Org passa a perguntar o documento)"
+                enterDelay={500}
+              >
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => {
+                    setRequireDoc(!effRequireDoc);
+                    restart();
+                  }}
+                  sx={{
+                    border: `1px dashed ${hexA('#6D28D9', 0.5)}`,
+                    bgcolor: effRequireDoc ? hexA('#6D28D9', 0.12) : 'transparent',
+                    color: '#6D28D9',
+                    cursor: 'pointer',
+                    borderRadius: 5,
+                    px: 1,
+                    py: 0.35,
+                    fontWeight: 700,
+                    fontSize: 11.5,
+                    fontFamily: 'inherit'
+                  }}
+                >
+                  {effRequireDoc ? '☑' : '☐'} Org exige CPF
+                </Box>
+              </Tooltip>
+            </Stack>
+            <Typography sx={{ fontSize: 10.5, color: 'text.secondary', mt: 0.6, lineHeight: 1.4 }}>
+              {FIXTURE_PRESETS.find((p) => p.id === preset)?.hint}
+              {preset !== 'none'
+                ? ` Para identificar por documento responda ${SIM_DOC.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')} (código ${SIM_CODE}).`
+                : ' Qualquer CPF válido dá “não encontrado”.'}
+              {products?.length ? ' Usa os seus produtos ativos.' : ' Sem produtos cadastrados: usa 2 planos de exemplo.'} Nada é gravado.
+            </Typography>
+            <Typography sx={{ fontSize: 10.5, fontWeight: 800, color: '#EA580C', mt: 1, mb: 0.5 }}>AGENDA FICTÍCIA</Typography>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {[
+                {
+                  key: 'payment',
+                  label: (BOOK_PAYMENTS.find((x) => x.id === book.payment) || BOOK_PAYMENTS[0]).label,
+                  on: Boolean(book.payment),
+                  hint: 'Troca a forma de pagamento de todos os serviços nesta simulação',
+                  next: () => {
+                    const i = BOOK_PAYMENTS.findIndex((x) => x.id === book.payment);
+                    return { payment: BOOK_PAYMENTS[(i + 1) % BOOK_PAYMENTS.length].id };
+                  }
+                },
+                {
+                  key: 'no_slots',
+                  label: 'Agenda lotada',
+                  on: book.no_slots,
+                  hint: 'Nenhum horário livre (testa a saída “Sem horário livre”)',
+                  next: () => ({ no_slots: !book.no_slots })
+                },
+                {
+                  key: 'conflict',
+                  label: 'Conflito na reserva',
+                  on: book.conflict,
+                  hint: 'A 1ª reserva volta “horário acabou de ser reservado”',
+                  next: () => ({ conflict: !book.conflict })
+                },
+                {
+                  key: 'appts',
+                  label: 'Com 2 agendamentos',
+                  on: book.appts,
+                  hint: 'O contato já tem 2 agendamentos (para “Meus agendamentos”)',
+                  next: () => ({ appts: !book.appts })
+                }
+              ].map((o) => (
+                <Tooltip key={o.key} title={o.hint} enterDelay={500}>
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => {
+                      setBook((b) => ({ ...b, ...o.next() }));
+                      restart();
+                    }}
+                    sx={{
+                      border: `1px ${o.key === 'payment' ? 'solid' : 'dashed'} ${hexA('#EA580C', 0.5)}`,
+                      bgcolor: o.on ? hexA('#EA580C', 0.12) : 'transparent',
+                      color: '#C2410C',
+                      cursor: 'pointer',
+                      borderRadius: 5,
+                      px: 1,
+                      py: 0.35,
+                      fontWeight: 700,
+                      fontSize: 11.5,
+                      fontFamily: 'inherit'
+                    }}
+                  >
+                    {o.key === 'payment' ? o.label : `${o.on ? '☑' : '☐'} ${o.label}`}
+                  </Box>
+                </Tooltip>
+              ))}
+            </Stack>
+            <Typography sx={{ fontSize: 10.5, color: 'text.secondary', mt: 0.6, lineHeight: 1.4 }}>
+              {bookServices?.length ? 'Usa os seus serviços' : 'Sem serviços cadastrados: usa 2 serviços de exemplo'}; horários de seg a
+              sáb, 9–12 h e 14–18 h. Nada é reservado.
+            </Typography>
+            <Typography sx={{ fontSize: 10.5, fontWeight: 800, color: '#0369A1', mt: 1, mb: 0.5 }}>CHAMADOS FICTÍCIOS</Typography>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {[
+                {
+                  key: 'tickets',
+                  label: 'Com 3 chamados',
+                  on: tk.tickets,
+                  hint: 'O contato já tem 3 chamados (aguardando você, aberto e encerrado) para “Meus chamados”'
+                },
+                { key: 'fail', label: 'Falha ao abrir', on: tk.fail, hint: 'Abrir chamado volta erro (testa a saída “Deu erro”)' }
+              ].map((o) => (
+                <Tooltip key={o.key} title={o.hint} enterDelay={500}>
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => {
+                      setTk((x) => ({ ...x, [o.key]: !x[o.key] }));
+                      restart();
+                    }}
+                    sx={{
+                      border: `1px dashed ${hexA('#0369A1', 0.5)}`,
+                      bgcolor: o.on ? hexA('#0369A1', 0.12) : 'transparent',
+                      color: '#0369A1',
+                      cursor: 'pointer',
+                      borderRadius: 5,
+                      px: 1,
+                      py: 0.35,
+                      fontWeight: 700,
+                      fontSize: 11.5,
+                      fontFamily: 'inherit'
+                    }}
+                  >
+                    {`${o.on ? '☑' : '☐'} ${o.label}`}
+                  </Box>
+                </Tooltip>
+              ))}
+            </Stack>
+            <Typography sx={{ fontSize: 10.5, color: 'text.secondary', mt: 0.6, lineHeight: 1.4 }}>
+              {ticketCategories?.length ? 'Usa as suas categorias' : 'Sem categorias carregadas: usa 3 de exemplo'}; o protocolo é fictício.
+              Para mandar foto, use os botões que aparecem quando o bot pede um arquivo. Nada é gravado.
+            </Typography>
+            <Typography sx={{ fontSize: 10.5, fontWeight: 800, color: '#4D7C0F', mt: 1, mb: 0.5 }}>PEDIDOS FICTÍCIOS</Typography>
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {[
+                {
+                  key: 'orders',
+                  label: 'Tem pedidos',
+                  on: ordFx.orders,
+                  hint: 'O contato já tem 2 pedidos (um em preparo pago por PIX, um entregue) para “Meus pedidos” e a condição “Pedido”'
+                },
+                {
+                  key: 'address',
+                  label: 'Endereço salvo',
+                  on: ordFx.address,
+                  hint: 'O cliente tem 1 endereço de entrega salvo (o bot oferece antes de pedir para digitar)'
+                }
+              ].map((o) => (
+                <Tooltip key={o.key} title={o.hint} enterDelay={500}>
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => {
+                      setOrdFx((x) => ({ ...x, [o.key]: !x[o.key] }));
+                      restart();
+                    }}
+                    sx={{
+                      border: `1px dashed ${hexA('#4D7C0F', 0.5)}`,
+                      bgcolor: o.on ? hexA('#65A30D', 0.14) : 'transparent',
+                      color: '#4D7C0F',
+                      cursor: 'pointer',
+                      borderRadius: 5,
+                      px: 1,
+                      py: 0.35,
+                      fontWeight: 700,
+                      fontSize: 11.5,
+                      fontFamily: 'inherit'
+                    }}
+                  >
+                    {`${o.on ? '☑' : '☐'} ${o.label}`}
+                  </Box>
+                </Tooltip>
+              ))}
+            </Stack>
+            <Typography sx={{ fontSize: 10.5, color: 'text.secondary', mt: 0.6, lineHeight: 1.4 }}>
+              {(orderCatalog?.catalog?.categories || []).some((c) => (c.products || []).length)
+                ? 'Usa o seu catálogo'
+                : 'Sem produtos avulsos ativos: usa um catálogo de exemplo (Lanches e Bebidas)'}
+              {orderCatalog?.settings ? ' e as suas configurações de pedidos' : ' com entrega (R$ 5,00) e retirada'}. O PIX do pedido é
+              fictício: use os botões Pagou / Expirou. Nada é gravado.
+            </Typography>
+          </Box>
+        ) : null}
+      </Box>
 
       {/* conversa */}
       <Box
@@ -573,7 +1231,24 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
           if (it.kind === 'user')
             return (
               <Bubble key={it.id} mine time={it.at}>
-                <WaText text={it.text} />
+                {it.media ? (
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    alignItems="center"
+                    sx={{ p: 0.75, mb: it.text ? 0.5 : 0.2, borderRadius: 1.5, bgcolor: 'rgba(0,0,0,0.07)' }}
+                  >
+                    {it.media.kind === 'document' ? <IconFileText size={20} /> : <IconPhoto size={20} />}
+                    <Typography sx={{ fontSize: 12, fontWeight: 600 }}>
+                      {it.media.failed
+                        ? 'Arquivo que não chegou (simulado)'
+                        : it.media.kind === 'document'
+                          ? 'documento.pdf (simulado)'
+                          : 'Foto (simulada)'}
+                    </Typography>
+                  </Stack>
+                ) : null}
+                {it.text ? <WaText text={it.text} /> : null}
               </Bubble>
             );
           if (it.kind === 'bot')
@@ -653,7 +1328,7 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
       </Box>
 
       {/* ações de evento */}
-      {(pending.pix || pending.wait) && !busy ? (
+      {(pending.pix || pending.wait || pending.charge) && !busy ? (
         <Stack
           direction="row"
           spacing={0.75}
@@ -684,6 +1359,29 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
               </Button>
             </>
           ) : null}
+          {pending.charge ? (
+            <>
+              <Button
+                size="small"
+                variant="contained"
+                disableElevation
+                startIcon={<IconCircleCheck size={16} />}
+                onClick={() => run({ event: 'charge_paid', event_payload: { charge_id: pending.charge } })}
+                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, bgcolor: '#16A34A', '&:hover': { bgcolor: '#15803D' } }}
+              >
+                Pagou
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<IconHourglass size={16} />}
+                onClick={() => run({ event: 'charge_expired', event_payload: { charge_id: pending.charge } })}
+                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, color: '#C2410C', borderColor: hexA('#EA580C', 0.5) }}
+              >
+                Expirou
+              </Button>
+            </>
+          ) : null}
           {pending.wait ? (
             <Button
               size="small"
@@ -695,6 +1393,37 @@ export default function BotSimulator({ getPayload, flowSig, onClose, onCurrentNo
               Pular espera
             </Button>
           ) : null}
+        </Stack>
+      ) : null}
+
+      {/* arquivo fictício do cliente (blocos de chamado) */}
+      {MEDIA_WAITS.has(waitingFor) && !busy && !endedRef.current ? (
+        <Stack
+          direction="row"
+          spacing={0.75}
+          flexWrap="wrap"
+          useFlexGap
+          sx={{ px: 1.25, py: 0.9, borderTop: '1px solid', borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}
+        >
+          <Typography sx={{ fontSize: 11, color: 'text.secondary', fontWeight: 600, alignSelf: 'center', whiteSpace: 'nowrap' }}>
+            Mandar arquivo:
+          </Typography>
+          {[
+            { kind: 'image', label: 'Foto', icon: IconPhoto },
+            { kind: 'document', label: 'Documento', icon: IconFileText },
+            { kind: 'image', failed: true, label: 'Arquivo que falhou', icon: IconX }
+          ].map((m) => (
+            <Button
+              key={m.label}
+              size="small"
+              variant="outlined"
+              startIcon={<m.icon size={15} />}
+              onClick={() => run({ text: input, media: { kind: m.kind, ...(m.failed ? { failed: true } : {}) } })}
+              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 2, py: 0.2, color: WA_ACCENT, borderColor: hexA(WA_DARK, 0.4) }}
+            >
+              {m.label}
+            </Button>
+          ))}
         </Stack>
       ) : null}
 

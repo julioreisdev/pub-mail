@@ -46,6 +46,9 @@ import { NotificationsModule } from 'src/notifications/notifications.module';
 import { RealtimeModule } from 'src/realtime/realtime.module';
 import { TeamModule } from 'src/team/team.module';
 import { WordpressModule } from 'src/wordpress/wordpress.module';
+import { OrgApiModule } from 'src/org-api/org-api.module';
+import { OrgWebhooksModule } from 'src/org-webhooks/org-webhooks.module';
+import { AuditModule } from 'src/audit/audit.module';
 
 @Module({
   imports: [
@@ -97,6 +100,9 @@ import { WordpressModule } from 'src/wordpress/wordpress.module';
     NotificationsModule, // push + avisos no painel (global)
     WordpressModule, // plugin WordPress Tradutor Invisível (licença pela conta)
     TeamModule, // chat interno da equipe (dentro da tela de Chat do WhatsApp)
+    OrgApiModule, // API pública da org (/api/v1, chave por org) + painel /org/api-keys
+    AuditModule, // Fase 8: auditoria da organização (interceptor global + /whatsapp/audit)
+    OrgWebhooksModule, // webhooks de saída da org (painel /org/webhooks + fila de entregas)
   ],
   controllers: [],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],

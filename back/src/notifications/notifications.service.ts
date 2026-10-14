@@ -5,7 +5,7 @@ import { promises as fsp } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { normalizeModules } from '../platform-billing/modules.const';
+import { normalizeModules, normalizeSubPermissions } from '../platform-billing/modules.const';
 import { DEFAULT_PREFS, KINDS, KIND_GROUPS, Prefs, SOUNDS, VIBRATIONS, VIBRATION_PATTERNS, brtMinuteOfDay, decide, kindMeta, normalizePrefs } from './notification-kinds';
 import { PushService } from './push.service';
 
@@ -41,6 +41,11 @@ export type NotifyInput = {
   vibrate?: string | null;
   /** ignora os filtros de evento (teste) — canais/quiet continuam valendo */
   bypass?: boolean;
+  /**
+   * Versão sem dados sensíveis (ex.: valores) para quem NÃO tem a sub-permissão `permission` (MEMBER sem
+   * `whatsapp:finance`). Dono/admin/superadmin sempre recebem a versão completa. Revisão 14/10/2026 (P7-18).
+   */
+  restricted?: { permission: string; title: string; body?: string | null; url?: string | null } | null;
 };
 
 type UserRow = { id: string; name: string; role: string; modules: unknown; whatsapp_sessions: unknown };
@@ -202,13 +207,15 @@ export class NotificationsService {
       const tag = input.tag || `${input.kind}:${input.chat?.uuid || input.sessionId || 'org'}`;
 
       for (const u of targets) {
+        const lacks = Boolean(input.restricted?.permission) && !isAdmin(u.role) && !(normalizeSubPermissions(u.modules) as string[]).includes(String(input.restricted!.permission));
+        const view: NotifyInput = lacks ? { ...input, title: input.restricted!.title, body: input.restricted!.body ?? null, url: input.restricted!.url ?? input.url ?? null } : input;
         const prefs = await this.getPrefs(orgId, u.id);
         const d = input.bypass
           ? decide({ ...prefs, enabled: true }, { kind: 'test', userId: u.id, online: online.has(u.id), brtMinute: minute })
           : decide(prefs, { kind: input.kind, userId: u.id, sessionId: input.sessionId, chat: input.chat, stageId: input.stageId, online: online.has(u.id), brtMinute: minute });
         if (!d.send) {
           summary.skipped++;
-          if (d.reason === 'quiet') await this.log(orgId, u.id, input, '', 'quiet');
+          if (d.reason === 'quiet') await this.log(orgId, u.id, view, '', 'quiet');
           continue;
         }
         // freio anti-rajada: a mesma conversa não vira 10 avisos em 10 s (o push já substitui pelo tag)
@@ -222,15 +229,15 @@ export class NotificationsService {
         const sound = (input.sound && SOUNDS.includes(input.sound as any) ? input.sound : prefs.sound) as string;
         const vib = (input.vibrate && VIBRATIONS.includes(input.vibrate as any) ? input.vibrate : prefs.vibrate) as keyof typeof VIBRATION_PATTERNS;
         const channels: string[] = [];
-        const logRow = await this.log(orgId, u.id, input, '', 'sent');
+        const logRow = await this.log(orgId, u.id, view, '', 'sent');
         const icon = (input.icon && (prefs.contact_photo || input.kind === 'custom') ? input.icon : null) || (prefs.icon.mode !== 'default' && prefs.icon.url ? prefs.icon.url : null);
         const base = {
           id: logRow?.id || null,
           icon,
           kind: input.kind,
-          title: input.title,
-          body: input.body || '',
-          url: input.url || '/dashboard',
+          title: view.title,
+          body: view.body || '',
+          url: view.url || '/dashboard',
           tag,
           important,
           sound: d.quiet ? 'none' : sound,

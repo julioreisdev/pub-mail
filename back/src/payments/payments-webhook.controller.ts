@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Public } from '../auth/public.decorator';
@@ -29,9 +29,14 @@ export class PaymentsWebhookController {
 
   @Post(':provider')
   @HttpCode(200)
-  async receive(@Param('provider') provider: string, @Query() query: any, @Body() body: any) {
+  async receive(@Param('provider') provider: string, @Query() query: any, @Body() body: any, @Headers('asaas-access-token') asaasToken?: string) {
     try {
       const chargeId = extractWebhookChargeId(provider, query || {}, body || {});
+      // Asaas (Fase 4): só as Cobranças do WhatsApp usam; o token do webhook é conferido por organização
+      if (provider === 'asaas') {
+        if (chargeId) await this.whatsappCharges.handleAsaasWebhook(chargeId, asaasToken, query?.o ? String(query.o) : null).catch(() => false);
+        return { ok: true };
+      }
       if (chargeId) {
         // Ordem: webchat → telegram → bot do WhatsApp → cobranças do WhatsApp (CRM) → assinaturas da plataforma (gateway do superadmin).
         const found =

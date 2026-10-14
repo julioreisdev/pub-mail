@@ -59,6 +59,8 @@ import WhatsAppNumbersPicker, {
   normalizeWaSessions,
   sameWaSessions
 } from './WhatsAppNumbersPicker';
+import WaPermissionsPicker, { WaPermsChip, initialWaPerms, modulesWithWaPerms, sameWaPerms } from './WaPermissionsPicker';
+import { WA_SUB_KEYS } from 'views/pages/access/modules';
 
 const ROLE_OPTIONS = ['SUPER_ADMIN', 'OWNER', 'ADMIN', 'MEMBER'];
 
@@ -159,6 +161,20 @@ function WaNumbersSection({ orgId, role, value, onChange, disabled }) {
         hint={roleSeesAllNumbers(role) ? undefined : 'quais números este usuário pode usar'}
       />
       <WhatsAppNumbersPicker orgId={orgId} role={role} value={value} onChange={onChange} disabled={disabled} />
+    </>
+  );
+}
+
+// Fase 7: sub-permissões do WhatsApp (cobranças / clientes / configurações) — só pesa para MEMBER
+function WaPermsSection({ role, value, onChange, disabled }) {
+  return (
+    <>
+      <SectionHeader
+        icon={IconBrandWhatsapp}
+        title="Permissões no WhatsApp"
+        hint={roleSeesAllNumbers(role) ? undefined : 'o que este usuário pode ver e mexer'}
+      />
+      <WaPermissionsPicker role={role} value={value} onChange={onChange} disabled={disabled} />
     </>
   );
 }
@@ -279,13 +295,14 @@ function ClientFormDialog({ open, loading, error, onClose, onSubmit }) {
     org_name: '',
     role: 'OWNER',
     modules: [...ALL_MODULE_KEYS],
+    wa_perms: [...WA_SUB_KEYS],
     price_cents: 0,
     period_days: 30
   };
   const [form, setForm] = useState(blank);
 
   useEffect(() => {
-    if (open) setForm({ ...blank, modules: [...ALL_MODULE_KEYS] });
+    if (open) setForm({ ...blank, modules: [...ALL_MODULE_KEYS], wa_perms: [...WA_SUB_KEYS] });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -338,6 +355,14 @@ function ClientFormDialog({ open, loading, error, onClose, onSubmit }) {
                 {SETTINGS_WARNING}
               </Alert>
             ) : null}
+            {hasWhatsApp(form.modules) ? (
+              <WaPermsSection
+                role={form.role}
+                value={form.wa_perms}
+                onChange={(wa_perms) => setForm((p) => ({ ...p, wa_perms }))}
+                disabled={loading}
+              />
+            ) : null}
             {hasWhatsApp(form.modules) && !roleSeesAllNumbers(form.role) ? (
               <Typography variant="caption" sx={{ color: 'text.secondary' }}>
                 A conta nova ainda não tem número do WhatsApp — o usuário terá acesso a todos os que forem conectados. Para restringir, use
@@ -383,7 +408,8 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
         role: initial?.role || 'MEMBER',
         active: initial?.active !== false,
         modules: normalizeModules(initial?.modules || []),
-        whatsapp_sessions: normalizeWaSessions(initial?.whatsapp_sessions)
+        whatsapp_sessions: normalizeWaSessions(initial?.whatsapp_sessions),
+        wa_perms: initialWaPerms(initial)
       });
     } else {
       setForm({
@@ -393,7 +419,8 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
         password: '',
         role: 'ADMIN',
         modules: [...ALL_MODULE_KEYS],
-        whatsapp_sessions: null
+        whatsapp_sessions: null,
+        wa_perms: [...WA_SUB_KEYS]
       });
     }
   }, [open, mode, initial]);
@@ -403,6 +430,7 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
   const noSettings = Array.isArray(form.modules) && !form.modules.includes('settings');
   const waOrgId = mode === 'edit' ? initial?.organization_id || initial?.organizations?.id : form.organization_id;
   const setWaSessions = (whatsapp_sessions) => setForm((p) => ({ ...p, whatsapp_sessions }));
+  const setWaPerms = (wa_perms) => setForm((p) => ({ ...p, wa_perms }));
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="sm" fullWidth>
@@ -452,6 +480,9 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
                     onChange={setWaSessions}
                     disabled={loading}
                   />
+                ) : null}
+                {hasWhatsApp(form.modules) ? (
+                  <WaPermsSection role={form.role} value={form.wa_perms} onChange={setWaPerms} disabled={loading} />
                 ) : null}
               </>
             ) : (
@@ -516,6 +547,9 @@ function UserFormDialog({ open, mode, initial, orgs, loading, error, onClose, on
                     disabled={loading}
                   />
                 ) : null}
+                {hasWhatsApp(form.modules) ? (
+                  <WaPermsSection role={form.role} value={form.wa_perms} onChange={setWaPerms} disabled={loading} />
+                ) : null}
               </>
             )}
           </Stack>
@@ -579,6 +613,8 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   const [modules, setModules] = useState([]);
   // números do WhatsApp liberados (null = todos)
   const [waSessions, setWaSessions] = useState(null);
+  // sub-permissões do WhatsApp (Fase 7)
+  const [waPerms, setWaPerms] = useState([...WA_SUB_KEYS]);
   // null = ainda não carregado (o PlanFields só monta com o plano fresco da conta)
   const [plan, setPlan] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -614,6 +650,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
     if (!open) return;
     setModules(normalizeModules(user?.modules || []));
     setWaSessions(normalizeWaSessions(user?.whatsapp_sessions));
+    setWaPerms(initialWaPerms(user));
     setSub(null);
     setSubError('');
     setPlan(null); // zera preço/período/observações do usuário anterior
@@ -628,6 +665,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   // só conta como mudança quando o campo vai no payload (módulo WhatsApp + MEMBER)
   const waPayload = waSessionsForPayload(modules, user?.role, waSessions);
   const waDirty = waPayload !== undefined && !sameWaSessions(user?.whatsapp_sessions, waPayload);
+  const permsDirty = hasWhatsApp(modules) && !sameWaPerms(initialWaPerms(user), waPerms);
   const planDirty = useMemo(() => {
     if (!sub || !plan) return false;
     const a = sub.access || {};
@@ -638,9 +676,9 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
   const saveAll = async () => {
     setSaving(true);
     try {
-      if (modulesDirty || waDirty) {
+      if (modulesDirty || waDirty || permsDirty) {
         await patch(`/admin/users/${user.id}`, {
-          modules,
+          modules: modulesWithWaPerms(modules, waPerms),
           ...(waPayload !== undefined ? { whatsapp_sessions: waPayload } : {})
         });
       }
@@ -813,6 +851,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
             {hasWhatsApp(modules) ? (
               <WaNumbersSection orgId={orgId} role={user?.role} value={waSessions} onChange={setWaSessions} disabled={saving} />
             ) : null}
+            {hasWhatsApp(modules) ? <WaPermsSection role={user?.role} value={waPerms} onChange={setWaPerms} disabled={saving} /> : null}
 
             <SectionHeader icon={IconReceipt2} title="Plano da conta" hint="mudanças valem na próxima cobrança" />
             {subError ? (
@@ -865,7 +904,7 @@ function AccessDialog({ open, user, loading, onClose, onReload }) {
           <Button
             variant="contained"
             onClick={saveAll}
-            disabled={saving || !!busy || loading || (!modulesDirty && !waDirty && !planDirty) || !!plan?.period_invalid}
+            disabled={saving || !!busy || loading || (!modulesDirty && !waDirty && !permsDirty && !planDirty) || !!plan?.period_invalid}
             startIcon={saving ? <CircularProgress size={14} color="inherit" /> : null}
           >
             Salvar alterações
@@ -995,7 +1034,7 @@ export default function AdminUsers() {
         email: form.email.trim(),
         password: form.password,
         org_name: form.org_name.trim() || undefined,
-        modules: form.modules,
+        modules: modulesWithWaPerms(form.modules, form.wa_perms),
         price_cents: Number(form.price_cents) || 0,
         period_days: form.period_days == null ? null : Number(form.period_days),
         role: form.role
@@ -1023,7 +1062,7 @@ export default function AdminUsers() {
           name: form.name,
           role: form.role,
           active: form.active,
-          modules,
+          modules: modulesWithWaPerms(modules, form.wa_perms),
           ...(whatsapp_sessions !== undefined ? { whatsapp_sessions } : {})
         });
       } else {
@@ -1033,7 +1072,7 @@ export default function AdminUsers() {
           email: form.email,
           password: form.password,
           role: form.role,
-          modules,
+          modules: modulesWithWaPerms(modules, form.wa_perms),
           ...(whatsapp_sessions !== undefined ? { whatsapp_sessions } : {})
         });
       }
@@ -1302,6 +1341,7 @@ export default function AdminUsers() {
                             {hasWhatsApp(u.modules) ? (
                               <WhatsAppAccessChip user={u} orgId={u.organization_id || u.organizations?.id} />
                             ) : null}
+                            <WaPermsChip user={u} />
                           </Stack>
                         )}
                       </TableCell>

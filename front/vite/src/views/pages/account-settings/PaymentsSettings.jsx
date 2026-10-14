@@ -16,7 +16,7 @@ import {
   Tabs,
   TextField,
   Tooltip,
-  Typography,
+  Typography
 } from '@mui/material';
 import {
   IconBrandTelegram,
@@ -27,11 +27,12 @@ import {
   IconCreditCard,
   IconMessageChatbot,
   IconPlugConnected,
-  IconReceipt2,
+  IconReceipt2
 } from '@tabler/icons-react';
 import toast from 'react-hot-toast';
 import { get, post, put } from 'api/api';
 import { TgPageHeader, TgCard, TgStatusPill, TgEmptyState, TgListSkeleton } from '../telegram/ui';
+import CrmGatewaysCard from './CrmGatewaysCard';
 
 // Configurações → Pagamentos: gateway PIX da ORGANIZAÇÃO (compartilhado por
 // Webchat e Telegram) + vendas de todos os canais. As mensagens do checkout do
@@ -42,7 +43,7 @@ const errMsg = (e, fb) => {
 };
 const PROVIDERS = [
   { value: 'mercadopago', label: 'Mercado Pago', hint: 'Access Token de produção (Suas integrações → Credenciais de produção).' },
-  { value: 'pushinpay', label: 'PushinPay', hint: 'Token da API (painel PushinPay → Integrações).' },
+  { value: 'pushinpay', label: 'PushinPay', hint: 'Token da API (painel PushinPay → Integrações).' }
 ];
 const fmtDate = (v) => {
   if (!v) return '—';
@@ -125,11 +126,18 @@ function GatewayTab() {
 
   if (loading) return <TgListSkeleton rows={3} />;
   const providerMeta = PROVIDERS.find((p) => p.value === provider) || PROVIDERS[0];
+  const eff = data?.crm?.effective || {};
+  const crmOnly = !data?.ready && Boolean(eff.pix || eff.boleto || eff.card);
 
   return (
     <Stack spacing={2} sx={{ maxWidth: 760 }}>
-      <Alert severity={data?.ready ? 'success' : 'warning'} icon={<IconPlugConnected size={20} />}>
-        {data?.ready ? (
+      <Alert severity={data?.ready ? 'success' : crmOnly ? 'info' : 'warning'} icon={<IconPlugConnected size={20} />}>
+        {crmOnly ? (
+          <>
+            <strong>Cobranças do WhatsApp prontas</strong> (gateway por meio de pagamento, abaixo). O gateway principal (Webchat, Telegram e
+            PIX do Fluxo do Bot) ainda não está configurado.
+          </>
+        ) : data?.ready ? (
           <>
             <strong>Gateway pronto.</strong> Este mesmo gateway é usado pelo <strong>Webchat</strong> (cobranças PIX do funil) e pelo{' '}
             <strong>Telegram</strong> (planos VIP).
@@ -183,11 +191,15 @@ function GatewayTab() {
             <Button variant="outlined" onClick={test} disabled={testing || !data?.has_token} sx={{ borderRadius: 2, fontWeight: 700 }}>
               {testing ? 'Testando…' : 'Testar conexão'}
             </Button>
-            {data?.has_token ? <Chip size="small" color="success" variant="outlined" icon={<IconCheck size={14} />} label="Token salvo" /> : null}
+            {data?.has_token ? (
+              <Chip size="small" color="success" variant="outlined" icon={<IconCheck size={14} />} label="Token salvo" />
+            ) : null}
           </Stack>
           {testResult ? (
             <Alert severity={testResult.ok ? 'success' : 'error'} sx={{ py: 0.5 }}>
-              {testResult.ok ? `Conexão OK — ${testResult.detail || 'credencial válida'}` : `Falhou: ${testResult.detail || 'credencial inválida'}`}
+              {testResult.ok
+                ? `Conexão OK — ${testResult.detail || 'credencial válida'}`
+                : `Falhou: ${testResult.detail || 'credencial inválida'}`}
             </Alert>
           ) : null}
         </Stack>
@@ -216,6 +228,8 @@ function GatewayTab() {
           </Stack>
         </Stack>
       </TgCard>
+
+      <CrmGatewaysCard key={JSON.stringify(data?.crm || {})} data={data} onSaved={setData} />
     </Stack>
   );
 }
@@ -226,7 +240,7 @@ const PERIODS = [
   { value: 'today', label: 'Hoje' },
   { value: '7d', label: 'Últimos 7 dias' },
   { value: '30d', label: 'Últimos 30 dias' },
-  { value: 'custom', label: 'Personalizado' },
+  { value: 'custom', label: 'Personalizado' }
 ];
 const startOfDay = (d) => {
   const x = new Date(d);
@@ -246,7 +260,7 @@ function periodRange(period, from, to) {
   if (period === 'custom') {
     return {
       from: from ? startOfDay(new Date(`${from}T00:00:00`)) : null,
-      to: to ? endOfDay(new Date(`${to}T00:00:00`)) : null,
+      to: to ? endOfDay(new Date(`${to}T00:00:00`)) : null
     };
   }
   return { from: null, to: null };
@@ -387,8 +401,22 @@ function SalesTab() {
         </FormControl>
         {period === 'custom' ? (
           <>
-            <TextField size="small" type="date" label="De" value={from} onChange={(e) => setFrom(e.target.value)} InputLabelProps={{ shrink: true }} />
-            <TextField size="small" type="date" label="Até" value={to} onChange={(e) => setTo(e.target.value)} InputLabelProps={{ shrink: true }} />
+            <TextField
+              size="small"
+              type="date"
+              label="De"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+            <TextField
+              size="small"
+              type="date"
+              label="Até"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
           </>
         ) : null}
         <FormControl size="small" sx={{ minWidth: 120 }}>
@@ -423,7 +451,9 @@ function SalesTab() {
       ) : data.items.length === 0 ? (
         <TgEmptyState
           icon={IconReceipt2}
-          title={data.total === 0 && !q && status === 'all' && channel === 'all' && period === 'all' ? 'Nenhuma venda ainda' : 'Nada encontrado'}
+          title={
+            data.total === 0 && !q && status === 'all' && channel === 'all' && period === 'all' ? 'Nenhuma venda ainda' : 'Nada encontrado'
+          }
           description={
             data.total === 0 && !q && status === 'all' && channel === 'all' && period === 'all'
               ? 'As cobranças aparecem aqui assim que um lead gerar um PIX no Webchat ou tocar num plano no Telegram.'
@@ -443,7 +473,7 @@ function SalesTab() {
                   display: 'grid',
                   placeItems: 'center',
                   flex: '0 0 auto',
-                  bgcolor: 'action.selected',
+                  bgcolor: 'action.selected'
                 }}
               >
                 {s.channel === 'telegram' ? <IconBrandTelegram size={18} /> : <IconMessageChatbot size={18} />}

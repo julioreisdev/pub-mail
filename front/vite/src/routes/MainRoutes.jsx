@@ -8,6 +8,7 @@ import Loadable from 'ui-component/Loadable';
 import RequireAuth from './RequireAuth';
 import RequireAdmin from './RequireAdmin';
 import RequireModule from './RequireModule';
+import RequirePermission from './RequirePermission';
 import ErrorBoundary from './ErrorBoundary';
 
 // pages
@@ -20,6 +21,8 @@ const IntegrationsPage = Loadable(lazy(() => import('views/pages/account-setting
 const ApiStatusPage = Loadable(lazy(() => import('views/pages/account-settings/ApiStatusPage')));
 const ApiTutorialPage = Loadable(lazy(() => import('views/pages/account-settings/ApiTutorialPage')));
 const PaymentsSettingsPage = Loadable(lazy(() => import('views/pages/account-settings/PaymentsSettingsPage')));
+const ApiWebhooks = Loadable(lazy(() => import('views/pages/account-settings/ApiWebhooks')));
+const AuditLog = Loadable(lazy(() => import('views/pages/account-settings/AuditLog')));
 const EmailMarketing = Loadable(lazy(() => import('views/pages/email/EmailMarketing')));
 const EmailHelp = Loadable(lazy(() => import('views/pages/email/Help')));
 const EmailAnalytics = Loadable(lazy(() => import('views/pages/email/Analytics')));
@@ -61,6 +64,11 @@ const WhatsAppPipeline = Loadable(lazy(() => import('views/pages/whatsapp/WhatsA
 const WhatsAppTasks = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppTasks')));
 const WhatsAppMetrics = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppMetrics')));
 const WhatsAppNotifications = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppNotifications')));
+const WhatsAppAgenda = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppAgenda')));
+const WhatsAppResources = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppResources')));
+const WhatsAppTickets = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppTickets')));
+const WhatsAppOrders = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppOrders')));
+const WhatsAppFinance = Loadable(lazy(() => import('views/pages/whatsapp/WhatsAppFinance')));
 const TranslatorPlugin = Loadable(lazy(() => import('views/pages/wordpress/TranslatorPlugin')));
 const PushInPlay = Loadable(lazy(() => import('views/pages/wordpress/PushInPlay')));
 
@@ -106,6 +114,8 @@ const MainRoutes = {
             { path: 'api-status', element: <ApiStatusPage /> },
             { path: 'api-tutorial', element: <ApiTutorialPage /> },
             { path: 'payments', element: <PaymentsSettingsPage /> },
+            { path: 'api', element: <ApiWebhooks /> },
+            { path: 'audit', element: <AuditLog /> },
             // compat: link antigo -> nova página
             { path: 'account-settings', element: <Navigate to="/settings/account" replace /> }
           ]
@@ -149,16 +159,57 @@ const MainRoutes = {
           path: 'whatsapp',
           element: <RequireModule module="whatsapp" />, // gate por módulo liberado
           children: [
-            { path: 'settings', element: <WhatsAppSettings /> },
+            // Fase 7: sub-permissões do WhatsApp (o back também nega com 403 PERMISSION_DENIED)
+            {
+              path: 'settings',
+              element: (
+                <RequirePermission permission="whatsapp:settings">
+                  <WhatsAppSettings />
+                </RequirePermission>
+              )
+            },
             { path: 'chat', element: <WhatsAppChat /> },
             { path: 'bot', element: <WhatsAppBot /> },
             { path: 'status', element: <WhatsAppStatus /> },
             { path: 'contacts', element: <WhatsAppContacts /> },
             { path: 'broadcasts', element: <WhatsAppBroadcasts /> },
             { path: 'schedules', element: <WhatsAppSchedules /> },
-            { path: 'customers', element: <WhatsAppCustomers /> },
-            { path: 'products', element: <WhatsAppProducts /> },
-            { path: 'charges', element: <WhatsAppCharges /> },
+            {
+              path: 'customers',
+              element: (
+                <RequirePermission permission="whatsapp:crm">
+                  <WhatsAppCustomers />
+                </RequirePermission>
+              )
+            },
+            { path: 'agenda', element: <WhatsAppAgenda /> },
+            { path: 'resources', element: <WhatsAppResources /> },
+            { path: 'tickets', element: <WhatsAppTickets /> },
+            { path: 'orders', element: <WhatsAppOrders /> },
+            {
+              path: 'products',
+              element: (
+                <RequirePermission permission="whatsapp:crm">
+                  <WhatsAppProducts />
+                </RequirePermission>
+              )
+            },
+            {
+              path: 'charges',
+              element: (
+                <RequirePermission permission="whatsapp:finance">
+                  <WhatsAppCharges />
+                </RequirePermission>
+              )
+            },
+            {
+              path: 'finance',
+              element: (
+                <RequirePermission permission="whatsapp:finance">
+                  <WhatsAppFinance />
+                </RequirePermission>
+              )
+            },
             { path: 'pipeline', element: <WhatsAppPipeline /> },
             { path: 'tasks', element: <WhatsAppTasks /> },
             { path: 'metrics', element: <WhatsAppMetrics /> },

@@ -495,7 +495,8 @@ EOF2
 | `HTTP_BODY_LIMIT` | `200mb` | Limite do body JSON/urlencoded do Express. Casa com o `client_max_body_size` do nginx. |
 | `STRIPE_SECRET_KEY` | `sk_test_disabled_placeholder` | **Não pode ficar vazio**: o `BillingService` lança erro no boot e o back não sobe. O placeholder é inerte porque o Stripe está desligado no front. |
 | `WP_PLUGIN_SIGNING_KEY` | aleatório (hex 32) | Módulo **WordPress**: assina a verificação de licença dos plugins ("Tradutor Invisível" e "Push In Play") instalados nos sites dos clientes. **Nunca troque depois de ter clientes**: os plugins instalados deixariam de aceitar as respostas até atualizarem. Sem ela, o back deriva uma do `JWT_ACCESS_SECRET` (e aí trocar o JWT pararia os plugins). |
-| `APP_PUBLIC_URL` (opcional) | `https://SEU-DOMINIO` | Endereço do painel usado no botão "Abrir o Pub Mail" do plugin. Padrão: `PUBLIC_API_URL` sem o `api.`. |
+| `ORG_WEBHOOK_ALLOW_LOCAL_PORTS` (opcional) | `18999` | Webhooks de saída da org só vão para `https://` porta 443; esta lista libera `http://127.0.0.1:<porta>` **só para testes automatizados** (deixe vazio se não roda o E2E). |
+| `APP_PUBLIC_URL` (opcional) | `https://SEU-DOMINIO` | Endereço do painel: botão "Abrir o Pub Mail" do plugin WordPress e base do **link de pagamento** das cobranças do WhatsApp (`/pay/<token>`). Padrão: `PUBLIC_API_URL` sem o `api.`. |
 | `WP_PLUGIN_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/tradutor-invisivel` | Pasta com o código do plugin Tradutor Invisível, de onde o back monta o `.zip` de cada cliente. Padrão: `../wordpress/tradutor-invisivel` a partir de `back/`. |
 | `WP_PIP_SOURCE_DIR` (opcional) | `/opt/pub-mail/wordpress/push-in-play` | Idem para o plugin Push In Play (notificações push). Padrão: `../wordpress/push-in-play` a partir de `back/`. A chave da conta é a mesma dos dois plugins. |
 
@@ -1008,6 +1009,7 @@ OPENWA_WEBHOOK_BASE=http://host.docker.internal:8000
 # WHATSAPP_MEDIA_QUOTA_MB=25600  # cota de mídia por organização (padrão 2 GB é pouco: 2 números ≈ 250 MB/dia × 90 dias; produção usa 25 GB)
 EOF2
 mkdir -p /opt/pub-mail/back/protected/whatsapp && chmod 750 /opt/pub-mail/back/protected/whatsapp
+mkdir -p /opt/pub-mail/back/protected/imports && chmod 750 /opt/pub-mail/back/protected/imports   # planilhas de importação de clientes (apagadas ao terminar)
 systemctl restart pubmail-back
 ```
 

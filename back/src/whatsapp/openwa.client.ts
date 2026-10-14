@@ -27,7 +27,9 @@ export type OpenWaSession = {
   connectedAt?: string | null; lastActive?: string | null; lastError?: string | null; engineLoaded?: boolean;
 };
 export type OpenWaSendResult = { messageId: string; timestamp: number };
-export type OpenWaMediaBody = { base64?: string; url?: string; mimetype?: string; filename?: string; caption?: string; quotedMessageId?: string; mentions?: string[]; ptt?: boolean };
+export type OpenWaParticipantResult = { id: string; success: boolean; status?: number | string; message?: string };
+export type OpenWaParticipantsResult = { success: boolean; message?: string; results: OpenWaParticipantResult[] };
+export type OpenWaMediaBody ={ base64?: string; url?: string; mimetype?: string; filename?: string; caption?: string; quotedMessageId?: string; mentions?: string[]; ptt?: boolean };
 
 const DEFAULT_TIMEOUT = 30_000;
 const enc = encodeURIComponent;
@@ -181,6 +183,23 @@ export class OpenWaClient {
   groupInviteCode(sid: string, groupId: string) { return this.request<{ inviteCode: string; inviteLink: string }>('GET', `${this.s(sid)}/groups/${enc(groupId)}/invite-code`); }
   groupPicture(sid: string, groupId: string) { return this.request<any>('GET', `${this.s(sid)}/groups/${enc(groupId)}/picture`, undefined, { timeoutMs: 60_000, binary: true }); }
   leaveGroup(sid: string, groupId: string) { return this.request('POST', `${this.s(sid)}/groups/${enc(groupId)}/leave`, {}); }
+  // participantes (Fase 5 — direito de acesso a grupo VIP). Resposta: {success, message, results:[{id, success, status?, message?}]};
+  // recusa PARCIAL não falha o lote (olhar `results`); recusa TOTAL = erro HTTP (403/404/409/503). `success:false` no corpo = falha.
+  addGroupParticipants(sid: string, groupId: string, jids: string[]) { return this.groupParticipants('POST', sid, groupId, '', jids); }
+  removeGroupParticipants(sid: string, groupId: string, jids: string[]) { return this.groupParticipants('DELETE', sid, groupId, '', jids); }
+  promoteGroupParticipants(sid: string, groupId: string, jids: string[]) { return this.groupParticipants('POST', sid, groupId, '/promote', jids); }
+  demoteGroupParticipants(sid: string, groupId: string, jids: string[]) { return this.groupParticipants('POST', sid, groupId, '/demote', jids); }
+  private async groupParticipants(method: string, sid: string, groupId: string, suffix: string, jids: string[]): Promise<OpenWaParticipantsResult> {
+    const r = await this.request<OpenWaParticipantsResult>(method, `${this.s(sid)}/groups/${enc(groupId)}/participants${suffix}`, { participants: jids }, { timeoutMs: 45_000 });
+    const results = Array.isArray(r?.results) ? r.results : [];
+    if (r && r.success === false && !results.length) throw new OpenWaError(400, 'GROUP_PARTICIPANTS_FAILED', String(r.message || 'O gateway recusou a alteração no grupo.').slice(0, 300));
+    return { success: r?.success !== false, message: r?.message, results };
+  }
+  async createGroup(sid: string, name: string, participants: string[]) {
+    const r = await this.request<any>('POST', `${this.s(sid)}/groups`, { name, participants }, { timeoutMs: 60_000 });
+    if (r && r.success === false) throw new OpenWaError(400, 'GROUP_CREATE_FAILED', String(r.message || 'O gateway não criou o grupo.').slice(0, 300));
+    return r;
+  }
 
   // ---- status (stories)
   statusText(sid: string, text: string, backgroundColor?: string, font?: number) { return this.request<{ statusId: string; timestamp: string; expiresAt: string }>('POST', `${this.s(sid)}/status/send-text`, { text, ...(backgroundColor ? { backgroundColor } : {}), ...(font != null ? { font } : {}) }, { timeoutMs: 60_000 }); }

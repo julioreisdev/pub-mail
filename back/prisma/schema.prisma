@@ -22,45 +22,45 @@ model billing_cards {
 }
 
 model organizations {
-  id                                  String                                @id @default(uuid()) @db.Char(36)
-  name                                String                                @db.VarChar(255)
-  document_id                         String?                               @unique(map: "document_id") @db.VarChar(20)
-  status                              Boolean                               @default(true)
-  hidden                              Boolean                               @default(false) // org oculta (dev): invisível na API admin
-  stripe_customer_id                  String?                               @db.VarChar(255)
-  created_at                          DateTime                              @default(now()) @db.DateTime(0)
-  updated_at                          DateTime                              @updatedAt @db.DateTime(0)
-  
-  agentes_ia                          agentes_ia[]
-  billing_cards                       billing_cards[]
-  email_leads                         email_leads[]
-  email_projects                      email_projects[]
-  organization_domains                organization_domains[]
-  users                               users[]
-  wallets                             wallets[]
-  webchat_domains                     webchat_domains[]
-  webchat_ads                         webchat_ads[]
-  webchat_ad_events                   webchat_ad_events[]
-  webchat_leads                       webchat_leads[]
-  webchat_sessions                    webchat_sessions[]
-  webchats                            webchats[]
-  webchat_splits                      webchat_splits[]
-  quizzes                             quizzes[]
-  quiz_splits                         quiz_splits[]
-  quiz_leads                          quiz_leads[]
-  quiz_ads                            quiz_ads[]
-  email_flows                         email_flows[]
-  email_flow_enrollments              email_flow_enrollments[]
-  posts                               posts[]
-  social_accounts                     social_accounts[]
-  social_app_credentials              organization_social_app_credentials[]
-  social_post_schedules               social_post_schedules[]
-  social_post_schedule_runs           social_post_schedule_runs[]
-  
+  id                 String   @id @default(uuid()) @db.Char(36)
+  name               String   @db.VarChar(255)
+  document_id        String?  @unique(map: "document_id") @db.VarChar(20)
+  status             Boolean  @default(true)
+  hidden             Boolean  @default(false) // org oculta (dev): invisível na API admin
+  stripe_customer_id String?  @db.VarChar(255)
+  created_at         DateTime @default(now()) @db.DateTime(0)
+  updated_at         DateTime @updatedAt @db.DateTime(0)
+
+  agentes_ia                agentes_ia[]
+  billing_cards             billing_cards[]
+  email_leads               email_leads[]
+  email_projects            email_projects[]
+  organization_domains      organization_domains[]
+  users                     users[]
+  wallets                   wallets[]
+  webchat_domains           webchat_domains[]
+  webchat_ads               webchat_ads[]
+  webchat_ad_events         webchat_ad_events[]
+  webchat_leads             webchat_leads[]
+  webchat_sessions          webchat_sessions[]
+  webchats                  webchats[]
+  webchat_splits            webchat_splits[]
+  quizzes                   quizzes[]
+  quiz_splits               quiz_splits[]
+  quiz_leads                quiz_leads[]
+  quiz_ads                  quiz_ads[]
+  email_flows               email_flows[]
+  email_flow_enrollments    email_flow_enrollments[]
+  posts                     posts[]
+  social_accounts           social_accounts[]
+  social_app_credentials    organization_social_app_credentials[]
+  social_post_schedules     social_post_schedules[]
+  social_post_schedule_runs social_post_schedule_runs[]
+
   // Novas relações do Módulo de Avatares
-  avatars                             avatars[]
-  avatar_generations                  avatar_generations[]
-  telegram_bots                       telegram_bots[]
+  avatars            avatars[]
+  avatar_generations avatar_generations[]
+  telegram_bots      telegram_bots[]
 }
 
 model transactions {
@@ -77,18 +77,18 @@ model transactions {
 }
 
 model users {
-  id              String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String        @db.Char(36)
-  name            String        @db.VarChar(255)
-  email           String        @unique(map: "email") @db.VarChar(255)
-  password_hash   String        @db.VarChar(255)
-  role            users_role    @default(OWNER)
-  refresh_token   String?       @db.VarChar(512)
-  active          Boolean       @default(dbgenerated("(true)"))
-  modules         Json?         // módulos liberados p/ este usuário: ['email','webchat','quiz','telegram','settings']
-  welcomed_at     DateTime?     @db.DateTime(3) // modal de boas-vindas já visto
-  whatsapp_sessions Json?       // números do WhatsApp liberados p/ este usuário (ids); null = todos
-  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_organization_id")
+  id                String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String        @db.Char(36)
+  name              String        @db.VarChar(255)
+  email             String        @unique(map: "email") @db.VarChar(255)
+  password_hash     String        @db.VarChar(255)
+  role              users_role    @default(OWNER)
+  refresh_token     String?       @db.VarChar(512)
+  active            Boolean       @default(dbgenerated("(true)"))
+  modules           Json? // módulos liberados p/ este usuário: ['email','webchat','quiz','telegram','settings']
+  welcomed_at       DateTime?     @db.DateTime(3) // modal de boas-vindas já visto
+  whatsapp_sessions Json? // números do WhatsApp liberados p/ este usuário (ids); null = todos
+  organizations     organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_organization_id")
 
   @@index([organization_id], map: "idx_users_org")
 }
@@ -188,7 +188,7 @@ model email_templates {
   body_text     String?        @db.LongText
   builder_model Json?
   recycle       Boolean        @default(false)
-  projects   email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_templates_project_id")
+  projects      email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_templates_project_id")
 
   @@index([project_id], map: "idx_email_templates_project")
   @@index([project_id, recycle], map: "idx_email_templates_project_recycle")
@@ -218,7 +218,7 @@ model email_project_leads {
   leads      email_leads                @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_project_leads_lead_id")
   projects   email_projects             @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_project_leads_project_id")
 
-  metrics    Json?                      @default("{}")
+  metrics Json? @default("{}")
 
   @@id([project_id, lead_id])
   @@index([lead_id], map: "idx_email_project_leads_lead")
@@ -226,27 +226,27 @@ model email_project_leads {
 }
 
 model email_projects_schedules {
-  id         String         @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  project_id String         @db.Char(36)
-  daily      Boolean        @default(false)
-  date       DateTime?      @db.DateTime(0)
-  time       Int?           @db.SmallInt
-  for_x_days Int?           @db.SmallInt
-  last_run   DateTime?      @db.DateTime(0)
+  id           String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  project_id   String    @db.Char(36)
+  daily        Boolean   @default(false)
+  date         DateTime? @db.DateTime(0)
+  time         Int?      @db.SmallInt
+  for_x_days   Int?      @db.SmallInt
+  last_run     DateTime? @db.DateTime(0)
   template_ids Json?
 
-  recycle          Boolean  @default(false)
-  recycle_criteria String?  @db.VarChar(16)
-  recycle_days     Int?     @db.SmallInt
+  recycle          Boolean @default(false)
+  recycle_criteria String? @db.VarChar(16)
+  recycle_days     Int?    @db.SmallInt
 
   // Segmentação por regras/condições (JSON: { match, conditions[] }). Null = todos.
-  segment          Json?
+  segment Json?
 
   created_at DateTime       @default(now()) @db.DateTime(0)
   updated_at DateTime       @updatedAt @db.DateTime(0)
   projects   email_projects @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_email_projects_schedules_project_id")
 
-  sents      email_projects_schedules_sent[]
+  sents email_projects_schedules_sent[]
 
   @@index([project_id], map: "idx_email_projects_schedules_project")
   @@index([daily, date], map: "idx_email_projects_schedules_daily_date")
@@ -255,51 +255,51 @@ model email_projects_schedules {
 }
 
 model email_projects_schedules_sent {
-  id              String @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String @db.Char(36)
-  project_id      String @db.Char(36)
+  id              String  @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String  @db.Char(36)
+  project_id      String  @db.Char(36)
   schedule_id     String? @db.Char(36)
 
   open_count      Int @default(0)
   click_cta_count Int @default(0)
 
-  schedule        email_projects_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull)
+  schedule email_projects_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull)
 
-  schedule_time   Int?
-  schedule_date   DateTime?
-  schedule_daily  Boolean
-  recycle         Boolean  @default(false)
+  schedule_time  Int?
+  schedule_date  DateTime?
+  schedule_daily Boolean
+  recycle        Boolean   @default(false)
 
-  run_at          DateTime @db.DateTime(0)
-  sent            Boolean  @default(false)
-  status          schedule_sent_status @default(PROCESSING)
+  run_at DateTime             @db.DateTime(0)
+  sent   Boolean              @default(false)
+  status schedule_sent_status @default(PROCESSING)
 
-  subject         String?  @db.VarChar(255)
-  from_name       String?  @db.VarChar(120)
-  body_html       String?  @db.LongText
-  body_text       String?  @db.LongText
+  subject   String? @db.VarChar(255)
+  from_name String? @db.VarChar(120)
+  body_html String? @db.LongText
+  body_text String? @db.LongText
 
-  total_leads     Int      @default(0)
-  sent_for_leads  Int      @default(0)
+  total_leads    Int @default(0)
+  sent_for_leads Int @default(0)
 
-  delivered_count  Int     @default(0)
-  bounced_count    Int     @default(0)
-  complained_count Int     @default(0)
+  delivered_count  Int @default(0)
+  bounced_count    Int @default(0)
+  complained_count Int @default(0)
 
   // quando o disparo veio de um passo do fluxo inicial (métricas por passo)
-  flow_step_id     String?  @db.Char(36)
+  flow_step_id String? @db.Char(36)
 
-  error_message   String?  @db.VarChar(255)
+  error_message String? @db.VarChar(255)
 
   created_at       DateTime @default(now()) @db.DateTime(0)
   tokens_unit_cost Int      @default(0)
   tokens_cost      Int      @default(0)
 
   // click_cta_count = cliques TOTAIS; click_unique_count = cliques ÚNICOS (por lead)
-  click_unique_count Int    @default(0)
+  click_unique_count Int @default(0)
 
-  opens           email_schedules_sent_opens[]
-  clicks          email_schedules_sent_clicks[]
+  opens  email_schedules_sent_opens[]
+  clicks email_schedules_sent_clicks[]
 
   @@unique([project_id, schedule_id, run_at], map: "uk_project_schedule_run_at")
   @@index([organization_id, project_id, run_at], map: "idx_sent_org_project_runat")
@@ -314,7 +314,7 @@ model email_schedules_sent_opens {
   email            String   @db.VarChar(255)
   created_at       DateTime @default(now()) @db.DateTime(0)
 
-  sent_campaign    email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
+  sent_campaign email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
 
   @@unique([schedule_sent_id, email], map: "uk_schedule_sent_email_open")
   @@index([schedule_sent_id], map: "idx_opens_schedule_sent")
@@ -328,7 +328,7 @@ model email_schedules_sent_clicks {
   email            String   @db.VarChar(255)
   created_at       DateTime @default(now()) @db.DateTime(0)
 
-  sent_campaign    email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
+  sent_campaign email_projects_schedules_sent @relation(fields: [schedule_sent_id], references: [id], onDelete: Cascade)
 
   @@unique([schedule_sent_id, email], map: "uk_schedule_sent_email_click")
   @@index([schedule_sent_id], map: "idx_clicks_schedule_sent")
@@ -342,10 +342,10 @@ model organization_domains {
   created_at      DateTime      @default(now()) @db.DateTime(0)
   updated_at      DateTime      @updatedAt @db.DateTime(0)
 
-  provider_id     String?       @db.VarChar(255)
-  dns_records     Json?
+  provider_id String? @db.VarChar(255)
+  dns_records Json?
 
-  organizations   organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_org_domains_org_id")
+  organizations organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_org_domains_org_id")
 
   @@unique([organization_id, domain], map: "uk_org_domains_org_domain")
   @@index([organization_id, status], map: "idx_org_domains_org_status")
@@ -415,28 +415,28 @@ model webchat_splits {
 }
 
 model quizzes {
-  id               String          @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id  String          @db.Char(36)
-  name             String          @db.VarChar(255)
-  slug             String          @db.VarChar(160)
-  domain           String          @db.VarChar(255)
-  email_project_id String?         @db.Char(36)
-  active           Boolean         @default(true)
+  id                 String          @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String          @db.Char(36)
+  name               String          @db.VarChar(255)
+  slug               String          @db.VarChar(160)
+  domain             String          @db.VarChar(255)
+  email_project_id   String?         @db.Char(36)
+  active             Boolean         @default(true)
   settings           Json?
-  header_scripts     String?       @db.Text
-  footer_scripts     String?       @db.Text
-  lead_email_html    String?       @db.LongText
-  lead_email_subject String?       @db.VarChar(255)
+  header_scripts     String?         @db.Text
+  footer_scripts     String?         @db.Text
+  lead_email_html    String?         @db.LongText
+  lead_email_subject String?         @db.VarChar(255)
   lead_email_model   Json?
-  split_id         String?         @db.Char(36)
-  split_weight     Int             @default(100)
-  created_at       DateTime        @default(now()) @db.DateTime(0)
-  updated_at       DateTime        @updatedAt @db.DateTime(0)
-  email_projects   email_projects? @relation(fields: [email_project_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_email_project_id")
-  organizations    organizations   @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_quizzes_organization_id")
-  quiz_splits      quiz_splits?    @relation(fields: [split_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_split_id")
-  quiz_leads       quiz_leads[]
-  quiz_ads         quiz_ads[]
+  split_id           String?         @db.Char(36)
+  split_weight       Int             @default(100)
+  created_at         DateTime        @default(now()) @db.DateTime(0)
+  updated_at         DateTime        @updatedAt @db.DateTime(0)
+  email_projects     email_projects? @relation(fields: [email_project_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_email_project_id")
+  organizations      organizations   @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_quizzes_organization_id")
+  quiz_splits        quiz_splits?    @relation(fields: [split_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_quizzes_split_id")
+  quiz_leads         quiz_leads[]
+  quiz_ads           quiz_ads[]
 
   @@unique([domain, slug], map: "uk_quizzes_domain_slug")
   @@index([organization_id], map: "idx_quizzes_org")
@@ -611,17 +611,17 @@ model posts {
   id              String      @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String      @db.Char(36)
   internal_name   String      @db.VarChar(255)
-  post_type       post_type   @default(SINGLE_VIDEO) 
+  post_type       post_type   @default(SINGLE_VIDEO)
   default_title   String?     @db.VarChar(255)
   default_caption String?     @db.Text
-  tags            Json?       
+  tags            Json?
   status          post_status @default(ACTIVE)
   created_at      DateTime    @default(now()) @db.DateTime(0)
   updated_at      DateTime    @updatedAt @db.DateTime(0)
 
-  organizations   organizations           @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_posts_org_id")
-  media           post_media[]
-  schedules       social_post_schedules[]
+  organizations organizations           @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_posts_org_id")
+  media         post_media[]
+  schedules     social_post_schedules[]
 
   @@index([organization_id, status], map: "idx_posts_org_status")
 }
@@ -630,12 +630,12 @@ model post_media {
   id               String     @id @default(dbgenerated("(uuid())")) @db.Char(36)
   post_id          String     @db.Char(36)
   sort_order       Int        @default(0) @db.SmallInt
-  media_type       media_type  
-  mime_type        String     @db.VarChar(100) 
-  file_size_bytes  Int          
-  original_name    String     @db.VarChar(255) 
-  storage_key      String     @db.VarChar(500) 
-  storage_provider String     @default("LOCAL") @db.VarChar(50) 
+  media_type       media_type
+  mime_type        String     @db.VarChar(100)
+  file_size_bytes  Int
+  original_name    String     @db.VarChar(255)
+  storage_key      String     @db.VarChar(500)
+  storage_provider String     @default("LOCAL") @db.VarChar(50)
   width            Int?
   height           Int?
   duration_sec     Int?
@@ -643,7 +643,7 @@ model post_media {
   created_at       DateTime   @default(now()) @db.DateTime(0)
   updated_at       DateTime   @updatedAt @db.DateTime(0)
 
-  post             posts      @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_post_media_post_id")
+  post posts @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_post_media_post_id")
 
   @@index([post_id, sort_order], map: "idx_post_media_post_order")
 }
@@ -665,10 +665,10 @@ model social_post_schedules {
   created_at        DateTime               @default(now()) @db.DateTime(0)
   updated_at        DateTime               @updatedAt @db.DateTime(0)
 
-  organizations     organizations          @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_org_id")
-  post              posts                  @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_post_id")
-  social_account    social_accounts?       @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedules_social_account_id")
-  runs              social_post_schedule_runs[]
+  organizations  organizations               @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_org_id")
+  post           posts                       @relation(fields: [post_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedules_post_id")
+  social_account social_accounts?            @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedules_social_account_id")
+  runs           social_post_schedule_runs[]
 
   @@index([organization_id, status, scheduled_at], map: "idx_social_post_schedules_org_status_scheduled")
   @@index([organization_id, social_network, status], map: "idx_social_post_schedules_org_network_status")
@@ -695,9 +695,9 @@ model social_post_schedule_runs {
   error_message     String?                    @db.VarChar(255)
   created_at        DateTime                   @default(now()) @db.DateTime(0)
 
-  organizations     organizations              @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedule_runs_org_id")
-  schedule          social_post_schedules?     @relation(fields: [schedule_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_schedule_id")
-  social_account    social_accounts?           @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_social_account_id")
+  organizations  organizations          @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_post_schedule_runs_org_id")
+  schedule       social_post_schedules? @relation(fields: [schedule_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_schedule_id")
+  social_account social_accounts?       @relation(fields: [social_account_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_social_post_schedule_runs_social_account_id")
 
   @@index([organization_id, run_at], map: "idx_social_post_schedule_runs_org_run_at")
   @@index([organization_id, social_network, status], map: "idx_social_post_schedule_runs_org_network_status")
@@ -723,9 +723,9 @@ model social_accounts {
   created_at              DateTime              @default(now()) @db.DateTime(0)
   updated_at              DateTime              @updatedAt @db.DateTime(0)
 
-  organizations           organizations         @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_accounts_org_id")
-  schedules               social_post_schedules[]
-  schedule_runs           social_post_schedule_runs[]
+  organizations organizations               @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_accounts_org_id")
+  schedules     social_post_schedules[]
+  schedule_runs social_post_schedule_runs[]
 
   @@unique([organization_id, social_network, provider_user_id], map: "uk_social_accounts_org_network_provider")
   @@index([organization_id, social_network, status], map: "idx_social_accounts_org_network_status")
@@ -741,7 +741,7 @@ model organization_social_app_credentials {
   created_at              DateTime       @default(now()) @db.DateTime(0)
   updated_at              DateTime       @updatedAt @db.DateTime(0)
 
-  organizations           organizations  @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_app_credentials_org_id")
+  organizations organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_social_app_credentials_org_id")
 
   @@unique([organization_id, social_network], map: "uk_social_app_credentials_org_network")
   @@index([organization_id, created_at], map: "idx_social_app_credentials_org_created")
@@ -752,60 +752,59 @@ model organization_social_app_credentials {
 // ==========================================
 
 model avatars {
-  id                    String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id       String        @db.Char(36)
-  
-  name                  String        @db.VarChar(255)
-  is_realistic          Boolean       @default(true)
-  
-  // Customizações do usuário (referências e aparência)
-  default_colors        Json?         // Array de HEX, ex: ["#FF0000", "#000000"]
-  inspiration_image_url String?       @db.VarChar(500) // Foto que ele enviou de inspiração (salva em /uploads)
-  
-  // Resultado Final
-  avatar_image_url      String        @db.VarChar(500) // Imagem final salva em /uploads
-  
-  // Prompts e Personalidade (Para uso nos módulos seguintes de vídeo e áudio)
-  user_prompt           String?       @db.Text
-  system_prompt         String?       @db.Text
-  personality           String?       @db.Text // Traços de personalidade definidos
-  
-  // Dados técnicos da geração (Importantíssimo para garantir consistência visual no futuro)
-  technical_metadata    Json?         // Ex: { "seed": 12345, "model": "dall-e-3", "cfg_scale": 7.5 }
-  
-  status                avatar_status @default(ACTIVE)
-  created_at            DateTime      @default(now()) @db.DateTime(0)
-  updated_at            DateTime      @updatedAt @db.DateTime(0)
+  id              String @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String @db.Char(36)
 
-  organizations         organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatars_organization_id")
+  name         String  @db.VarChar(255)
+  is_realistic Boolean @default(true)
+
+  // Customizações do usuário (referências e aparência)
+  default_colors        Json? // Array de HEX, ex: ["#FF0000", "#000000"]
+  inspiration_image_url String? @db.VarChar(500) // Foto que ele enviou de inspiração (salva em /uploads)
+
+  // Resultado Final
+  avatar_image_url String @db.VarChar(500) // Imagem final salva em /uploads
+
+  // Prompts e Personalidade (Para uso nos módulos seguintes de vídeo e áudio)
+  user_prompt   String? @db.Text
+  system_prompt String? @db.Text
+  personality   String? @db.Text // Traços de personalidade definidos
+
+  // Dados técnicos da geração (Importantíssimo para garantir consistência visual no futuro)
+  technical_metadata Json? // Ex: { "seed": 12345, "model": "dall-e-3", "cfg_scale": 7.5 }
+
+  status     avatar_status @default(ACTIVE)
+  created_at DateTime      @default(now()) @db.DateTime(0)
+  updated_at DateTime      @updatedAt @db.DateTime(0)
+
+  organizations organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatars_organization_id")
 
   @@index([organization_id, status], map: "idx_avatars_org_status")
 }
 
 // Histórico de gerações (Necessário para cobrar os Tokens de cada tentativa antes de salvar o final)
 model avatar_generations {
-  id                    String        @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id       String        @db.Char(36)
-  
-  user_prompt           String?       @db.Text
-  system_prompt         String?       @db.Text
-  is_realistic          Boolean
-  
-  inspiration_image_url String?       @db.VarChar(500)
-  result_image_url      String        @db.VarChar(500) // Temporário ou definitivo em /uploads
-  
-  technical_metadata    Json?
-  
-  // Cobrança
-  tokens_cost           Int           @default(0)
-  
-  created_at            DateTime      @default(now()) @db.DateTime(0)
+  id              String @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String @db.Char(36)
 
-  organizations         organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatar_generations_org_id")
+  user_prompt   String? @db.Text
+  system_prompt String? @db.Text
+  is_realistic  Boolean
+
+  inspiration_image_url String? @db.VarChar(500)
+  result_image_url      String  @db.VarChar(500) // Temporário ou definitivo em /uploads
+
+  technical_metadata Json?
+
+  // Cobrança
+  tokens_cost Int @default(0)
+
+  created_at DateTime @default(now()) @db.DateTime(0)
+
+  organizations organizations @relation(fields: [organization_id], references: [id], onDelete: Cascade, map: "fk_avatar_generations_org_id")
 
   @@index([organization_id, created_at], map: "idx_avatar_generations_org_created")
 }
-
 
 // ==========================================
 // ENUMS
@@ -956,7 +955,7 @@ model email_ab_tests {
   created_at        DateTime @default(now()) @db.DateTime(0)
   updated_at        DateTime @updatedAt @db.DateTime(0)
 
-  variants          email_ab_variants[]
+  variants email_ab_variants[]
 
   @@index([status, decision_at], map: "idx_ab_tests_due")
   @@index([project_id], map: "idx_ab_tests_project")
@@ -974,7 +973,7 @@ model email_ab_variants {
   recipients_count Int      @default(0)
   created_at       DateTime @default(now()) @db.DateTime(0)
 
-  test             email_ab_tests @relation(fields: [ab_test_id], references: [id], onDelete: Cascade)
+  test email_ab_tests @relation(fields: [ab_test_id], references: [id], onDelete: Cascade)
 
   @@index([ab_test_id], map: "idx_ab_variants_test")
 }
@@ -1115,6 +1114,7 @@ model telegram_payment_settings {
   pix_key         String?  @db.VarChar(255)
   webhook_secret  String?  @db.VarChar(64)
   checkout_config Json?
+  providers       Json?
   active          Boolean  @default(true)
   created_at      DateTime @default(now()) @db.DateTime(0)
   updated_at      DateTime @updatedAt @db.DateTime(0)
@@ -1242,18 +1242,18 @@ model telegram_flows {
 
 // Runtime: posição de cada usuário no fluxo inicial do bot.
 model telegram_flow_enrollments {
-  id                  String                        @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id     String                        @db.Char(36)
-  bot_id              String                        @db.Char(36)
-  contact_id          String?                       @db.Char(36)
-  tg_user_id          BigInt                        @db.BigInt
-  current_node_id     String?                       @db.VarChar(64)
-  status              telegram_flow_enroll_status   @default(ACTIVE)
+  id                  String                      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String                      @db.Char(36)
+  bot_id              String                      @db.Char(36)
+  contact_id          String?                     @db.Char(36)
+  tg_user_id          BigInt                      @db.BigInt
+  current_node_id     String?                     @db.VarChar(64)
+  status              telegram_flow_enroll_status @default(ACTIVE)
   context             Json?
-  last_interaction_at DateTime?                     @db.DateTime(0)
-  started_at          DateTime?                     @db.DateTime(0)
-  created_at          DateTime                      @default(now()) @db.DateTime(0)
-  updated_at          DateTime                      @updatedAt @db.DateTime(0)
+  last_interaction_at DateTime?                   @db.DateTime(0)
+  started_at          DateTime?                   @db.DateTime(0)
+  created_at          DateTime                    @default(now()) @db.DateTime(0)
+  updated_at          DateTime                    @updatedAt @db.DateTime(0)
 
   @@unique([bot_id, tg_user_id], map: "uk_tgflowenr_bot_user")
   @@index([organization_id], map: "idx_tgflowenr_org")
@@ -1296,40 +1296,40 @@ model telegram_broadcast_copies {
 }
 
 model telegram_broadcast_runs {
-  id              String                     @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String                     @db.Char(36)
-  broadcast_id    String                     @db.Char(36)
-  copy_id         String?                    @db.Char(36)
+  id              String                 @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                 @db.Char(36)
+  broadcast_id    String                 @db.Char(36)
+  copy_id         String?                @db.Char(36)
   messages        Json?
-  run_at          DateTime                   @db.DateTime(0)
-  status          telegram_bc_run_status     @default(QUEUED)
-  total           Int                        @default(0)
-  sent            Int                        @default(0)
-  failed          Int                        @default(0)
-  blocked         Int                        @default(0)
-  created_at      DateTime                   @default(now()) @db.DateTime(0)
-  updated_at      DateTime                   @updatedAt @db.DateTime(0)
+  run_at          DateTime               @db.DateTime(0)
+  status          telegram_bc_run_status @default(QUEUED)
+  total           Int                    @default(0)
+  sent            Int                    @default(0)
+  failed          Int                    @default(0)
+  blocked         Int                    @default(0)
+  created_at      DateTime               @default(now()) @db.DateTime(0)
+  updated_at      DateTime               @updatedAt @db.DateTime(0)
 
   @@unique([broadcast_id, run_at], map: "uk_tgbcrun")
   @@index([organization_id], map: "idx_tgbcrun_org")
 }
 
 model telegram_broadcast_sends {
-  id              String                   @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String                   @db.Char(36)
-  broadcast_id    String                   @db.Char(36)
-  run_id          String                   @db.Char(36)
-  bot_id          String                   @db.Char(36)
+  id              String                  @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String                  @db.Char(36)
+  broadcast_id    String                  @db.Char(36)
+  run_id          String                  @db.Char(36)
+  bot_id          String                  @db.Char(36)
   target_kind     telegram_bc_target_kind
-  tg_chat_id      BigInt                   @db.BigInt
-  contact_id      String?                  @db.Char(36)
-  group_id        String?                  @db.Char(36)
-  status          telegram_bc_send_status  @default(PENDING)
-  attempts        Int                      @default(0)
-  msg_index       Int                      @default(0) // próxima mensagem da copy a enviar (retomada de envio parcial)
-  last_error      String?                  @db.Text
-  created_at      DateTime                 @default(now()) @db.DateTime(3)
-  sent_at         DateTime?                @db.DateTime(0)
+  tg_chat_id      BigInt                  @db.BigInt
+  contact_id      String?                 @db.Char(36)
+  group_id        String?                 @db.Char(36)
+  status          telegram_bc_send_status @default(PENDING)
+  attempts        Int                     @default(0)
+  msg_index       Int                     @default(0) // próxima mensagem da copy a enviar (retomada de envio parcial)
+  last_error      String?                 @db.Text
+  created_at      DateTime                @default(now()) @db.DateTime(3)
+  sent_at         DateTime?               @db.DateTime(0)
 
   @@index([status, bot_id, id], map: "idx_tgbcsend_queue")
   @@index([run_id], map: "idx_tgbcsend_run")
@@ -1389,6 +1389,7 @@ model telegram_automation_enrollments {
   @@index([status, next_send_at], map: "idx_tgautomenr_due")
   @@index([organization_id], map: "idx_tgautomenr_org")
 }
+
 // ===== Pagamentos do Webchat (PIX no funil) =====
 // Arquivos de produto (PDF/vídeo/etc) ficam FORA de /uploads (não são públicos):
 // storage_path relativo a <cwd>/protected/. Download só com URL assinada.
@@ -1481,34 +1482,37 @@ model platform_payments {
 // ===== WhatsApp (via OpenWA) =====
 // 1 sessão por organização. `status` espelha o OpenWA: none|created|initializing|qr_ready|authenticating|ready|disconnected|action_required|failed
 model whatsapp_sessions {
-  id                String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id   String    @db.Char(36)
-  label             String?   @db.VarChar(80)
-  color             String?   @db.VarChar(16)
-  position          Int       @default(0)
-  bot_flow_id       String?   @db.Char(36)
-  openwa_session_id String?   @db.VarChar(64)
-  openwa_name       String?   @db.VarChar(64)
-  engine            String    @default("wwjs") @db.VarChar(16)
-  status            String    @default("none") @db.VarChar(24)
-  phone             String?   @db.VarChar(32)
-  push_name         String?   @db.VarChar(255)
-  webhook_id        String?   @db.VarChar(64)
-  webhook_secret    String?   @db.VarChar(128)
-  paired_at         DateTime? @db.DateTime(3)
-  last_status_at    DateTime? @db.DateTime(3)
-  last_event_at     DateTime? @db.DateTime(3)
-  last_qr_at        DateTime? @db.DateTime(3)
-  restricted_at     DateTime? @db.DateTime(3)
-  disconnected_at   DateTime? @db.DateTime(3)
-  last_restart_at   DateTime? @db.DateTime(3)
-  last_error        String?   @db.VarChar(500)
-  pacing_enabled    Boolean   @default(true)
-  warmup_ack_at     DateTime? @db.DateTime(3)
-  settings          Json?
-  created_at        DateTime  @default(now()) @db.DateTime(0)
-  updated_at        DateTime  @updatedAt @db.DateTime(0)
-  events            whatsapp_session_events[]
+  id                  String                    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String                    @db.Char(36)
+  label               String?                   @db.VarChar(80)
+  color               String?                   @db.VarChar(16)
+  position            Int                       @default(0)
+  bot_flow_id         String?                   @db.Char(36)
+  openwa_session_id   String?                   @db.VarChar(64)
+  openwa_name         String?                   @db.VarChar(64)
+  engine              String                    @default("wwjs") @db.VarChar(16)
+  status              String                    @default("none") @db.VarChar(24)
+  phone               String?                   @db.VarChar(32)
+  push_name           String?                   @db.VarChar(255)
+  webhook_id          String?                   @db.VarChar(64)
+  webhook_secret      String?                   @db.VarChar(128)
+  paired_at           DateTime?                 @db.DateTime(3)
+  last_status_at      DateTime?                 @db.DateTime(3)
+  last_event_at       DateTime?                 @db.DateTime(3)
+  last_qr_at          DateTime?                 @db.DateTime(3)
+  restricted_at       DateTime?                 @db.DateTime(3)
+  disconnected_at     DateTime?                 @db.DateTime(3)
+  last_restart_at     DateTime?                 @db.DateTime(3)
+  last_error          String?                   @db.VarChar(500)
+  pacing_enabled      Boolean                   @default(true)
+  warmup_ack_at       DateTime?                 @db.DateTime(3)
+  settings            Json?
+  outbox_paused_at    DateTime?                 @db.DateTime(3)
+  outbox_pause_reason String?                   @db.VarChar(255)
+  outbox_per_minute   Int?
+  created_at          DateTime                  @default(now()) @db.DateTime(0)
+  updated_at          DateTime                  @updatedAt @db.DateTime(0)
+  events              whatsapp_session_events[]
 
   @@index([organization_id, position], map: "idx_wasess_org_pos")
   @@index([openwa_session_id], map: "idx_wasess_openwa")
@@ -1547,32 +1551,32 @@ model whatsapp_media {
 
 // Contato conhecido pela org. `saved` = guardado na organização (sobrevive à troca de número).
 model whatsapp_contacts {
-  id                   String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id      String    @db.Char(36)
-  wa_id                String    @db.VarChar(64)
-  phone                String?   @db.VarChar(32)
-  lid                  String?   @db.VarChar(64)
-  name                 String?   @db.VarChar(255)
-  push_name            String?   @db.VarChar(255)
-  is_business          Boolean   @default(false)
-  is_my_contact        Boolean   @default(false)
-  is_blocked           Boolean   @default(false)
-  wa_exists            Boolean?
-  wa_checked_at        DateTime? @db.DateTime(3)
-  blocked_us_at        DateTime? @db.DateTime(3)
-  opted_out_at         DateTime? @db.DateTime(3)
-  saved                Boolean   @default(false)
-  tags                 Json?
-  notes                String?   @db.VarChar(500)
-  source               String    @default("session") @db.VarChar(16)
-  profile_pic_media_id String?   @db.Char(36)
-  profile_pic_url      String?   @db.VarChar(500)
-  profile_pic_checked_at DateTime? @db.DateTime(3)
-  last_message_at      DateTime? @db.DateTime(3)
-  synced_at            DateTime? @db.DateTime(3)
-  created_at           DateTime  @default(now()) @db.DateTime(0)
-  updated_at           DateTime  @updatedAt @db.DateTime(0)
-  sessions             whatsapp_contact_sessions[]
+  id                     String                      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id        String                      @db.Char(36)
+  wa_id                  String                      @db.VarChar(64)
+  phone                  String?                     @db.VarChar(32)
+  lid                    String?                     @db.VarChar(64)
+  name                   String?                     @db.VarChar(255)
+  push_name              String?                     @db.VarChar(255)
+  is_business            Boolean                     @default(false)
+  is_my_contact          Boolean                     @default(false)
+  is_blocked             Boolean                     @default(false)
+  wa_exists              Boolean?
+  wa_checked_at          DateTime?                   @db.DateTime(3)
+  blocked_us_at          DateTime?                   @db.DateTime(3)
+  opted_out_at           DateTime?                   @db.DateTime(3)
+  saved                  Boolean                     @default(false)
+  tags                   Json?
+  notes                  String?                     @db.VarChar(500)
+  source                 String                      @default("session") @db.VarChar(16)
+  profile_pic_media_id   String?                     @db.Char(36)
+  profile_pic_url        String?                     @db.VarChar(500)
+  profile_pic_checked_at DateTime?                   @db.DateTime(3)
+  last_message_at        DateTime?                   @db.DateTime(3)
+  synced_at              DateTime?                   @db.DateTime(3)
+  created_at             DateTime                    @default(now()) @db.DateTime(0)
+  updated_at             DateTime                    @updatedAt @db.DateTime(0)
+  sessions               whatsapp_contact_sessions[]
 
   @@unique([organization_id, wa_id], map: "uk_wacontact_org_wa")
   @@index([organization_id, phone], map: "idx_wacontact_org_phone")
@@ -1607,7 +1611,7 @@ model whatsapp_contact_sessions {
 model whatsapp_chats {
   id                     String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id        String    @db.Char(36)
-  session_id             String     @db.Char(36)
+  session_id             String    @db.Char(36)
   chat_id                String    @db.VarChar(64)
   kind                   String    @default("individual") @db.VarChar(16)
   name                   String?   @db.VarChar(255)
@@ -1672,7 +1676,7 @@ model whatsapp_quick_replies {
 model whatsapp_service_events {
   id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String   @db.Char(36)
-  session_id      String?   @db.Char(36)
+  session_id      String?  @db.Char(36)
   chat_id         String   @db.VarChar(64)
   event           String   @db.VarChar(32)
   user_id         String?  @db.Char(36)
@@ -1700,7 +1704,7 @@ model whatsapp_bot_flows {
 model whatsapp_bot_sessions {
   id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String    @db.Char(36)
-  session_id      String     @db.Char(36)
+  session_id      String    @db.Char(36)
   chat_id         String    @db.VarChar(64)
   flow_id         String?   @db.Char(36)
   node_id         String?   @db.VarChar(64)
@@ -1719,7 +1723,7 @@ model whatsapp_bot_sessions {
 model whatsapp_payments {
   id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id    String    @db.Char(36)
-  session_id         String?    @db.Char(36)
+  session_id         String?   @db.Char(36)
   chat_id            String    @db.VarChar(64)
   bot_session_id     String?   @db.Char(36)
   node_id            String?   @db.VarChar(64)
@@ -1742,31 +1746,31 @@ model whatsapp_payments {
 }
 
 model whatsapp_messages {
-  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String    @db.Char(36)
-  session_id      String     @db.Char(36)
-  chat_id         String    @db.VarChar(64)
-  wa_message_id   String    @db.VarChar(191)
-  direction       String    @db.VarChar(4)
-  type            String    @default("text") @db.VarChar(16)
-  body            String?   @db.Text
-  media_id        String?   @db.Char(36)
-  media_omitted   Boolean   @default(false)
-  from_jid        String?   @db.VarChar(64)
-  sender_name     String?   @db.VarChar(255)
-  quoted_wa_id    String?   @db.VarChar(191)
-  quoted_preview  String?   @db.Text
-  forwarded       Boolean   @default(false)
-  ack             Int       @default(0) @db.TinyInt
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  session_id      String   @db.Char(36)
+  chat_id         String   @db.VarChar(64)
+  wa_message_id   String   @db.VarChar(191)
+  direction       String   @db.VarChar(4)
+  type            String   @default("text") @db.VarChar(16)
+  body            String?  @db.Text
+  media_id        String?  @db.Char(36)
+  media_omitted   Boolean  @default(false)
+  from_jid        String?  @db.VarChar(64)
+  sender_name     String?  @db.VarChar(255)
+  quoted_wa_id    String?  @db.VarChar(191)
+  quoted_preview  String?  @db.Text
+  forwarded       Boolean  @default(false)
+  ack             Int      @default(0) @db.TinyInt
   reactions       Json?
-  edited          Boolean   @default(false)
-  revoked         Boolean   @default(false)
+  edited          Boolean  @default(false)
+  revoked         Boolean  @default(false)
   extra           Json?
-  error           String?   @db.VarChar(255)
-  sent_by_user_id String?   @db.Char(36)
-  timestamp       DateTime  @db.DateTime(3)
-  created_at      DateTime  @default(now()) @db.DateTime(3)
-  updated_at      DateTime  @default(now()) @updatedAt @db.DateTime(3)
+  error           String?  @db.VarChar(255)
+  sent_by_user_id String?  @db.Char(36)
+  timestamp       DateTime @db.DateTime(3)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+  updated_at      DateTime @default(now()) @updatedAt @db.DateTime(3)
 
   @@unique([organization_id, session_id, wa_message_id], map: "uk_wamsg_org_sess_wa")
   @@index([session_id, chat_id, timestamp], map: "idx_wamsg_sess_chat_ts")
@@ -1779,7 +1783,7 @@ model whatsapp_messages {
 model whatsapp_statuses {
   id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String    @db.Char(36)
-  session_id      String     @db.Char(36)
+  session_id      String    @db.Char(36)
   batch_id        String?   @db.Char(36)
   type            String    @default("text") @db.VarChar(8)
   body            String?   @db.Text
@@ -1801,26 +1805,26 @@ model whatsapp_statuses {
 
 // Broadcasts (espelho do Telegram): targets {contacts:'saved'|'all'|[ids], tags:[], groups:[chat_ids]}, times[] = minuto-do-dia BRT
 model whatsapp_broadcasts {
-  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String    @db.Char(36)
-  name            String    @db.VarChar(255)
-  session_ids     Json?
-  distribution    String    @default("shared") @db.VarChar(16)
-  pacing          Json?
-  targets         Json?
-  times           Json?
-  mode            String    @default("sequential") @db.VarChar(16)
-  delete_used     Boolean   @default(false)
-  randomize_copies Boolean  @default(false)
+  id                    String                      @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id       String                      @db.Char(36)
+  name                  String                      @db.VarChar(255)
+  session_ids           Json?
+  distribution          String                      @default("shared") @db.VarChar(16)
+  pacing                Json?
+  targets               Json?
+  times                 Json?
+  mode                  String                      @default("sequential") @db.VarChar(16)
+  delete_used           Boolean                     @default(false)
+  randomize_copies      Boolean                     @default(false)
   exclude_inactive_days Int?
-  active          Boolean   @default(false)
-  last_copy_index Int       @default(0)
-  interval_ms     Int       @default(4000)
-  risk_ack_at     DateTime? @db.DateTime(3)
-  created_at      DateTime  @default(now()) @db.DateTime(0)
-  updated_at      DateTime  @updatedAt @db.DateTime(0)
-  copies          whatsapp_broadcast_copies[]
-  runs            whatsapp_broadcast_runs[]
+  active                Boolean                     @default(false)
+  last_copy_index       Int                         @default(0)
+  interval_ms           Int                         @default(4000)
+  risk_ack_at           DateTime?                   @db.DateTime(3)
+  created_at            DateTime                    @default(now()) @db.DateTime(0)
+  updated_at            DateTime                    @updatedAt @db.DateTime(0)
+  copies                whatsapp_broadcast_copies[]
+  runs                  whatsapp_broadcast_runs[]
 
   @@index([organization_id], map: "idx_wabc_org")
 }
@@ -1838,27 +1842,27 @@ model whatsapp_broadcast_copies {
 }
 
 model whatsapp_broadcast_runs {
-  id              String              @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  broadcast_id    String              @db.Char(36)
-  organization_id String              @db.Char(36)
-  run_at          DateTime            @db.DateTime(0)
-  copy_id         String?             @db.Char(36)
+  id              String                     @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  broadcast_id    String                     @db.Char(36)
+  organization_id String                     @db.Char(36)
+  run_at          DateTime                   @db.DateTime(0)
+  copy_id         String?                    @db.Char(36)
   by_session      Json?
   messages        Json?
   copies          Json?
-  total           Int                 @default(0)
-  sent            Int                 @default(0)
-  failed          Int                 @default(0)
-  blocked         Int                 @default(0)
-  skipped         Int                 @default(0)
-  replied         Int                 @default(0)
-  status          String              @default("running") @db.VarChar(12)
-  paused_at       DateTime?           @db.DateTime(3)
-  pause_reason    String?             @db.VarChar(255)
-  forced_at       DateTime?           @db.DateTime(3)
-  finished_at     DateTime?           @db.DateTime(3)
-  created_at      DateTime            @default(now()) @db.DateTime(3)
-  broadcast       whatsapp_broadcasts @relation(fields: [broadcast_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcrun_bc")
+  total           Int                        @default(0)
+  sent            Int                        @default(0)
+  failed          Int                        @default(0)
+  blocked         Int                        @default(0)
+  skipped         Int                        @default(0)
+  replied         Int                        @default(0)
+  status          String                     @default("running") @db.VarChar(12)
+  paused_at       DateTime?                  @db.DateTime(3)
+  pause_reason    String?                    @db.VarChar(255)
+  forced_at       DateTime?                  @db.DateTime(3)
+  finished_at     DateTime?                  @db.DateTime(3)
+  created_at      DateTime                   @default(now()) @db.DateTime(3)
+  broadcast       whatsapp_broadcasts        @relation(fields: [broadcast_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_wabcrun_bc")
   sends           whatsapp_broadcast_sends[]
 
   @@unique([broadcast_id, run_at], map: "uk_wabcrun_bc_at")
@@ -1869,7 +1873,7 @@ model whatsapp_broadcast_runs {
 model whatsapp_broadcast_sends {
   id              String                  @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String                  @db.Char(36)
-  session_id      String?                  @db.Char(36)
+  session_id      String?                 @db.Char(36)
   broadcast_id    String                  @db.Char(36)
   run_id          String                  @db.Char(36)
   target_kind     String                  @db.VarChar(8)
@@ -1910,7 +1914,7 @@ model whatsapp_chat_filters {
 model whatsapp_schedules {
   id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String    @db.Char(36)
-  session_id      String     @db.Char(36)
+  session_id      String    @db.Char(36)
   batch_id        String?   @db.Char(36)
   mode            String    @default("all") @db.VarChar(8)
   targets         Json?
@@ -1931,7 +1935,7 @@ model whatsapp_schedules {
 model whatsapp_contact_statuses {
   id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id  String    @db.Char(36)
-  session_id       String     @db.Char(36)
+  session_id       String    @db.Char(36)
   wa_status_id     String    @db.VarChar(191)
   contact_jid      String    @db.VarChar(64)
   chat_id          String    @db.VarChar(64)
@@ -1959,107 +1963,253 @@ model whatsapp_crm_settings {
   charge          Json?
   pipeline        Json?
   service         Json?
+  identity        Json?
+  scheduling      Json?
+  tickets         Json?
+  orders          Json?
   updated_at      DateTime @updatedAt @db.DateTime(0)
 }
 
 model whatsapp_products {
-  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String   @db.Char(36)
-  name            String   @db.VarChar(120)
-  description     String?  @db.VarChar(500)
-  price_cents     Int      @default(0)
-  billing         String   @default("once") @db.VarChar(16)
-  active          Boolean  @default(true)
-  position        Int      @default(0)
-  created_at      DateTime @default(now()) @db.DateTime(0)
-  updated_at      DateTime @updatedAt @db.DateTime(0)
+  id                      String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id         String   @db.Char(36)
+  name                    String   @db.VarChar(120)
+  description             String?  @db.VarChar(500)
+  price_cents             Int      @default(0)
+  billing                 String   @default("once") @db.VarChar(16)
+  kind                    String   @default("product") @db.VarChar(16)
+  duration_minutes        Int?     @db.SmallInt
+  buffer_after_minutes    Int      @default(0) @db.SmallInt
+  capacity                Int      @default(1) @db.SmallInt
+  booking                 Json?
+  included_in_plans       Json?
+  trial_days              Int      @default(0) @db.SmallInt
+  grace_days              Int      @default(0) @db.SmallInt
+  prorate                 Boolean  @default(true)
+  cancel_policy           String   @default("end_of_cycle") @db.VarChar(16)
+  billing_interval_months Int?     @db.TinyInt
+  charge_days_before      Int?     @db.TinyInt
+  reminder_rules          Json?
+  entitlement             Json?
+  custom                  Json?
+  category                String?  @db.VarChar(64)
+  installments_max        Int?     @db.TinyInt
+  active                  Boolean  @default(true)
+  position                Int      @default(0)
+  created_at              DateTime @default(now()) @db.DateTime(0)
+  updated_at              DateTime @updatedAt @db.DateTime(0)
 
   @@index([organization_id, active, position], map: "idx_waprod_org")
 }
 
 model whatsapp_customers {
-  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String    @db.Char(36)
-  contact_id      String    @db.Char(36)
-  name            String    @db.VarChar(255)
-  doc             String?   @db.VarChar(20)
-  email           String?   @db.VarChar(255)
-  address         Json?
-  notes           String?   @db.Text
-  custom          Json?
-  status          String    @default("active") @db.VarChar(16)
-  since           DateTime? @db.Date
-  created_by      String?   @db.Char(36)
-  created_at      DateTime  @default(now()) @db.DateTime(0)
-  updated_at      DateTime  @updatedAt @db.DateTime(0)
+  id                 String                       @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String                       @db.Char(36)
+  contact_id         String                       @db.Char(36)
+  name               String                       @db.VarChar(255)
+  code               String?                      @db.VarChar(32)
+  kind               String                       @default("person") @db.VarChar(8)
+  parent_customer_id String?                      @db.Char(36)
+  doc                String?                      @db.Text
+  doc_hash           String?                      @db.Char(64)
+  email              String?                      @db.VarChar(255)
+  address            Json?
+  unit_id            String?                      @db.Char(36)
+  external_id        String?                      @db.VarChar(64)
+  addresses          Json?
+  erased_at          DateTime?                    @db.DateTime(3)
+  notes              String?                      @db.Text
+  custom             Json?
+  provider_refs      Json?
+  status             String                       @default("active") @db.VarChar(16)
+  source             String                       @default("panel") @db.VarChar(16)
+  since              DateTime?                    @db.Date
+  created_by         String?                      @db.Char(36)
+  created_at         DateTime                     @default(now()) @db.DateTime(0)
+  updated_at         DateTime                     @updatedAt @db.DateTime(0)
+  contacts           whatsapp_customer_contacts[]
 
-  @@unique([organization_id, contact_id], map: "uk_wacust_contact")
+  @@unique([organization_id, code], map: "uk_wacust_org_code")
+  @@unique([organization_id, external_id], map: "uk_wacust_org_external")
+  @@index([organization_id, unit_id], map: "idx_wacust_org_unit")
+  @@index([contact_id], map: "idx_wacust_contact")
   @@index([organization_id, status], map: "idx_wacust_org_status")
   @@index([organization_id, name], map: "idx_wacust_org_name")
+  @@index([organization_id, doc_hash], map: "idx_wacust_org_dochash")
+  @@index([parent_customer_id], map: "idx_wacust_parent")
+}
+
+/// Vínculo cliente ↔ número (contato). `role`: owner | financial | user | dependent. `linked_by`: panel | bot | import | api.
+model whatsapp_customer_contacts {
+  customer_id String             @db.Char(36)
+  contact_id  String             @db.Char(36)
+  role        String             @default("owner") @db.VarChar(16)
+  linked_by   String             @default("panel") @db.VarChar(8)
+  created_at  DateTime           @default(now()) @db.DateTime(3)
+  customer    whatsapp_customers @relation(fields: [customer_id], references: [id], onDelete: Cascade, map: "fk_wacustcont_customer")
+
+  @@id([customer_id, contact_id])
+  @@index([contact_id], map: "idx_wacustcont_contact")
 }
 
 model whatsapp_subscriptions {
-  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id String    @db.Char(36)
-  customer_id     String    @db.Char(36)
-  product_id      String?   @db.Char(36)
-  product_name    String    @db.VarChar(120)
-  price_cents     Int       @default(0)
-  billing         String    @default("monthly") @db.VarChar(16)
-  due_day         Int?      @db.TinyInt
-  status          String    @default("active") @db.VarChar(16)
-  started_at      DateTime? @db.Date
-  next_due_at     DateTime? @db.Date
-  last_paid_at    DateTime? @db.DateTime(3)
-  canceled_at     DateTime? @db.DateTime(3)
-  notes           String?   @db.VarChar(500)
-  created_at      DateTime  @default(now()) @db.DateTime(0)
-  updated_at      DateTime  @updatedAt @db.DateTime(0)
+  id                String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id   String    @db.Char(36)
+  customer_id       String    @db.Char(36)
+  product_id        String?   @db.Char(36)
+  product_name      String    @db.VarChar(120)
+  price_cents       Int       @default(0)
+  billing           String    @default("monthly") @db.VarChar(16)
+  due_day           Int?      @db.TinyInt
+  status            String    @default("active") @db.VarChar(16)
+  started_at        DateTime? @db.Date
+  next_due_at       DateTime? @db.Date
+  trial_ends_at     DateTime? @db.Date
+  paused_until      DateTime? @db.Date
+  cancel_at         DateTime? @db.Date
+  cancel_reason     String?   @db.VarChar(255)
+  coupon_id         String?   @db.Char(36)
+  discount_cents    Int       @default(0)
+  discount_until    DateTime? @db.Date
+  custom            Json?
+  external_id       String?   @db.VarChar(64)
+  contract_number   String?   @db.VarChar(64)
+  source            String    @default("panel") @db.VarChar(16)
+  payment_method    String?   @db.VarChar(8)
+  payment_method_id String?   @db.Char(36)
+  last_paid_at      DateTime? @db.DateTime(3)
+  canceled_at       DateTime? @db.DateTime(3)
+  notes             String?   @db.VarChar(500)
+  created_at        DateTime  @default(now()) @db.DateTime(0)
+  updated_at        DateTime  @updatedAt @db.DateTime(0)
 
   @@index([customer_id, status], map: "idx_wasub_customer")
   @@index([organization_id, status, next_due_at], map: "idx_wasub_org_due")
   @@index([product_id], map: "idx_wasub_product")
+  @@index([organization_id, external_id], map: "idx_wasub_org_external")
+  @@index([status, cancel_at], map: "idx_wasub_cancel_at")
+  @@index([status, paused_until], map: "idx_wasub_paused")
+  @@index([organization_id, next_due_at], map: "idx_wasub_org_next_due")
+  @@index([organization_id, cancel_at], map: "idx_wasub_org_cancel_at")
+  @@index([organization_id, paused_until], map: "idx_wasub_org_paused")
+}
+
+/// Cupom de desconto (Fase 3). `kind`: percent | fixed (centavos). `duration`: once | months | forever.
+model whatsapp_coupons {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  code            String    @db.VarChar(32)
+  kind            String    @default("percent") @db.VarChar(8)
+  value           Int       @default(0)
+  duration        String    @default("once") @db.VarChar(8)
+  months          Int?      @db.TinyInt
+  max_uses        Int?
+  used            Int       @default(0)
+  product_ids     Json?
+  expires_at      DateTime? @db.Date
+  active          Boolean   @default(true)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @updatedAt @db.DateTime(3)
+
+  @@unique([organization_id, code], map: "uk_wacoupon_org_code")
+  @@index([organization_id, active], map: "idx_wacoupon_org_active")
+}
+
+/// Auditoria da assinatura (FK só no banco: ON DELETE CASCADE). `kind`: created|trial_started|activated|paid|overdue|paused|resumed|plan_changed|canceled|reactivated|price_changed|coupon_applied.
+model whatsapp_subscription_events {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  subscription_id String   @db.Char(36)
+  kind            String   @db.VarChar(32)
+  data            Json?
+  user_id         String?  @db.Char(36)
+  source          String   @default("system") @db.VarChar(16)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([subscription_id, created_at], map: "idx_wasubev_sub")
+  @@index([organization_id, created_at], map: "idx_wasubev_org")
+}
+
+/// Fila de envio com ritmo (cobranças recorrentes, lembretes, avisos de assinatura). `status`: pending|sending|sent|failed|canceled.
+model whatsapp_outbox {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  session_id      String    @db.Char(36)
+  chat_id         String    @db.VarChar(64)
+  kind            String    @db.VarChar(32)
+  payload         Json
+  run_at          DateTime  @default(now()) @db.DateTime(3)
+  status          String    @default("pending") @db.VarChar(16)
+  attempts        Int       @default(0) @db.TinyInt
+  last_error      String?   @db.VarChar(255)
+  dedupe_key      String?   @db.VarChar(120)
+  sent_at         DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@unique([organization_id, dedupe_key], map: "uk_waoutbox_dedupe")
+  @@index([status, run_at], map: "idx_waoutbox_due")
+  @@index([session_id, status], map: "idx_waoutbox_session")
+  @@index([organization_id, status], map: "idx_waoutbox_org")
+  @@index([organization_id, created_at], map: "idx_waoutbox_org_created")
 }
 
 model whatsapp_charges {
-  id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  organization_id  String    @db.Char(36)
-  session_id       String?    @db.Char(36)
-  customer_id      String    @db.Char(36)
-  subscription_id  String?   @db.Char(36)
-  product_id       String?   @db.Char(36)
-  chat_id          String    @db.VarChar(64)
-  kind             String    @default("pix") @db.VarChar(8)
-  amount_cents     Int
-  description      String    @db.VarChar(255)
-  due_at           DateTime  @db.Date
-  status           String    @default("PENDING") @db.VarChar(16)
-  origin           String    @default("manual") @db.VarChar(16)
-  provider         String?   @db.VarChar(32)
-  pix_charge_id    String?   @db.VarChar(128)
-  pix_code         String?   @db.Text
-  pix_qr_media_id  String?   @db.Char(36)
-  pix_expires_at   DateTime? @db.DateTime(3)
-  boleto_charge_id String?   @db.VarChar(128)
-  boleto_url       String?   @db.VarChar(500)
-  boleto_barcode   String?   @db.VarChar(80)
-  boleto_digitable String?   @db.VarChar(80)
-  boleto_expires_at DateTime? @db.DateTime(3)
-  paid_via         String?   @db.VarChar(16)
-  paid_at          DateTime? @db.DateTime(3)
-  paid_manual_by   String?   @db.Char(36)
-  sent_at          DateTime? @db.DateTime(3)
-  reminders        Json?
-  error            String?   @db.VarChar(255)
-  created_by       String?   @db.Char(36)
-  created_at       DateTime  @default(now()) @db.DateTime(3)
-  updated_at       DateTime  @updatedAt @db.DateTime(3)
+  id                   String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id      String    @db.Char(36)
+  session_id           String?   @db.Char(36)
+  customer_id          String    @db.Char(36)
+  subscription_id      String?   @db.Char(36)
+  product_id           String?   @db.Char(36)
+  chat_id              String    @db.VarChar(64)
+  kind                 String    @default("pix") @db.VarChar(8)
+  amount_cents         Int
+  base_amount_cents    Int?
+  description          String    @db.VarChar(255)
+  due_at               DateTime  @db.Date
+  status               String    @default("PENDING") @db.VarChar(16)
+  origin               String    @default("manual") @db.VarChar(16)
+  purpose              String?   @db.VarChar(16)
+  provider             String?   @db.VarChar(32)
+  pix_provider         String?   @db.VarChar(32)
+  boleto_provider      String?   @db.VarChar(32)
+  card_provider        String?   @db.VarChar(32)
+  pix_charge_id        String?   @db.VarChar(128)
+  pix_code             String?   @db.Text
+  pix_qr_media_id      String?   @db.Char(36)
+  pix_expires_at       DateTime? @db.DateTime(3)
+  boleto_charge_id     String?   @db.VarChar(128)
+  boleto_url           String?   @db.VarChar(500)
+  boleto_barcode       String?   @db.VarChar(80)
+  boleto_digitable     String?   @db.VarChar(80)
+  boleto_expires_at    DateTime? @db.DateTime(3)
+  card_charge_id       String?   @db.VarChar(128)
+  card_url             String?   @db.VarChar(500)
+  card_attempts        Int       @default(0) @db.TinyInt
+  card_next_attempt_at DateTime? @db.DateTime(3)
+  card_error           String?   @db.VarChar(255)
+  payment_method_id    String?   @db.Char(36)
+  installments         Int?      @db.TinyInt
+  pay_link_token       String?   @unique(map: "uk_wachg_paylink") @db.VarChar(40)
+  paid_via             String?   @db.VarChar(16)
+  custom               Json?
+  paid_at              DateTime? @db.DateTime(3)
+  paid_manual_by       String?   @db.Char(36)
+  sent_at              DateTime? @db.DateTime(3)
+  reminders            Json?
+  error                String?   @db.VarChar(255)
+  created_by           String?   @db.Char(36)
+  bot_flow_id          String?   @db.Char(36)
+  bot_node_id          String?   @db.VarChar(64)
+  created_at           DateTime  @default(now()) @db.DateTime(3)
+  updated_at           DateTime  @updatedAt @db.DateTime(3)
 
   @@index([organization_id, status, due_at], map: "idx_wachg_org_status_due")
   @@index([customer_id, created_at], map: "idx_wachg_customer")
   @@index([subscription_id, due_at], map: "idx_wachg_sub_due")
   @@index([pix_charge_id], map: "idx_wachg_pix")
   @@index([boleto_charge_id], map: "idx_wachg_boleto")
+  @@index([card_charge_id], map: "idx_wachg_card")
+  @@index([status, card_next_attempt_at], map: "idx_wachg_card_retry")
 }
 
 // Plugin WordPress "Tradutor Invisível" vinculado à conta (FKs só no banco, ON DELETE CASCADE).
@@ -2079,21 +2229,21 @@ model wp_plugin_licenses {
 }
 
 model wp_plugin_sites {
-  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
-  license_id      String   @db.Char(36)
-  organization_id String   @db.Char(36)
-  site_host       String   @db.VarChar(190)
-  site_url        String   @db.VarChar(255)
-  plugin          String   @default("tradutor-invisivel") @db.VarChar(40)
-  plugin_version  String?  @db.VarChar(20)
-  wp_version      String?  @db.VarChar(20)
-  php_version     String?  @db.VarChar(20)
-  last_active     Boolean  @default(true)
-  checks          Int      @default(0)
-  first_seen_at   DateTime @default(now()) @db.DateTime(3)
-  last_seen_at    DateTime @default(now()) @db.DateTime(3)
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  license_id      String    @db.Char(36)
+  organization_id String    @db.Char(36)
+  site_host       String    @db.VarChar(190)
+  site_url        String    @db.VarChar(255)
+  plugin          String    @default("tradutor-invisivel") @db.VarChar(40)
+  plugin_version  String?   @db.VarChar(20)
+  wp_version      String?   @db.VarChar(20)
+  php_version     String?   @db.VarChar(20)
+  last_active     Boolean   @default(true)
+  checks          Int       @default(0)
+  first_seen_at   DateTime  @default(now()) @db.DateTime(3)
+  last_seen_at    DateTime  @default(now()) @db.DateTime(3)
   // Push In Play (11/10/2026): nome do site + último resumo de métricas enviado pelo plugin (JSON) e quando.
-  site_name       String?  @db.VarChar(120)
+  site_name       String?   @db.VarChar(120)
   stats           Json?
   stats_at        DateTime? @db.DateTime(3)
 
@@ -2143,7 +2293,7 @@ model whatsapp_pipeline_stages {
 model whatsapp_tasks {
   id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id  String    @db.Char(36)
-  session_id       String?    @db.Char(36)
+  session_id       String?   @db.Char(36)
   title            String    @db.VarChar(160)
   description      String?   @db.Text
   due_at           DateTime? @db.DateTime(3)
@@ -2165,7 +2315,7 @@ model whatsapp_tasks {
 model whatsapp_chat_notes {
   id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String   @db.Char(36)
-  session_id      String?   @db.Char(36)
+  session_id      String?  @db.Char(36)
   chat_id         String   @db.VarChar(64)
   user_id         String?  @db.Char(36)
   text            String   @db.Text
@@ -2180,7 +2330,7 @@ model whatsapp_chat_notes {
 model whatsapp_ratings {
   id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
   organization_id String    @db.Char(36)
-  session_id      String?    @db.Char(36)
+  session_id      String?   @db.Char(36)
   chat_id         String    @db.VarChar(64)
   user_id         String?   @db.Char(36)
   score           Int?      @db.TinyInt
@@ -2309,4 +2459,419 @@ model notification_custom {
 
   @@index([organization_id, created_at], map: "idx_notifcustom_org")
   @@index([schedule_at, sent_at], map: "idx_notifcustom_sched")
+}
+
+model whatsapp_payment_methods {
+  id                     String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id        String    @db.Char(36)
+  customer_id            String    @db.Char(36)
+  provider               String    @db.VarChar(32)
+  provider_customer_id   String?   @db.VarChar(64)
+  provider_token         String    @db.Text
+  brand                  String?   @db.VarChar(32)
+  last4                  String?   @db.VarChar(4)
+  status                 String    @default("active") @db.VarChar(16)
+  failures               Int       @default(0) @db.TinyInt
+  last_used_at           DateTime? @db.DateTime(3)
+  created_from_charge_id String?   @db.Char(36)
+  created_at             DateTime  @default(now()) @db.DateTime(3)
+  updated_at             DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([customer_id, status], map: "idx_wapaymeth_customer")
+  @@index([organization_id, status], map: "idx_wapaymeth_org")
+}
+
+// ---- Fase 5 do plano de assinaturas: direito de acesso, API pública e webhooks de saída
+model whatsapp_entitlements {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  customer_id     String    @db.Char(36)
+  subscription_id String?   @db.Char(36)
+  product_id      String?   @db.Char(36)
+  rule_id         String    @db.VarChar(16)
+  kind            String    @db.VarChar(32)
+  ref             String    @db.VarChar(255)
+  label           String?   @db.VarChar(120)
+  session_id      String?   @db.Char(36)
+  target          String    @default("") @db.VarChar(64)
+  desired         String    @default("active") @db.VarChar(16)
+  status          String    @default("pending") @db.VarChar(16)
+  attempts        Int       @default(0) @db.TinyInt
+  next_try_at     DateTime? @db.DateTime(3)
+  error           String?   @db.VarChar(255)
+  last_sync_at    DateTime? @db.DateTime(3)
+  activated_at    DateTime? @db.DateTime(3)
+  suspended_at    DateTime? @db.DateTime(3)
+  revoked_at      DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @updatedAt @db.DateTime(3)
+
+  @@unique([subscription_id, rule_id, target], map: "uk_waent_sub_rule_target")
+  @@index([organization_id, customer_id], map: "idx_waent_org_customer")
+  @@index([status, desired, next_try_at], map: "idx_waent_work")
+}
+
+model org_api_keys {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  name            String    @db.VarChar(80)
+  key_prefix      String    @db.VarChar(16)
+  key_hash        String    @unique(map: "uk_orgapikey_hash") @db.Char(64)
+  scopes          Json?
+  created_by      String?   @db.Char(36)
+  last_used_at    DateTime? @db.DateTime(3)
+  last_ip         String?   @db.VarChar(64)
+  revoked_at      DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+
+  @@index([organization_id], map: "idx_orgapikey_org")
+}
+
+model org_webhooks {
+  id               String                   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String                   @db.Char(36)
+  name             String                   @db.VarChar(80)
+  url              String                   @db.VarChar(500)
+  secret           String                   @db.Text
+  events           Json?
+  active           Boolean                  @default(true)
+  failures         Int                      @default(0)
+  last_status      Int?
+  last_error       String?                  @db.VarChar(255)
+  last_delivery_at DateTime?                @db.DateTime(3)
+  created_at       DateTime                 @default(now()) @db.DateTime(3)
+  updated_at       DateTime                 @updatedAt @db.DateTime(3)
+  deliveries       org_webhook_deliveries[]
+
+  @@index([organization_id], map: "idx_orgwh_org")
+}
+
+model org_webhook_deliveries {
+  id              String       @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String       @db.Char(36)
+  webhook_id      String       @db.Char(36)
+  event           String       @db.VarChar(64)
+  payload         String       @db.LongText
+  status          String       @default("pending") @db.VarChar(16)
+  attempts        Int          @default(0) @db.TinyInt
+  next_try_at     DateTime?    @db.DateTime(3)
+  last_status     Int?
+  last_error      String?      @db.VarChar(255)
+  duration_ms     Int?
+  delivered_at    DateTime?    @db.DateTime(3)
+  created_at      DateTime     @default(now()) @db.DateTime(3)
+  updated_at      DateTime     @updatedAt @db.DateTime(3)
+  webhook         org_webhooks @relation(fields: [webhook_id], references: [id], onDelete: Cascade, map: "fk_orgwhd_webhook")
+
+  @@index([status, next_try_at], map: "idx_orgwhd_work")
+  @@index([webhook_id, created_at], map: "idx_orgwhd_hook_created")
+  @@index([organization_id, created_at], map: "idx_orgwhd_org_created")
+}
+
+// ---- Fase 6: agendamento com pagamento
+model whatsapp_resources {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(120)
+  kind            String   @default("person") @db.VarChar(16)
+  session_id      String?  @db.Char(36)
+  user_id         String?  @db.Char(36)
+  color           String?  @db.VarChar(7)
+  photo_media_id  String?  @db.Char(36)
+  services        Json?
+  availability    Json?
+  active          Boolean  @default(true)
+  position        Int      @default(0)
+  ics_token       String?  @unique(map: "uk_wares_ics") @db.VarChar(40)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+  updated_at      DateTime @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, active, position], map: "idx_wares_org")
+}
+
+model whatsapp_resource_blocks {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  resource_id     String?  @db.Char(36)
+  starts_at       DateTime @db.DateTime(3)
+  ends_at         DateTime @db.DateTime(3)
+  reason          String?  @db.VarChar(120)
+  created_by      String?  @db.Char(36)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, starts_at], map: "idx_wablk_org_start")
+  @@index([resource_id, starts_at], map: "idx_wablk_res_start")
+}
+
+model whatsapp_appointments {
+  id               String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id  String    @db.Char(36)
+  session_id       String?   @db.Char(36)
+  chat_id          String?   @db.VarChar(64)
+  customer_id      String?   @db.Char(36)
+  contact_id       String?   @db.Char(36)
+  resource_id      String    @db.Char(36)
+  product_id       String?   @db.Char(36)
+  service_name     String    @db.VarChar(120)
+  price_cents      Int       @default(0)
+  starts_at        DateTime  @db.DateTime(3)
+  ends_at          DateTime  @db.DateTime(3)
+  service_ends_at  DateTime  @db.DateTime(3)
+  status           String    @default("booked") @db.VarChar(16)
+  payment          String    @default("none") @db.VarChar(16)
+  charge_id        String?   @db.Char(36)
+  paid_cents       Int       @default(0)
+  credit_cents     Int       @default(0)
+  subscription_id  String?   @db.Char(36)
+  pay_until        DateTime? @db.DateTime(3)
+  source           String    @default("panel") @db.VarChar(8)
+  confirmed_at     DateTime? @db.DateTime(3)
+  reminders        Json?
+  started_at       DateTime? @db.DateTime(3)
+  done_at          DateTime? @db.DateTime(3)
+  canceled_at      DateTime? @db.DateTime(3)
+  cancel_by        String?   @db.VarChar(8)
+  cancel_reason    String?   @db.VarChar(255)
+  rescheduled_from String?   @db.Char(36)
+  reschedules      Int       @default(0) @db.TinyInt
+  notes            String?   @db.Text
+  custom           Json?
+  created_by       String?   @db.Char(36)
+  created_at       DateTime  @default(now()) @db.DateTime(3)
+  updated_at       DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, starts_at], map: "idx_waappt_org_start")
+  @@index([resource_id, starts_at], map: "idx_waappt_res_start")
+  @@index([customer_id, starts_at], map: "idx_waappt_cust_start")
+  @@index([contact_id, starts_at], map: "idx_waappt_contact_start")
+  @@index([status, starts_at], map: "idx_waappt_status_start")
+  @@index([charge_id], map: "idx_waappt_charge")
+}
+
+model whatsapp_waitlist {
+  id                  String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id     String    @db.Char(36)
+  session_id          String?   @db.Char(36)
+  chat_id             String?   @db.VarChar(64)
+  contact_id          String?   @db.Char(36)
+  customer_id         String?   @db.Char(36)
+  product_id          String    @db.Char(36)
+  resource_id         String?   @db.Char(36)
+  date_from           DateTime  @db.Date
+  date_to             DateTime  @db.Date
+  period              String    @default("any") @db.VarChar(12)
+  status              String    @default("waiting") @db.VarChar(12)
+  offered_starts_at   DateTime? @db.DateTime(3)
+  offered_resource_id String?   @db.Char(36)
+  offered_at          DateTime? @db.DateTime(3)
+  expires_at          DateTime? @db.DateTime(3)
+  appointment_id      String?   @db.Char(36)
+  created_at          DateTime  @default(now()) @db.DateTime(3)
+  updated_at          DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, status, date_from], map: "idx_wawait_org_status")
+  @@index([product_id, status], map: "idx_wawait_product")
+}
+
+model whatsapp_subscription_usage {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  subscription_id String   @db.Char(36)
+  product_id      String   @db.Char(36)
+  cycle_start     DateTime @db.Date
+  used            Int      @default(0)
+  updated_at      DateTime @updatedAt @db.DateTime(3)
+
+  @@unique([subscription_id, product_id, cycle_start], map: "uk_wausage_sub_prod_cycle")
+}
+
+model whatsapp_customer_credits {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  customer_id     String    @db.Char(36)
+  amount_cents    Int
+  reason          String?   @db.VarChar(255)
+  appointment_id  String?   @db.Char(36)
+  used_cents      Int       @default(0)
+  expires_at      DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @updatedAt @db.DateTime(3)
+
+  @@index([customer_id, created_at], map: "idx_wacredit_customer")
+}
+
+// Fase 6B — chamados / protocolos (contrato §10)
+model whatsapp_counters {
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(32)
+  value           Int      @default(0)
+  updated_at      DateTime @default(now()) @updatedAt @db.DateTime(3)
+
+  @@id([organization_id, name])
+}
+
+model whatsapp_tickets {
+  id                    String                   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id       String                   @db.Char(36)
+  number                Int
+  protocol              String                   @db.VarChar(24)
+  session_id            String?                  @db.Char(36)
+  chat_id               String?                  @db.VarChar(64)
+  contact_id            String?                  @db.Char(36)
+  customer_id           String?                  @db.Char(36)
+  category              String                   @db.VarChar(40)
+  subject               String                   @db.VarChar(160)
+  description           String?                  @db.Text
+  priority              String                   @default("normal") @db.VarChar(10)
+  status                String                   @default("open") @db.VarChar(10)
+  assigned_user_id      String?                  @db.Char(36)
+  first_response_due_at DateTime?                @db.DateTime(3)
+  first_response_at     DateTime?                @db.DateTime(3)
+  sla_due_at            DateTime?                @db.DateTime(3)
+  sla_warned_at         DateTime?                @db.DateTime(3)
+  sla_breached_at       DateTime?                @db.DateTime(3)
+  resolved_at           DateTime?                @db.DateTime(3)
+  closed_at             DateTime?                @db.DateTime(3)
+  reopen_count          Int                      @default(0)
+  media_ids             Json?
+  source                String                   @default("panel") @db.VarChar(10)
+  custom                Json?
+  created_by            String?                  @db.Char(36)
+  last_event_at         DateTime?                @db.DateTime(3)
+  created_at            DateTime                 @default(now()) @db.DateTime(3)
+  updated_at            DateTime                 @updatedAt @db.DateTime(3)
+  events                whatsapp_ticket_events[]
+
+  @@unique([organization_id, protocol], map: "uk_watk_org_protocol")
+  @@index([organization_id, status, sla_due_at], map: "idx_watk_org_status_sla")
+  @@index([organization_id, contact_id], map: "idx_watk_org_contact")
+  @@index([organization_id, customer_id], map: "idx_watk_org_customer")
+  @@index([organization_id, session_id, chat_id], map: "idx_watk_org_chat")
+  @@index([organization_id, created_at], map: "idx_watk_org_created")
+}
+
+model whatsapp_ticket_events {
+  id              String           @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String           @db.Char(36)
+  ticket_id       String           @db.Char(36)
+  kind            String           @db.VarChar(20)
+  by              String           @default("system") @db.VarChar(10)
+  user_id         String?          @db.Char(36)
+  from_value      String?          @db.VarChar(64)
+  to_value        String?          @db.VarChar(64)
+  body            String?          @db.Text
+  visibility      String           @default("internal") @db.VarChar(10)
+  media_id        String?          @db.Char(36)
+  created_at      DateTime         @default(now()) @db.DateTime(3)
+  ticket          whatsapp_tickets @relation(fields: [ticket_id], references: [id], onDelete: Cascade, map: "fk_watkev_ticket")
+
+  @@index([ticket_id, created_at], map: "idx_watkev_ticket")
+  @@index([organization_id, created_at], map: "idx_watkev_org")
+}
+
+// Fase 7 — unidades e pedidos (contrato §11)
+model whatsapp_units {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(120)
+  code            String?  @db.VarChar(32)
+  address         Json?
+  phone           String?  @db.VarChar(32)
+  session_id      String?  @db.Char(36)
+  active          Boolean  @default(true)
+  position        Int      @default(0)
+  custom          Json?
+  created_at      DateTime @default(now()) @db.DateTime(3)
+  updated_at      DateTime @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, position], map: "idx_waunit_org")
+}
+
+model whatsapp_orders {
+  id                 String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id    String    @db.Char(36)
+  number             Int
+  session_id         String?   @db.Char(36)
+  chat_id            String?   @db.VarChar(64)
+  contact_id         String?   @db.Char(36)
+  customer_id        String?   @db.Char(36)
+  unit_id            String?   @db.Char(36)
+  items              Json
+  subtotal_cents     Int       @default(0)
+  delivery_fee_cents Int       @default(0)
+  discount_cents     Int       @default(0)
+  total_cents        Int       @default(0)
+  status             String    @default("new") @db.VarChar(20)
+  payment_method     String    @default("none") @db.VarChar(16)
+  payment_status     String    @default("pending") @db.VarChar(16)
+  charge_id          String?   @db.Char(36)
+  delivery           Json?
+  notes              String?   @db.Text
+  source             String    @default("panel") @db.VarChar(10)
+  custom             Json?
+  history            Json?
+  confirmed_at       DateTime? @db.DateTime(3)
+  paid_at            DateTime? @db.DateTime(3)
+  delivered_at       DateTime? @db.DateTime(3)
+  canceled_at        DateTime? @db.DateTime(3)
+  cancel_reason      String?   @db.VarChar(255)
+  created_by         String?   @db.Char(36)
+  created_at         DateTime  @default(now()) @db.DateTime(3)
+  updated_at         DateTime  @updatedAt @db.DateTime(3)
+
+  @@unique([organization_id, number], map: "uk_waorder_org_number")
+  @@index([organization_id, status, created_at], map: "idx_waorder_org_status")
+  @@index([organization_id, contact_id], map: "idx_waorder_org_contact")
+  @@index([organization_id, customer_id], map: "idx_waorder_org_customer")
+  @@index([charge_id], map: "idx_waorder_charge")
+}
+
+model whatsapp_import_jobs {
+  id              String    @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String    @db.Char(36)
+  user_id         String?   @db.Char(36)
+  kind            String    @default("customers") @db.VarChar(24)
+  status          String    @default("queued") @db.VarChar(16)
+  file_name       String?   @db.VarChar(255)
+  storage_path    String?   @db.VarChar(255)
+  options         Json?
+  total_rows      Int       @default(0)
+  processed       Int       @default(0)
+  created_count   Int       @default(0)
+  updated_count   Int       @default(0)
+  skipped_count   Int       @default(0)
+  error_count     Int       @default(0)
+  errors          Json?
+  summary         Json?
+  last_error      String?   @db.VarChar(500)
+  started_at      DateTime? @db.DateTime(3)
+  finished_at     DateTime? @db.DateTime(3)
+  heartbeat_at    DateTime? @db.DateTime(3)
+  created_at      DateTime  @default(now()) @db.DateTime(3)
+  updated_at      DateTime  @default(now()) @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, created_at], map: "idx_waimp_org_created")
+  @@index([status, created_at], map: "idx_waimp_status")
+}
+
+model org_audit_log {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  user_id         String?  @db.Char(36)
+  user_name       String?  @db.VarChar(160)
+  actor           String   @default("user") @db.VarChar(16)
+  action          String   @db.VarChar(64)
+  entity          String?  @db.VarChar(40)
+  entity_id       String?  @db.VarChar(64)
+  summary         String?  @db.VarChar(255)
+  changes         Json?
+  method          String?  @db.VarChar(8)
+  path            String?  @db.VarChar(255)
+  status_code     Int?     @db.SmallInt
+  ip              String?  @db.VarChar(45)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, created_at], map: "idx_orgaudit_org_created")
+  @@index([organization_id, entity, entity_id], map: "idx_orgaudit_org_entity")
+  @@index([organization_id, user_id, created_at], map: "idx_orgaudit_org_user")
 }

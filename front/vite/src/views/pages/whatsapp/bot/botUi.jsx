@@ -3,7 +3,7 @@
 // simulador e aba Configurações). Cores fixas do WhatsApp com override dark
 // via applyStyles; tokens do tema via theme.vars (NUNCA theme.palette em sx).
 // =============================================================================
-import { Fragment, createContext, useContext, useMemo, useRef, useState } from 'react';
+import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Autocomplete,
   Box,
@@ -23,7 +23,14 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import {
+  IconArrowsExchange,
   IconArrowsSplit2,
+  IconCalendarEvent,
+  IconCalendarPlus,
+  IconClipboardList,
+  IconClockPlus,
+  IconCreditCard,
+  IconFileInvoice,
   IconFlag3,
   IconHeadset,
   IconHourglass,
@@ -31,13 +38,23 @@ import {
   IconMessage2,
   IconMessageQuestion,
   IconMoodSmile,
+  IconPlayerPause,
   IconPlayerPlay,
   IconPlus,
   IconQrcode,
+  IconReceipt,
+  IconReceipt2,
+  IconShoppingCart,
   IconTags,
+  IconTicket,
+  IconUserEdit,
+  IconUserPlus,
+  IconUserSearch,
+  IconUserX,
   IconX
 } from '@tabler/icons-react';
 
+import { get } from 'api/api';
 import { EmojiPicker } from '../waShared';
 import { BASE_VARS, fmtBRL } from './botModel';
 
@@ -90,13 +107,50 @@ export const NODE_META = {
   wait: { label: 'Espera', color: '#64748B', icon: IconHourglass, hint: 'Pausa antes de continuar' },
   pix: { label: 'Cobrança PIX', color: '#0D9488', icon: IconQrcode, hint: 'Gera o PIX e aguarda' },
   handoff: { label: 'Transferir para atendente', color: '#2563EB', icon: IconHeadset, hint: 'Passa para uma pessoa' },
-  end: { label: 'Encerrar', color: '#DC2626', icon: IconFlag3, hint: 'Finaliza o atendimento' }
+  end: { label: 'Encerrar', color: '#DC2626', icon: IconFlag3, hint: 'Finaliza o atendimento' },
+  // --- Cliente (CRM / assinaturas) — família roxo → índigo → teal
+  crm_identify: { label: 'Identificar cliente', color: '#6D28D9', icon: IconUserSearch, hint: 'Pelo número, CPF/CNPJ ou código' },
+  crm_register: { label: 'Cadastrar cliente', color: '#7C3AED', icon: IconUserPlus, hint: 'Pergunta os dados e cria o cadastro' },
+  crm_subscribe: { label: 'Assinar plano', color: '#4F46E5', icon: IconCreditCard, hint: 'Escolhe o plano, cobra e ativa' },
+  crm_info: { label: 'Informar situação', color: '#4338CA', icon: IconFileInvoice, hint: 'Plano, vencimento, dados…' },
+  crm_invoice: { label: '2ª via da cobrança', color: '#0E7490', icon: IconReceipt2, hint: 'Reenvia a cobrança em aberto' },
+  crm_cancel: { label: 'Cancelar assinatura', color: '#BE185D', icon: IconUserX, hint: 'Motivo, retenção e confirmação' },
+  crm_pause: { label: 'Pausar assinatura', color: '#0F766E', icon: IconPlayerPause, hint: 'Pausa por alguns dias' },
+  crm_change_plan: { label: 'Trocar de plano', color: '#5B21B6', icon: IconArrowsExchange, hint: 'Migra para outro produto' },
+  crm_update: { label: 'Atualizar dados', color: '#6366F1', icon: IconUserEdit, hint: 'Altera e-mail, endereço…' },
+  // --- Agenda (Fase 6) — família laranja/âmbar
+  book_service: { label: 'Agendar', color: '#EA580C', icon: IconCalendarPlus, hint: 'Serviço, dia, horário e pagamento' },
+  my_appointments: { label: 'Meus agendamentos', color: '#C2410C', icon: IconCalendarEvent, hint: 'Confirmar, remarcar ou cancelar' },
+  waitlist_join: { label: 'Lista de espera', color: '#B45309', icon: IconClockPlus, hint: 'Avisa quando abrir um horário' },
+  // --- Chamados (Fase 6B) — família azul-ardósia
+  open_ticket: { label: 'Abrir chamado', color: '#0369A1', icon: IconTicket, hint: 'Categoria, descrição, fotos e protocolo' },
+  my_tickets: { label: 'Meus chamados', color: '#1E40AF', icon: IconClipboardList, hint: 'Consultar protocolo e mandar mais informações' },
+  // --- Pedidos (Fase 7) — família verde-limão
+  order_cart: { label: 'Fazer pedido', color: '#65A30D', icon: IconShoppingCart, hint: 'Catálogo, carrinho, entrega e pagamento' },
+  my_orders: { label: 'Meus pedidos', color: '#4D7C0F', icon: IconReceipt, hint: 'Situação dos pedidos do cliente' }
 };
 
 export const PALETTE_GROUPS = [
   { group: 'Mensagens', items: ['message', 'menu', 'question'] },
   { group: 'Lógica', items: ['condition', 'tags', 'wait'] },
   { group: 'Vendas', items: ['pix'] },
+  {
+    group: 'Cliente',
+    items: [
+      'crm_identify',
+      'crm_register',
+      'crm_subscribe',
+      'crm_info',
+      'crm_invoice',
+      'crm_cancel',
+      'crm_pause',
+      'crm_change_plan',
+      'crm_update'
+    ]
+  },
+  { group: 'Agenda', items: ['book_service', 'my_appointments', 'waitlist_join'] },
+  { group: 'Chamados', items: ['open_ticket', 'my_tickets'] },
+  { group: 'Pedidos', items: ['order_cart', 'my_orders'] },
   { group: 'Atendimento', items: ['handoff', 'end'] }
 ];
 
@@ -110,6 +164,11 @@ const BotCtx = createContext({
   tagsById: new Map(),
   attendants: [],
   gateway: null,
+  products: null, // GET /whatsapp/products (null = ainda carregando)
+  crmSettings: null, // GET /whatsapp/crm-settings → { custom_fields (lista de CLIENTES), custom_field_map (por entidade), identity }
+  customFieldMap: null, // mapa de campos personalizados por entidade (null = carregando)
+  orderCatalog: { catalog: null, categories: null, settings: null }, // GET /whatsapp/orders/catalog + settings
+  catalogCategories: null, // nomes das categorias do catálogo de pedidos (null = carregando)
   settings: null,
   vars: [],
   issuesByNode: {},
@@ -118,6 +177,100 @@ const BotCtx = createContext({
 });
 export const BotProvider = ({ value, children }) => <BotCtx.Provider value={value}>{children}</BotCtx.Provider>;
 export const useBot = () => useContext(BotCtx);
+
+// ---------------------------------------------------------------------------
+// Catálogo da agenda (Fase 6): serviços e profissionais/recursos para os blocos de agenda,
+// buscado uma vez e guardado por 60 s (GET /whatsapp/scheduling/services | /resources).
+// null = ainda carregando OU agenda indisponível (não valida nada); [] = carregado e vazio.
+// ---------------------------------------------------------------------------
+const bookCatalog = { services: null, resources: null, at: 0, p: null };
+const asList = (r) => (Array.isArray(r) ? r : Array.isArray(r?.items) ? r.items : Array.isArray(r?.services) ? r.services : null);
+export function useBookCatalog() {
+  const [st, setSt] = useState({ services: bookCatalog.services, resources: bookCatalog.resources });
+  useEffect(() => {
+    let alive = true;
+    if (!bookCatalog.p || Date.now() - bookCatalog.at > 60_000) {
+      bookCatalog.at = Date.now();
+      bookCatalog.p = Promise.all([
+        get('/whatsapp/scheduling/services').catch(() => null),
+        get('/whatsapp/scheduling/resources').catch(() => null)
+      ]).then(([sv, rs]) => {
+        bookCatalog.services = asList(sv);
+        bookCatalog.resources = asList(rs);
+        return bookCatalog;
+      });
+    }
+    bookCatalog.p.then(() => {
+      if (alive) setSt({ services: bookCatalog.services, resources: bookCatalog.resources });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return st;
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo dos chamados (Fase 6B): categorias da organização para os blocos de chamado,
+// buscado uma vez e guardado por 60 s (GET /whatsapp/tickets/settings → categories).
+// null = ainda carregando OU chamados indisponíveis (não valida nada); [] = carregado e vazio.
+// ---------------------------------------------------------------------------
+const ticketCatalog = { categories: null, at: 0, p: null };
+export function useTicketCatalog() {
+  const [st, setSt] = useState({ categories: ticketCatalog.categories });
+  useEffect(() => {
+    let alive = true;
+    if (!ticketCatalog.p || Date.now() - ticketCatalog.at > 60_000) {
+      ticketCatalog.at = Date.now();
+      ticketCatalog.p = get('/whatsapp/tickets/settings')
+        .catch(() => null)
+        .then((r) => {
+          ticketCatalog.categories = Array.isArray(r?.categories) ? r.categories : null;
+          return ticketCatalog;
+        });
+    }
+    ticketCatalog.p.then(() => {
+      if (alive) setSt({ categories: ticketCatalog.categories });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return st;
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo de pedidos (Fase 7): produtos avulsos ativos por categoria + configurações de pedidos,
+// buscados uma vez e guardados por 60 s (GET /whatsapp/orders/catalog | /whatsapp/orders/settings).
+// `catalog` null = ainda carregando OU pedidos indisponíveis (não valida nada); `categories` = nomes.
+// ---------------------------------------------------------------------------
+const orderCatalog = { catalog: null, categories: null, settings: null, at: 0, p: null };
+export function useOrderCatalog() {
+  const [st, setSt] = useState({ catalog: orderCatalog.catalog, categories: orderCatalog.categories, settings: orderCatalog.settings });
+  useEffect(() => {
+    let alive = true;
+    if (!orderCatalog.p || Date.now() - orderCatalog.at > 60_000) {
+      orderCatalog.at = Date.now();
+      orderCatalog.p = Promise.all([
+        get('/whatsapp/orders/catalog').catch(() => null),
+        get('/whatsapp/orders/settings').catch(() => null)
+      ]).then(([cat, set]) => {
+        const cats = Array.isArray(cat?.categories) ? cat.categories.filter((c) => c && String(c.name || '').trim()) : null;
+        orderCatalog.catalog = cats ? { categories: cats, total: Number(cat?.total) || 0 } : null;
+        orderCatalog.categories = cats ? cats.map((c) => String(c.name).trim()) : null;
+        orderCatalog.settings = set && typeof set === 'object' ? set : null;
+        return orderCatalog;
+      });
+    }
+    orderCatalog.p.then(() => {
+      if (alive) setSt({ catalog: orderCatalog.catalog, categories: orderCatalog.categories, settings: orderCatalog.settings });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return st;
+}
 
 // ---------------------------------------------------------------------------
 // Texto no estilo WhatsApp: *negrito* _itálico_ ~riscado~ ```mono``` + {{variáveis}}

@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from 'generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ALL_MODULES, ModuleKey, normalizeModules } from './modules.const';
+import { ALL_MODULES, ModuleKey, normalizeModules, SUB_PERMISSIONS, SubPermission, normalizeSubPermissions, normalizeModuleList } from './modules.const';
 
 // Estado de acesso de uma ORGANIZAÇÃO (plano/assinatura) e módulos de um USUÁRIO.
 //  - plano/pagamento vive em `organization_access` (1 por org);
@@ -52,7 +52,7 @@ export function normalizeWhatsAppSessions(raw: unknown): string[] | null {
 export class AccessService {
   private readonly logger = new Logger(AccessService.name);
   private readonly orgCache = new Map<string, Cached<any>>();
-  private readonly userCache = new Map<string, Cached<{ modules: ModuleKey[]; welcomed: boolean; whatsapp_sessions: string[] | null }>>();
+  private readonly userCache = new Map<string, Cached<{ modules: ModuleKey[]; permissions: SubPermission[]; welcomed: boolean; whatsapp_sessions: string[] | null }>>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -133,15 +133,22 @@ export class AccessService {
     return (await this.userEntry(userId)).modules;
   }
 
+  /** Sub-permissões do módulo WhatsApp (Fase 7). */
+  async getUserPermissions(userId: string): Promise<SubPermission[]> {
+    return (await this.userEntry(userId)).permissions;
+  }
+
   private async userEntry(userId: string) {
     const now = Date.now();
     const c = this.userCache.get(userId);
     if (c && c.expiresAt > now) return c.value;
-    let value = { modules: [] as ModuleKey[], welcomed: false, whatsapp_sessions: null as string[] | null };
+    let value = { modules: [] as ModuleKey[], permissions: [] as SubPermission[], welcomed: false, whatsapp_sessions: null as string[] | null };
     try {
       const u = await this.prisma.users.findUnique({ where: { id: userId }, select: { modules: true, welcomed_at: true, role: true, whatsapp_sessions: true } });
       value = {
         modules: u?.role === 'SUPER_ADMIN' ? ALL_MODULES : normalizeModules(u?.modules),
+        // Fase 7: dono/admin/superadmin têm todas as sub-permissões
+        permissions: ['SUPER_ADMIN', 'OWNER', 'ADMIN'].includes(String(u?.role)) ? [...SUB_PERMISSIONS] : normalizeSubPermissions(u?.modules),
         welcomed: !!u?.welcomed_at,
         // dono/admin = todos (null), mesmo que a coluna tenha algo gravado
         whatsapp_sessions: AccessService.seesAllWhatsApp(u?.role) ? null : normalizeWhatsAppSessions(u?.whatsapp_sessions),
@@ -164,6 +171,7 @@ export class AccessService {
     return {
       is_super: isSuper,
       modules,
+      permissions: isSuper ? [...SUB_PERMISSIONS] : u.permissions,
       // números do WhatsApp que o usuário vê (null = todos os da org)
       whatsapp_sessions: AccessService.seesAllWhatsApp(role) ? null : u.whatsapp_sessions,
       status: st.status,
@@ -224,8 +232,9 @@ export class AccessService {
 
   async setUserModules(userId: string, modules: unknown, tx?: any) {
     const db = tx || this.prisma;
-    const mods = normalizeModules(modules);
-    await db.users.update({ where: { id: userId }, data: { modules: mods } });
+    const stored = normalizeModuleList(modules);
+    const mods = normalizeModules(stored);
+    await db.users.update({ where: { id: userId }, data: { modules: stored } });
     this.invalidateUser(userId);
     return mods;
   }

@@ -64,6 +64,7 @@ import {
   IconDeviceFloppy,
   IconDeviceMobile,
   IconDotsVertical,
+  IconInfoCircle,
   IconLock,
   IconMessageChatbot,
   IconPencil,
@@ -108,7 +109,10 @@ import {
   WA_OK,
   WA_WARN,
   botStatusOf,
-  hexA
+  hexA,
+  useBookCatalog,
+  useOrderCatalog,
+  useTicketCatalog
 } from './bot/botUi';
 import { BotFlowStyles, edgeTypes, nodeTypes } from './bot/nodes';
 import BotPalette, { DND_TYPE, PaletteList } from './bot/palette';
@@ -340,6 +344,7 @@ function IssuesPopover({ anchorEl, onClose, issues, nodes, onPick }) {
             const node = i.nodeId ? byId.get(i.nodeId) : null;
             const meta = node ? NODE_META[node.type] : null;
             const err = i.level === 'error';
+            const info = i.level === 'info';
             return (
               <Stack
                 key={i.id}
@@ -349,8 +354,8 @@ function IssuesPopover({ anchorEl, onClose, issues, nodes, onPick }) {
                 onClick={() => onPick(i)}
                 sx={{ px: 2, py: 1, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
               >
-                <Box sx={{ color: err ? 'error.main' : WA_WARN, mt: '1px', display: 'flex' }}>
-                  {err ? <IconAlertCircle size={17} /> : <IconAlertTriangle size={17} />}
+                <Box sx={{ color: err ? 'error.main' : info ? 'info.main' : WA_WARN, mt: '1px', display: 'flex' }}>
+                  {err ? <IconAlertCircle size={17} /> : info ? <IconInfoCircle size={17} /> : <IconAlertTriangle size={17} />}
                 </Box>
                 <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography variant="body2" sx={{ lineHeight: 1.4 }}>
@@ -433,7 +438,11 @@ function BotBuilder({
   const [tags, setTags] = useState([]);
   const [attendants, setAttendants] = useState([]);
   const [gateway, setGateway] = useState(null);
+  const [products, setProducts] = useState(null);
+  const [crmSettings, setCrmSettings] = useState(null);
   const [frameH, setFrameH] = useState(0);
+  const productsRef = useRef(null);
+  productsRef.current = products;
 
   const frameRef = useRef(null);
   const wrapperRef = useRef(null);
@@ -516,6 +525,23 @@ function BotBuilder({
     get('/payments/settings')
       .then((g) => alive && setGateway({ ...(g || {}), ready: typeof g?.ready === 'boolean' ? g.ready : Boolean(g?.active) }))
       .catch(() => alive && setGateway(null));
+    // blocos de Cliente: produtos ativos + campos personalizados/identidade da org
+    get('/whatsapp/products')
+      .then((r) => alive && setProducts(asList(r)))
+      .catch(() => alive && setProducts(null));
+    // custom_fields: desde a Fase 7 o servidor devolve um MAPA por entidade ({customer, ticket, order…}) + `customer_fields`
+    // (lista de clientes, formato antigo). Aqui `custom_fields` continua sendo a lista de CLIENTES (todos os consumidores
+    // antigos leem array) e `custom_field_map` guarda o mapa inteiro (campos de chamado/pedido que o bot pergunta).
+    get('/whatsapp/crm-settings')
+      .then((r) => {
+        if (!alive) return;
+        if (!r || typeof r !== 'object') return setCrmSettings(null);
+        const raw = r.custom_fields;
+        const map = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { customer: Array.isArray(raw) ? raw : [] };
+        const customer = Array.isArray(r.customer_fields) ? r.customer_fields : Array.isArray(map.customer) ? map.customer : [];
+        setCrmSettings({ custom_fields: customer, custom_field_map: { ...map, customer }, identity: r.identity || null });
+      })
+      .catch(() => alive && setCrmSettings(null));
     return () => {
       alive = false;
     };
@@ -676,10 +702,10 @@ function BotBuilder({
         return next;
       };
       setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: merge(n.data) } : n)));
-      if ('options' in patch) {
+      if ('options' in patch || 'source' in patch || 'product_ids' in patch) {
         const cur = nodesRef.current.find((n) => n.id === id);
         if (cur) {
-          const valid = new Set(outputsOf(cur.type, merge(cur.data), latest.current.settings).map((o) => o.id));
+          const valid = new Set(outputsOf(cur.type, merge(cur.data), latest.current.settings, productsRef.current).map((o) => o.id));
           setEdges((eds) => eds.filter((e) => e.source !== id || valid.has(e.sourceHandle || 'out')));
         }
       }
@@ -718,7 +744,7 @@ function BotBuilder({
     (type) => {
       const sel = nodesRef.current.find((n) => n.id === selectedId);
       if (sel && tab === 'flow') {
-        const outs = outputsOf(sel.type, sel.data, latest.current.settings);
+        const outs = outputsOf(sel.type, sel.data, latest.current.settings, productsRef.current);
         const used = new Set(edgesRef.current.filter((e) => e.source === sel.id).map((e) => e.sourceHandle || 'out'));
         const idx = outs.findIndex((o) => !used.has(o.id));
         if (idx >= 0) {
@@ -846,13 +872,42 @@ function BotBuilder({
       return String(Math.random());
     }
   }, [nodes, edges]);
+  const bookCatalog = useBookCatalog(); // serviços da agenda (valida os blocos "Agendar")
+  const bookServices = bookCatalog.services;
+  const ticketCategories = useTicketCatalog().categories; // categorias de chamado (valida os blocos "Abrir chamado")
+  const orderCatalog = useOrderCatalog(); // catálogo de pedidos (valida os blocos "Fazer pedido")
+  const catalogCategories = orderCatalog.categories;
+  const customFieldMap = crmSettings?.custom_field_map || null;
   const issues = useMemo(
     () =>
-      validateFlow(nodesRef.current, edgesRef.current, { settings, tags, attendants, gateway }).sort(
-        (a, b) => (a.level === 'error' ? 0 : 1) - (b.level === 'error' ? 0 : 1)
+      validateFlow(nodesRef.current, edgesRef.current, {
+        settings,
+        tags,
+        attendants,
+        gateway,
+        products,
+        crmSettings,
+        bookServices,
+        ticketCategories,
+        catalogCategories,
+        customFieldMap
+      }).sort(
+        (a, b) => (a.level === 'error' ? 0 : a.level === 'warning' ? 1 : 2) - (b.level === 'error' ? 0 : b.level === 'warning' ? 1 : 2)
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [structKey, settings, tags, attendants, gateway]
+    [
+      structKey,
+      settings,
+      tags,
+      attendants,
+      gateway,
+      products,
+      crmSettings,
+      bookServices,
+      ticketCategories,
+      catalogCategories,
+      customFieldMap
+    ]
   );
   const issuesByNode = useMemo(() => {
     const m = {};
@@ -970,8 +1025,40 @@ function BotBuilder({
     [updateNodeData, duplicateNode, deleteNode, setEdges]
   );
   const ctx = useMemo(
-    () => ({ tags, tagsById, attendants, gateway, settings, vars, issuesByNode, simNodeId, actions, createTag }),
-    [tags, tagsById, attendants, gateway, settings, vars, issuesByNode, simNodeId, actions, createTag]
+    () => ({
+      tags,
+      tagsById,
+      attendants,
+      gateway,
+      products,
+      crmSettings,
+      customFieldMap,
+      orderCatalog,
+      catalogCategories,
+      settings,
+      vars,
+      issuesByNode,
+      simNodeId,
+      actions,
+      createTag
+    }),
+    [
+      tags,
+      tagsById,
+      attendants,
+      gateway,
+      products,
+      crmSettings,
+      customFieldMap,
+      orderCatalog,
+      catalogCategories,
+      settings,
+      vars,
+      issuesByNode,
+      simNodeId,
+      actions,
+      createTag
+    ]
   );
 
   // simulador: fluxo salvo → só flow_id; rascunho alterado → definition/settings atuais
@@ -986,10 +1073,10 @@ function BotBuilder({
   // bloco selecionado com alguma saída livre → o próximo bloco da gaveta (celular) encaixa depois dele (mesma regra do addFromPalette)
   const chainAfter = useMemo(() => {
     if (!selectedNode || tab !== 'flow') return null;
-    const outs = outputsOf(selectedNode.type, selectedNode.data, settings);
+    const outs = outputsOf(selectedNode.type, selectedNode.data, settings, products);
     const used = new Set(edges.filter((e) => e.source === selectedNode.id).map((e) => e.sourceHandle || 'out'));
     return outs.some((o) => !used.has(o.id)) ? selectedNode : null;
-  }, [selectedNode, edges, settings, tab]);
+  }, [selectedNode, edges, settings, products, tab]);
   const paletteCompact = downLg || (simOpen && narrow);
   const stats = meta.stats || {};
 

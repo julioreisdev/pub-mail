@@ -1,8 +1,10 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import Box from '@mui/material/Box';
+import ButtonBase from '@mui/material/ButtonBase';
 import Chip from '@mui/material/Chip';
+import Collapse from '@mui/material/Collapse';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -14,7 +16,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
-import { IconAlertTriangle, IconCircleCheck, IconCircleDashed, IconUserOff, IconX } from '@tabler/icons-react';
+import { IconAlertTriangle, IconChevronDown, IconCircleCheck, IconCircleDashed, IconUserOff, IconX } from '@tabler/icons-react';
 
 import { TgCard } from 'views/pages/telegram/ui';
 import { WA_DARK, WA_GREEN, tint } from '../waShared';
@@ -26,14 +28,94 @@ import { WaNumberChip, WaNumberSelect, sessionLabel } from '../waKit';
 // ============================================================================
 
 export const BILLING_OPTIONS = [
-  { value: 'once', label: 'Avulso', short: ' · avulso' },
-  { value: 'monthly', label: 'Mensal', short: '/mês' },
-  { value: 'quarterly', label: 'Trimestral', short: '/trim.' },
-  { value: 'yearly', label: 'Anual', short: '/ano' }
+  { value: 'once', label: 'Avulso', short: ' · avulso', months: 0 },
+  { value: 'monthly', label: 'Mensal', short: '/mês', months: 1 },
+  { value: 'quarterly', label: 'Trimestral', short: '/trim.', months: 3 },
+  { value: 'semiannual', label: 'Semestral', short: '/sem.', months: 6 },
+  { value: 'yearly', label: 'Anual', short: '/ano', months: 12 }
 ];
 export const billingLabel = (v) => BILLING_OPTIONS.find((o) => o.value === v)?.label || v || '';
 export const billingShort = (v) => BILLING_OPTIONS.find((o) => o.value === v)?.short || '';
-export const isRecurring = (v) => v === 'monthly' || v === 'quarterly' || v === 'yearly';
+export const isRecurring = (v) => v === 'monthly' || v === 'quarterly' || v === 'semiannual' || v === 'yearly';
+/** Meses do ciclo a partir do `billing` (0 = avulso). */
+export const billingMonths = (v) => BILLING_OPTIONS.find((o) => o.value === v)?.months || 0;
+/** `billing` a partir do intervalo em meses (1/3/6/12); fora disso → `monthly`. */
+export const billingFromMonths = (m) => BILLING_OPTIONS.find((o) => o.months === Number(m) && o.months > 0)?.value || 'monthly';
+
+// ----------------------------------------------------------------------------
+// Fase 3 — motor de assinatura: política de cancelamento, percentuais, datas
+// ----------------------------------------------------------------------------
+export const CANCEL_POLICIES = [
+  {
+    value: 'end_of_cycle',
+    label: 'Fim do ciclo',
+    hint: 'O cliente continua usando até o próximo vencimento; nada é cobrado depois.'
+  },
+  { value: 'immediate', label: 'Imediato', hint: 'Encerra na hora e cancela a cobrança em aberto no gateway.' }
+];
+export const cancelPolicyLabel = (v) => CANCEL_POLICIES.find((o) => o.value === v)?.label || v || '';
+
+/** 2 → "2%", 1.5 → "1,5%". */
+export const fmtPercent = (n, digits = 2) => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '';
+  return `${v.toLocaleString('pt-BR', { maximumFractionDigits: digits })}%`;
+};
+
+/** DD/MM (sem ano) de um ISO `YYYY-MM-DD`. */
+export const fmtDayMonth = (iso) => {
+  const s = fmtDateBR(iso);
+  return s ? s.slice(0, 5) : '';
+};
+
+/** `YYYY-MM-DD` daqui a N dias (relógio local). */
+export const isoPlusDays = (days) => {
+  const n = new Date();
+  n.setDate(n.getDate() + Number(days || 0));
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * Seção colapsável de formulário (título + resumo quando fechada). Usada nos diálogos de produto
+ * e assinatura para esconder o que a maioria não precisa ver.
+ */
+export function CollapsibleSection({ title, summary, defaultOpen = false, open: openProp, onToggle, children, sx }) {
+  const [openState, setOpenState] = useState(defaultOpen);
+  const open = openProp ?? openState;
+  const toggle = () => (onToggle ? onToggle(!open) : setOpenState((v) => !v));
+  return (
+    <Box sx={[{ border: '1px solid', borderColor: 'divider', borderRadius: 2.5, overflow: 'hidden' }, ...(Array.isArray(sx) ? sx : [sx])]}>
+      <ButtonBase
+        onClick={toggle}
+        sx={{
+          width: '100%',
+          px: 1.5,
+          py: 1.1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          textAlign: 'left',
+          bgcolor: open ? 'action.hover' : 'transparent'
+        }}
+      >
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="body2" sx={{ fontWeight: 700 }}>
+            {title}
+          </Typography>
+          {!open && summary ? (
+            <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap display="block">
+              {summary}
+            </Typography>
+          ) : null}
+        </Box>
+        <IconChevronDown size={16} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s', flexShrink: 0 }} />
+      </ButtonBase>
+      <Collapse in={open} unmountOnExit={false}>
+        <Box sx={{ px: 1.5, pb: 1.5, pt: 1 }}>{children}</Box>
+      </Collapse>
+    </Box>
+  );
+}
 
 export const formatBRL = (cents) => (Number(cents || 0) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 export const fmtDateBR = (iso) => {
@@ -42,9 +124,16 @@ export const fmtDateBR = (iso) => {
   const [y, m, d] = s.split('-');
   return y && m && d ? `${d}/${m}/${y}` : s;
 };
+/** `YYYY-MM-DD` de HOJE em Brasília (vencimentos são contados em BRT no servidor; o relógio do usuário pode estar em outro fuso). */
 export const todayIso = () => {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(
+      new Date()
+    );
+  } catch {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }
 };
 
 export const fmtDoc = (doc) => {
@@ -75,7 +164,7 @@ export function MoneyField({ valueCents, onChange, label = 'Valor', size = 'smal
       onChange={(e) => {
         const digits = String(e.target.value || '')
           .replace(/\D+/g, '')
-          .slice(0, 10);
+          .slice(0, 8);
         onChange(digits ? parseInt(digits, 10) : 0);
       }}
       InputProps={{ startAdornment: <InputAdornment position="start">R$</InputAdornment> }}
@@ -93,6 +182,7 @@ export const BILLING_STATUS = {
   ok: { label: 'Em dia', icon: IconCircleCheck, color: '#128C7E', dark: '#25D366', token: 'success' },
   overdue: { label: 'Em atraso', icon: IconAlertTriangle, color: '#B45309', dark: '#FBBF24', token: 'warning' },
   none: { label: 'Sem assinatura', icon: IconCircleDashed, color: '#64748B', dark: '#94A3B8', token: 'info' },
+  paused: { label: 'Pausada', icon: IconCircleDashed, color: '#2563EB', dark: '#60A5FA', token: 'info' },
   inactive: { label: 'Inativo', icon: IconUserOff, color: '#64748B', dark: '#94A3B8', token: 'info' }
 };
 export const SUB_STATUS = {
@@ -216,7 +306,13 @@ export function CrmModal({ open, onClose, title, subtitle, tabs, footer, maxWidt
               </Typography>
             ) : null}
           </Box>
-          <IconButton size="small" onClick={() => onClose?.()} disabled={disableClose} sx={{ mt: -0.5, mr: -0.5, p: 1 }}>
+          <IconButton
+            size="small"
+            onClick={() => onClose?.()}
+            disabled={disableClose}
+            aria-label="Fechar"
+            sx={{ mt: -0.5, mr: -0.5, p: 1 }}
+          >
             <IconX size={18} />
           </IconButton>
         </Stack>

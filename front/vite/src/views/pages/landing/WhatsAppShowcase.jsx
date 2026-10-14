@@ -31,7 +31,12 @@ import {
   IconPaperclip,
   IconSend2,
   IconAlertTriangle,
-  IconBulb
+  IconBulb,
+  IconRepeat,
+  IconCalendarEvent,
+  IconTicket,
+  IconShoppingCart,
+  IconReportMoney
 } from '@tabler/icons-react';
 
 // ======================|| LANDING — seção "WhatsApp" (antes de Preços) ||====================== //
@@ -466,7 +471,7 @@ const MODULES = [
   {
     Icon: IconUserDollar,
     title: 'Clientes',
-    text: 'Ficha do cliente com documento, e-mail, endereço, campos personalizados e assinaturas de produtos.',
+    text: 'Ficha do cliente com vários números, documento, endereços, campos personalizados, assinaturas e histórico. Importe até 50 mil clientes de uma vez.',
     example: 'Academia: cada aluno tem plano, dia de vencimento e histórico de pagamentos ao lado da conversa.'
   },
   {
@@ -478,8 +483,38 @@ const MODULES = [
   {
     Icon: IconReceipt2,
     title: 'Cobranças',
-    text: 'PIX e boleto enviados pelo chat, cobrança recorrente gerada sozinha, lembretes antes e depois do vencimento, recibo ao pagar.',
+    text: 'PIX, boleto, cartão e link de pagamento pelo chat, cobrança recorrente gerada sozinha, lembretes antes e depois do vencimento, recibo ao pagar.',
     example: 'Todo dia 5 a mensalidade vai para cada aluno; quem atrasa recebe lembrete e a etiqueta "Inadimplente".'
+  },
+  {
+    Icon: IconRepeat,
+    title: 'Assinaturas',
+    text: 'O cliente assina, paga, consulta, pede 2ª via, troca de plano, pausa e cancela pelo próprio WhatsApp. Teste grátis, proporcional, cupom, carência e cartão com débito automático.',
+    example: 'Provedor: o cliente manda "2ª via", o bot confere o CPF e devolve o PIX já com multa e juros.'
+  },
+  {
+    Icon: IconCalendarEvent,
+    title: 'Agenda',
+    text: 'Profissionais, salas e serviços com duração e vagas. O cliente agenda pelo bot, paga na reserva ou no local, confirma na véspera e entra na lista de espera.',
+    example: 'Barbearia: "1 para confirmar, 2 para remarcar" um dia antes; vaga liberada vai para quem estava esperando.'
+  },
+  {
+    Icon: IconTicket,
+    title: 'Chamados',
+    text: 'Protocolo numerado, prazo por categoria, foto pelo WhatsApp e respostas internas ou ao cliente.',
+    example: 'Prefeitura: buraco na rua vira o protocolo PSA2026000118 com foto e bairro, e o cidadão acompanha pelo bot.'
+  },
+  {
+    Icon: IconShoppingCart,
+    title: 'Pedidos',
+    text: 'Catálogo por categoria no bot, carrinho, entrega ou retirada, PIX ou pagamento na entrega e quadro de preparo.',
+    example: 'Mercado: o cliente monta a compra no WhatsApp e acompanha "saiu para entrega" sem ligar para a loja.'
+  },
+  {
+    Icon: IconReportMoney,
+    title: 'Financeiro',
+    text: 'Receita recorrente, cancelamentos, inadimplência, previsão de recebimento em 30/60/90 dias e permanência dos clientes.',
+    example: 'Saiba hoje quanto entra nos próximos 30 dias e quantos clientes estão em atraso.'
   },
   {
     Icon: IconChartBar,

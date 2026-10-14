@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import Chart from 'react-apexcharts';
 
@@ -9,6 +9,8 @@ import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
 import LinearProgress from '@mui/material/LinearProgress';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
@@ -20,6 +22,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import {
+  IconCalendarEvent,
   IconCash,
   IconChartBar,
   IconCircleCheck,
@@ -41,6 +44,7 @@ import { TgAvatar, TgCard, TgEmptyState, TgFilterBar, TgListSkeleton } from 'vie
 import { WaNumberChip, WaPageHeader, fmtPhoneBR, useWaSessions } from './waKit';
 import { WA_DARK, WA_GREEN, errMsg } from './waShared';
 import { CrmKpi, WaNumberFilter, useSessionFilter } from './crm/crmKit';
+import AgendaReport from './agenda/AgendaReport';
 
 // ============================================================================
 // WhatsApp → Métricas: volume, tempo até a 1ª resposta humana, resolução, atendimentos,
@@ -103,6 +107,19 @@ export default function WhatsAppMetrics() {
   const navigate = useNavigate();
   const { sessions } = useWaSessions(60000);
   const { value: sessionId, set: setSessionId, multi } = useSessionFilter(sessions);
+  // aba (?tab=agenda) — uma única atualização da URL
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('tab') === 'agenda' ? 'agenda' : 'service';
+  const setTab = (v) =>
+    setParams(
+      (prev) => {
+        const nx = new URLSearchParams(prev);
+        if (v === 'agenda') nx.set('tab', 'agenda');
+        else nx.delete('tab');
+        return nx;
+      },
+      { replace: true }
+    );
   const [preset, setPreset] = useState('30');
   const [from, setFrom] = useState(() => isoDay(new Date(Date.now() - 29 * 86400000)));
   const [to, setTo] = useState(() => isoDay(new Date()));
@@ -136,8 +153,10 @@ export default function WhatsAppMetrics() {
     }
   }, [from, to, sessionId]);
   useEffect(() => {
-    load();
-  }, [load]);
+    if (tab !== 'agenda') load();
+  }, [load, tab]);
+  const [agendaKey, setAgendaKey] = useState(0);
+  const refresh = () => (tab === 'agenda' ? setAgendaKey((k) => k + 1) : load());
 
   const t = data?.totals;
   const dark = theme.palette.mode === 'dark';
@@ -211,7 +230,11 @@ export default function WhatsAppMetrics() {
           <Box sx={{ display: { xs: 'none', sm: 'block' } }}>
             <Tooltip title="Atualizar">
               <span>
-                <IconButton onClick={load} disabled={loading} sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}>
+                <IconButton
+                  onClick={refresh}
+                  disabled={tab !== 'agenda' && loading}
+                  sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 2 }}
+                >
                   <IconRefresh size={18} />
                 </IconButton>
               </span>
@@ -220,12 +243,32 @@ export default function WhatsAppMetrics() {
         }
       />
 
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
+        sx={{
+          mb: 2,
+          minHeight: 40,
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          '& .MuiTab-root': { textTransform: 'none', fontWeight: 700, minHeight: 40 }
+        }}
+      >
+        <Tab value="service" icon={<IconHeadset size={16} />} iconPosition="start" label="Atendimento" />
+        <Tab value="agenda" icon={<IconCalendarEvent size={16} />} iconPosition="start" label="Agenda" />
+      </Tabs>
+
       <TgFilterBar>
         {/* período: chips em linha que quebram no celular (o TgFilterBar empilha os filhos diretos em xs) */}
         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center" sx={{ minWidth: 0 }}>
           <Tooltip title="Atualizar">
             <span style={{ display: 'contents' }}>
-              <IconButton size="small" onClick={load} disabled={loading} sx={{ display: { xs: 'inline-flex', sm: 'none' } }}>
+              <IconButton
+                size="small"
+                onClick={refresh}
+                disabled={tab !== 'agenda' && loading}
+                sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
+              >
                 <IconRefresh size={18} />
               </IconButton>
             </span>
@@ -270,10 +313,14 @@ export default function WhatsAppMetrics() {
           </Typography>
         )}
         <Box sx={{ flex: 1, display: { xs: 'none', md: 'block' } }} />
-        <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} sx={{ width: { xs: '100%', md: 'auto' } }} />
+        {tab !== 'agenda' ? (
+          <WaNumberFilter sessions={sessions} value={sessionId} onChange={setSessionId} sx={{ width: { xs: '100%', md: 'auto' } }} />
+        ) : null}
       </TgFilterBar>
 
-      {loading && !data ? (
+      {tab === 'agenda' ? (
+        <AgendaReport from={from} to={to} reloadKey={agendaKey} />
+      ) : loading && !data ? (
         <TgCard hover={false} sx={{ p: 2 }}>
           <TgListSkeleton rows={6} />
         </TgCard>
@@ -500,37 +547,39 @@ export default function WhatsAppMetrics() {
                 </Typography>
               )}
             </Section>
-            <Section title="Cobranças" icon={IconCash}>
-              <Stack spacing={1} sx={{ p: 2 }}>
-                {[
-                  ['Emitidas no período', `${n(data.charges.created)} · ${data.charges.created_label}`],
-                  ['Pagas no período', `${n(data.charges.paid)} · ${data.charges.paid_label}`],
-                  ['Em atraso agora', `${n(data.charges.overdue)} · ${data.charges.overdue_label}`],
-                  ['Falharam ao gerar', n(data.charges.failed)]
-                ].map(([l, v]) => (
-                  <Stack
-                    key={l}
-                    direction="row"
-                    justifyContent="space-between"
-                    sx={{ borderBottom: '1px dashed', borderColor: 'divider', pb: 0.5 }}
+            {data.charges ? (
+              <Section title="Cobranças" icon={IconCash}>
+                <Stack spacing={1} sx={{ p: 2 }}>
+                  {[
+                    ['Emitidas no período', `${n(data.charges.created)} · ${data.charges.created_label}`],
+                    ['Pagas no período', `${n(data.charges.paid)} · ${data.charges.paid_label}`],
+                    ['Em atraso agora', `${n(data.charges.overdue)} · ${data.charges.overdue_label}`],
+                    ['Falharam ao gerar', n(data.charges.failed)]
+                  ].map(([l, v]) => (
+                    <Stack
+                      key={l}
+                      direction="row"
+                      justifyContent="space-between"
+                      sx={{ borderBottom: '1px dashed', borderColor: 'divider', pb: 0.5 }}
+                    >
+                      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                        {l}
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                        {v}
+                      </Typography>
+                    </Stack>
+                  ))}
+                  <Button
+                    size="small"
+                    onClick={() => navigate('/whatsapp/charges')}
+                    sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700 }}
                   >
-                    <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                      {l}
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      {v}
-                    </Typography>
-                  </Stack>
-                ))}
-                <Button
-                  size="small"
-                  onClick={() => navigate('/whatsapp/charges')}
-                  sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700 }}
-                >
-                  Ver cobranças
-                </Button>
-              </Stack>
-            </Section>
+                    Ver cobranças
+                  </Button>
+                </Stack>
+              </Section>
+            ) : null}
           </Box>
 
           <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' } }}>

@@ -67,3 +67,15 @@ export function planLabel(access) {
   if (access.lifetime || access.period_days == null) return `${formatBRL(access.price_cents)} · pagamento único (vitalício)`;
   return `${formatBRL(access.price_cents)} a cada ${access.period_days} dias`;
 }
+
+// Sub-permissões do módulo WhatsApp (Fase 7, espelho de SUB_PERMISSIONS em modules.const.ts).
+// Só valem junto com `whatsapp`; OWNER/ADMIN/SUPER_ADMIN têm todas. Guardadas em `users.modules`;
+// `whatsapp:basic` = marcador "nenhuma escolhida" (sem ele o back dá as três).
+export const WA_SUB_PERMISSIONS = [
+  { key: 'whatsapp:finance', label: 'Cobranças e financeiro', hint: 'Cobranças, cartões salvos e relatório financeiro.' },
+  { key: 'whatsapp:crm', label: 'Clientes, produtos e assinaturas', hint: 'Lista de clientes, catálogo, assinaturas, cupons e unidades.' },
+  { key: 'whatsapp:settings', label: 'Configurações do WhatsApp', hint: 'Números, fluxo do bot, etiquetas, respostas rápidas e modelos.' }
+];
+export const WA_SUB_KEYS = WA_SUB_PERMISSIONS.map((p) => p.key);
+export const WA_SUB_MARKER = 'whatsapp:basic';
+export const permissionLabel = (p) => WA_SUB_PERMISSIONS.find((x) => x.key === p)?.label || p;

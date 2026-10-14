@@ -85,8 +85,8 @@ function redirectToLogin() {
   clearStoredSession();
   const path = window.location.pathname || '';
   if (path.startsWith('/login')) return;
-  // rotas públicas (webchat/quiz/legal) nunca são redirecionadas
-  if (/^\/(webchat|quiz|legal)\//.test(path)) return;
+  // rotas públicas (webchat/quiz/legal/pagamento) nunca são redirecionadas
+  if (/^\/(webchat|quiz|legal|pay)\//.test(path)) return;
   window.location.assign('/login');
 }
 
@@ -124,10 +124,14 @@ api.interceptors.response.use(
     // Assinatura/módulos (AccessInterceptor do back): avisa o AccessGate.
     //  402 PAYMENT_REQUIRED → recarrega /me e mostra a tela de pagamento
     //  403 MODULE_DISABLED  → toast + volta pro dashboard
+    //  403 PERMISSION_DENIED → toast (sub-permissão do WhatsApp; a rota é protegida pelo RequirePermission)
     if (status === 402) {
       window.dispatchEvent(new CustomEvent('pm:payment-required', { detail: error?.response?.data || null }));
     } else if (status === 403 && error?.response?.data?.code === 'MODULE_DISABLED') {
       window.dispatchEvent(new CustomEvent('pm:module-disabled', { detail: error.response.data }));
+    } else if (status === 403 && error?.response?.data?.code === 'PERMISSION_DENIED') {
+      // sub-permissão do WhatsApp (Fase 7): só avisa (toast no AccessGate), sem redirecionar
+      window.dispatchEvent(new CustomEvent('pm:permission-denied', { detail: error.response.data }));
     }
 
     if (status !== 401 || !config || isAuthEndpoint(config)) {

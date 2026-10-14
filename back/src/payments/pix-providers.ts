@@ -1,243 +1,56 @@
-// Abstração de gateway de pagamento PIX — COMPARTILHADA (Telegram + Webchat).
-// Sem dependência de Nest/Prisma/Telegram. `opts.payerRef` identifica o pagador
-// em qualquer canal (tg_user_id, session_id do webchat…). Provedores plugáveis.
-// Cada provedor implementa: criar cobrança PIX, consultar status, testar credencial,
-// e extrair o id da cobrança de um webhook. Status normalizado: PENDING|PAID|EXPIRED|FAILED.
+// Fachada dos gateways de pagamento — COMPARTILHADA (Telegram, Webchat, Fluxo do Bot, Cobranças do WhatsApp,
+// assinaturas da plataforma). Sem Nest/Prisma. As implementações ficam em `providers/` (Fase 4):
+// `mercadopago.ts` (PIX + boleto), `pushinpay.ts` (só PIX) e `asaas.ts` (PIX, boleto e cartão; exige CPF/CNPJ
+// do cliente → só nas Cobranças do WhatsApp, que têm o documento). As assinaturas exportadas aqui NÃO mudaram.
+// Status normalizado: PENDING|PAID|EXPIRED|FAILED. `opts.payerRef` identifica o pagador (MP/PushinPay);
+// `opts.payer` ({ref, name, doc, email, phone, customerId}) é o cliente para o Asaas.
+import { BoletoPayer, BoletoResult, CancelResult, CardResult, PixResult, ProviderPayer, StatusResult, TestResult } from './providers/types';
+import { cleanToken } from './providers/http';
+import { mpCancel, mpCreate, mpCreateBoleto, mpStatus, mpTest } from './providers/mercadopago';
+import { ppCreate, ppStatus, ppTest } from './providers/pushinpay';
+import { asaasCancel, asaasCreateBoleto, asaasCreateCard, asaasCreatePix, asaasStatus, asaasTest, asaasWebhookChargeId } from './providers/asaas';
+export { asaasFindByReference } from './providers/asaas';
 
-export type NormStatus = 'PENDING' | 'PAID' | 'EXPIRED' | 'FAILED';
+export type { NormStatus, PixResult, StatusResult, BoletoResult, BoletoPayer, TestResult, CancelResult, CardResult, ProviderPayer } from './providers/types';
 
-export type PixResult = {
-  ok: boolean;
-  chargeId?: string;
-  pixCode?: string; // copia e cola
-  qrBase64?: string; // imagem do QR (base64 puro, sem prefixo data:)
-  error?: string;
-};
-export type StatusResult = { ok: boolean; status?: NormStatus; error?: string };
-export type BoletoResult = {
-  ok: boolean;
-  chargeId?: string;
-  url?: string; // link do boleto (PDF/página do MP)
-  barcode?: string; // código de barras
-  digitable?: string; // linha digitável (quando o gateway devolve)
-  error?: string;
-};
-export type BoletoPayer = { name: string; email: string; doc: string; address: { zip: string; street: string; number: string; district: string; city: string; state: string } };
-export type TestResult = { ok: boolean; detail?: string };
-export type CancelResult = { ok: boolean; error?: string };
+/** Gateway "principal" (Telegram, Webchat, PIX do bot): só quem cobra sem CPF do pagador. */
+export const KNOWN_PROVIDERS = ['mercadopago', 'pushinpay'];
+/** Gateways aceitos nas Cobranças do WhatsApp (CRM), por finalidade. */
+export const CRM_PROVIDERS = ['mercadopago', 'pushinpay', 'asaas'];
+export const PROVIDER_LABEL: Record<string, string> = { mercadopago: 'Mercado Pago', pushinpay: 'PushinPay', asaas: 'Asaas' };
+export const providerSupports = (provider: string) => ({
+  pix: ['mercadopago', 'pushinpay', 'asaas'].includes(provider),
+  boleto: provider === 'mercadopago' || provider === 'asaas',
+  card: provider === 'asaas',
+  installments: provider === 'asaas',
+  list: provider === 'asaas',
+});
 
-// ISO 8601 com offset explícito (o Mercado Pago exige offset, ex.:
-// "2026-09-26T12:00:00.000-03:00"; aqui geramos em UTC "+00:00").
-function isoWithOffset(d: Date): string {
-  return d.toISOString().replace('Z', '+00:00');
-}
-
-const TIMEOUT = 15000;
-
-async function httpJson(url: string, opts: any): Promise<{ status: number; json: any }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT);
-  try {
-    const res = await fetch(url, { ...opts, signal: controller.signal });
-    const json = await res.json().catch(() => ({}));
-    return { status: res.status, json };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function stripBase64(s: any): string | undefined {
-  if (!s) return undefined;
-  const str = String(s);
-  const i = str.indexOf('base64,');
-  return i >= 0 ? str.slice(i + 7) : str;
-}
-
-// ------------------------------- Mercado Pago -------------------------------
-const MP = 'https://api.mercadopago.com';
-
-async function mpCreate(token: string, amountCents: number, description: string, opts: any): Promise<PixResult> {
-  try {
-    // A-22: o QR do MP valia ~24h enquanto localmente expirava em 30 min — quem
-    // pagava "atrasado" nunca recebia. Agora o gateway expira junto
-    // (`date_of_expiration`) e avisa no nosso webhook (`notification_url`).
-    const expiresInMin = Number(opts?.expiresInMin) > 0 ? Number(opts.expiresInMin) : 30;
-    const body: Record<string, any> = {
-      transaction_amount: Number((amountCents / 100).toFixed(2)),
-      description: description.slice(0, 250),
-      payment_method_id: 'pix',
-      payer: { email: opts?.email || `lead_${opts?.payerRef || opts?.tgUserId || 'x'}@pubmail.bot`, first_name: opts?.name || 'Lead' },
-      date_of_expiration: isoWithOffset(new Date(Date.now() + expiresInMin * 60_000)),
-      ...(opts?.webhookUrl ? { notification_url: String(opts.webhookUrl) } : {}),
-    };
-    const { status, json } = await httpJson(`${MP}/v1/payments`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-Idempotency-Key': `${opts?.idempotency || Date.now()}-${Math.random().toString(36).slice(2)}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (status >= 200 && status < 300 && json?.id) {
-      const td = json?.point_of_interaction?.transaction_data || {};
-      return { ok: true, chargeId: String(json.id), pixCode: td.qr_code, qrBase64: stripBase64(td.qr_code_base64) };
-    }
-    return { ok: false, error: json?.message || json?.error || `HTTP ${status}` };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-// Boleto (bolbradesco): exige CPF/CNPJ, e-mail e endereço do pagador; vencimento ≥ 3 dias.
-async function mpCreateBoleto(token: string, amountCents: number, description: string, payer: BoletoPayer, opts: any): Promise<BoletoResult> {
-  try {
-    const doc = String(payer.doc || '').replace(/\D/g, '');
-    const parts = String(payer.name || 'Cliente').trim().split(/\s+/);
-    const first = parts.shift() || 'Cliente';
-    const last = parts.join(' ') || first;
-    const due: Date = opts?.dueAt instanceof Date ? opts.dueAt : new Date(Date.now() + 3 * 86_400_000);
-    const body: Record<string, any> = {
-      transaction_amount: Number((amountCents / 100).toFixed(2)),
-      description: description.slice(0, 250),
-      payment_method_id: 'bolbradesco',
-      payer: {
-        email: payer.email,
-        first_name: first,
-        last_name: last,
-        identification: { type: doc.length > 11 ? 'CNPJ' : 'CPF', number: doc },
-        address: { zip_code: String(payer.address.zip || '').replace(/\D/g, ''), street_name: payer.address.street, street_number: payer.address.number, neighborhood: payer.address.district, city: payer.address.city, federal_unit: payer.address.state },
-      },
-      date_of_expiration: isoWithOffset(due),
-      ...(opts?.webhookUrl ? { notification_url: String(opts.webhookUrl) } : {}),
-    };
-    const { status, json } = await httpJson(`${MP}/v1/payments`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Idempotency-Key': `${opts?.idempotency || Date.now()}-${Math.random().toString(36).slice(2)}` },
-      body: JSON.stringify(body),
-    });
-    if (status >= 200 && status < 300 && json?.id) {
-      const td = json?.transaction_details || {};
-      return { ok: true, chargeId: String(json.id), url: td.external_resource_url || undefined, barcode: json?.barcode?.content || undefined, digitable: td.digitable_line || json?.point_of_interaction?.transaction_data?.digitable_line || undefined };
-    }
-    const cause = Array.isArray(json?.cause) && json.cause[0]?.description ? ` (${json.cause[0].description})` : '';
-    return { ok: false, error: `${json?.message || json?.error || `HTTP ${status}`}${cause}` };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-async function mpStatus(token: string, chargeId: string): Promise<StatusResult> {
-  try {
-    const { status, json } = await httpJson(`${MP}/v1/payments/${chargeId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (status < 200 || status >= 300) return { ok: false, error: json?.message || `HTTP ${status}` };
-    const s = String(json?.status || '').toLowerCase();
-    if (s === 'approved') return { ok: true, status: 'PAID' };
-    if (s === 'pending' || s === 'in_process' || s === 'authorized') return { ok: true, status: 'PENDING' };
-    if (s === 'cancelled' || s === 'expired') return { ok: true, status: 'EXPIRED' };
-    return { ok: true, status: 'FAILED' };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-// Cancela a cobrança no gateway (só funciona enquanto pendente). Best-effort.
-async function mpCancel(token: string, chargeId: string): Promise<CancelResult> {
-  try {
-    const { status, json } = await httpJson(`${MP}/v1/payments/${chargeId}`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'cancelled' }),
-    });
-    if (status >= 200 && status < 300) return { ok: true };
-    return { ok: false, error: json?.message || `HTTP ${status}` };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-async function mpTest(token: string): Promise<TestResult> {
-  try {
-    const { status, json } = await httpJson(`${MP}/users/me`, { headers: { Authorization: `Bearer ${token}` } });
-    if (status >= 200 && status < 300) return { ok: true, detail: json?.nickname ? `Conta ${json.nickname}` : 'Credencial válida' };
-    return { ok: false, detail: json?.message || `HTTP ${status}` };
-  } catch (e: any) {
-    return { ok: false, detail: String(e?.message || e) };
-  }
-}
-
-// --------------------------------- PushinPay --------------------------------
-const PP = 'https://api.pushinpay.com.br';
-
-async function ppCreate(token: string, amountCents: number, description: string, opts: any): Promise<PixResult> {
-  try {
-    const { status, json } = await httpJson(`${PP}/api/pix/cashIn`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ value: amountCents, ...(opts?.webhookUrl ? { webhook_url: opts.webhookUrl } : {}) }),
-    });
-    if (status >= 200 && status < 300 && json?.id) {
-      return { ok: true, chargeId: String(json.id), pixCode: json.qr_code, qrBase64: stripBase64(json.qr_code_base64) };
-    }
-    return { ok: false, error: json?.message || JSON.stringify(json?.errors || json) || `HTTP ${status}` };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-async function ppStatus(token: string, chargeId: string): Promise<StatusResult> {
-  try {
-    const { status, json } = await httpJson(`${PP}/api/transactions/${chargeId}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
-    if (status < 200 || status >= 300) return { ok: false, error: json?.message || `HTTP ${status}` };
-    const s = String(json?.status || '').toLowerCase();
-    if (s === 'paid' || s === 'approved') return { ok: true, status: 'PAID' };
-    if (s === 'created' || s === 'pending') return { ok: true, status: 'PENDING' };
-    if (s === 'expired') return { ok: true, status: 'EXPIRED' };
-    return { ok: true, status: 'FAILED' };
-  } catch (e: any) {
-    return { ok: false, error: String(e?.message || e) };
-  }
-}
-
-async function ppTest(token: string): Promise<TestResult> {
-  // PushinPay não tem endpoint "me"; batemos numa transação inexistente:
-  // 401 => token inválido; 404/422 => token aceito.
-  try {
-    const { status } = await httpJson(`${PP}/api/transactions/00000000-0000-0000-0000-000000000000`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
-    if (status === 401 || status === 403) return { ok: false, detail: 'Token recusado (401/403).' };
-    return { ok: true, detail: 'Token aceito.' };
-  } catch (e: any) {
-    return { ok: false, detail: String(e?.message || e) };
-  }
-}
-
-// --------------------------------- Fachada ----------------------------------
-// Remove espaços/quebras de linha/controle — um token colado com lixo estouraria
-// o header Authorization ("Cannot convert argument to a ByteString").
-const cleanToken = (t: any) => String(t || '').split('').filter((c) => c.charCodeAt(0) > 32 && c.charCodeAt(0) !== 127).join('');
-
-export function createPixCharge(provider: string, token: string, amountCents: number, description: string, opts: any = {}): Promise<PixResult> {
+export function createPixCharge(provider: string, token: string, amountCents: number, description: string, opts: any = {}): Promise<PixResult & { customerId?: string; invoiceUrl?: string }> {
   const tk = cleanToken(token);
   if (provider === 'pushinpay') return ppCreate(tk, amountCents, description, opts);
+  if (provider === 'asaas') return asaasCreatePix(tk, amountCents, description, opts);
   return mpCreate(tk, amountCents, description, opts);
 }
 
-/** Boleto só no Mercado Pago (PushinPay é só PIX). */
-export function createBoletoCharge(provider: string, token: string, amountCents: number, description: string, payer: BoletoPayer, opts: any = {}): Promise<BoletoResult> {
+/** Boleto: Mercado Pago (exige CPF, e-mail e endereço) ou Asaas (exige CPF/CNPJ). PushinPay é só PIX. */
+export function createBoletoCharge(provider: string, token: string, amountCents: number, description: string, payer: BoletoPayer, opts: any = {}): Promise<BoletoResult & { customerId?: string; invoiceUrl?: string }> {
+  if (provider === 'asaas') return asaasCreateBoleto(cleanToken(token), amountCents, description, opts);
   if (provider !== 'mercadopago') return Promise.resolve({ ok: false, error: 'Este gateway não emite boleto (só PIX).' });
   return mpCreateBoleto(cleanToken(token), amountCents, description, payer, opts);
 }
-export const providerSupportsBoleto = (provider: string) => provider === 'mercadopago';
+export const providerSupportsBoleto = (provider: string) => providerSupports(provider).boleto;
+
+/** Cartão (só Asaas): com token cobra na hora; sem token devolve a página segura do Asaas. */
+export function createCardCharge(provider: string, token: string, amountCents: number, description: string, opts: { payer: ProviderPayer; dueAt?: Date | string | null; cardToken?: string | null; installments?: number | null; remoteIp?: string | null; externalReference?: string | null }): Promise<CardResult> {
+  if (provider !== 'asaas') return Promise.resolve({ ok: false, error: 'Cartão só pelo Asaas. Configure o Asaas em Configurações → Pagamentos.' });
+  return asaasCreateCard(cleanToken(token), amountCents, description, opts);
+}
 
 export function getChargeStatus(provider: string, token: string, chargeId: string): Promise<StatusResult> {
   const tk = cleanToken(token);
   if (provider === 'pushinpay') return ppStatus(tk, chargeId);
+  if (provider === 'asaas') return asaasStatus(tk, chargeId);
   return mpStatus(tk, chargeId);
 }
 
@@ -247,6 +60,7 @@ export function cancelCharge(provider: string, token: string, chargeId: string):
   const tk = cleanToken(token);
   if (!tk || !chargeId) return Promise.resolve({ ok: false, error: 'token/chargeId vazio' });
   if (provider === 'pushinpay') return Promise.resolve({ ok: true });
+  if (provider === 'asaas') return asaasCancel(tk, chargeId);
   return mpCancel(tk, chargeId);
 }
 
@@ -254,6 +68,7 @@ export function testProvider(provider: string, token: string): Promise<TestResul
   const tk = cleanToken(token);
   if (!tk) return Promise.resolve({ ok: false, detail: 'Token vazio.' });
   if (provider === 'pushinpay') return ppTest(tk);
+  if (provider === 'asaas') return asaasTest(tk);
   return mpTest(tk);
 }
 
@@ -262,6 +77,7 @@ export function extractWebhookChargeId(provider: string, query: any, body: any):
   if (provider === 'pushinpay') {
     return body?.id ? String(body.id) : null;
   }
+  if (provider === 'asaas') return asaasWebhookChargeId(body);
   // Mercado Pago: id vem em data.id (body) ou em query (id / data.id / resource)
   const fromBody = body?.data?.id || body?.resource;
   const fromQuery = query?.['data.id'] || query?.id;
@@ -272,5 +88,3 @@ export function extractWebhookChargeId(provider: string, query: any, body: any):
   const m = s.match(/(\d+)\s*$/);
   return m ? m[1] : s;
 }
-
-export const KNOWN_PROVIDERS = ['mercadopago', 'pushinpay'];

@@ -25,7 +25,8 @@ export class WhatsAppBotController {
   @Get('bot/flows') list(@Req() req: any) { return this.bot.listFlows(req.user.organizationId); }
   @Post('bot/flows') create(@Req() req: any, @Body() dto: CreateBotFlowDto) { return this.bot.createFlow(req.user.organizationId, dto || {}); }
   @Get('bot/flows/:id') getFlow(@Req() req: any, @Param('id') id: string) { return this.bot.getFlow(req.user.organizationId, id); }
-  @Put('bot/flows/:id') update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateBotFlowDto) { return this.bot.updateFlow(req.user.organizationId, id, dto || {}); }
+  // fluxo ATIVO só dono/admin altera (a regra depende da linha do fluxo → fica no serviço, ForbiddenException)
+  @Put('bot/flows/:id') update(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateBotFlowDto) { return this.bot.updateFlow(req.user.organizationId, id, dto || {}, req.user); }
 
   @Delete('bot/flows/:id')
   @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN')

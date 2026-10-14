@@ -1,5 +1,5 @@
 import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
-import { MODULES } from '../modules.const';
+import { MODULES, SUB_PERMISSIONS } from '../modules.const';
 
 export class BillingSettingsDto {
   @IsOptional() @IsString() provider?: string;
@@ -19,7 +19,7 @@ export class ExtendDto {
 }
 
 export class UserModulesDto {
-  @IsArray() @IsIn(MODULES, { each: true }) modules: string[];
+  @IsArray() @IsIn([...MODULES, ...SUB_PERMISSIONS, 'whatsapp:basic'], { each: true }) modules: string[];
 }
 
 // Novo CLIENTE = organização + usuário dono + plano + módulos, numa transação.
@@ -28,7 +28,7 @@ export class CreateClientDto {
   @IsEmail() email: string;
   @IsString() @MinLength(6) password: string;
   @IsOptional() @IsString() @MaxLength(255) org_name?: string;
-  @IsArray() @IsIn(MODULES, { each: true }) modules: string[];
+  @IsArray() @IsIn([...MODULES, ...SUB_PERMISSIONS, 'whatsapp:basic'], { each: true }) modules: string[];
   @IsInt() @Min(0) price_cents: number;
   @IsOptional() @ValidateIf((_, v) => v !== null) @IsInt() @Min(1) @Max(3650) period_days?: number | null;
   @IsOptional() @IsIn(['OWNER', 'ADMIN', 'MEMBER']) role?: string;
