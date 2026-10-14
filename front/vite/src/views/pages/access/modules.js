@@ -16,7 +16,7 @@ export const MODULE_DEFS = {
   email: {
     key: 'email',
     label: 'E-mail Marketing',
-    description: 'Projetos, templates, automações e analytics',
+    description: 'Disparos, construtor, automações e métricas',
     Icon: IconMailBolt,
     color: '#f59e0b'
   },
@@ -38,15 +38,15 @@ export const MODULE_DEFS = {
   whatsapp: {
     key: 'whatsapp',
     label: 'WhatsApp',
-    description: 'Chat, status, contatos e broadcasts',
+    description: 'Chat da equipe, bot, CRM, assinaturas e cobranças',
     Icon: IconBrandWhatsapp,
     color: '#25D366'
   },
-  wordpress: { key: 'wordpress', label: 'WordPress', description: 'Plugin Tradutor Invisível', Icon: IconBrandWordpress, color: '#21759b' },
+  wordpress: { key: 'wordpress', label: 'WordPress', description: 'Tradutor Invisível e notificações push', Icon: IconBrandWordpress, color: '#21759b' },
   settings: {
     key: 'settings',
     label: 'Configurações',
-    description: 'Conta, domínios, integrações e chaves',
+    description: 'Conta, domínios, pagamentos e integrações',
     Icon: IconSettings,
     color: '#64748b'
   }

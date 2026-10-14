@@ -8,7 +8,7 @@ import { WhatsAppTasksService } from './whatsapp-tasks.service';
 import { WhatsAppNotesService } from './whatsapp-notes.service';
 import { WhatsAppChatService } from './whatsapp-chat.service';
 import { WaAccessService } from './wa-access.service';
-import { DealDto, MoveChatDto, NoteDto, ReorderStagesDto, StageDto, TaskDto } from './dto/whatsapp-pipeline.dto';
+import { DealDto, DeleteTaskListDto, MoveChatDto, MoveTaskDto, NoteDto, ReorderStagesDto, StageDto, TaskDto, TaskLabelDto, TaskListDto } from './dto/whatsapp-pipeline.dto';
 
 // Funil (Kanban) — etapas só dono/admin; mover conversas qualquer atendente.
 // Multi-número: `chat_id`/`:chatId` = uuid da conversa; toda rota por conversa confere se o usuário
@@ -55,10 +55,24 @@ export class WhatsAppTasksController {
     await this.access.assertChat(req.user, await this.chat.chatRow(req.user.organizationId, String(chatUuid)));
   }
 
+  // quadro (Trello) — rotas fixas antes das com :id
+  @Get('board') async board(@Req() req: any, @Query() q: any) { return this.tasks.board(req.user.organizationId, req.user.userId, q, await this.access.allowedIds(req.user)); }
+  @Get('lists') lists(@Req() req: any) { return this.tasks.lists(req.user.organizationId); }
+  @Post('lists') createList(@Req() req: any, @Body() dto: TaskListDto) { return this.tasks.createList(req.user.organizationId, dto, req.user.userId); }
+  @Put('lists/reorder') reorderLists(@Req() req: any, @Body() dto: ReorderStagesDto) { return this.tasks.reorderLists(req.user.organizationId, dto.ids, req.user.userId); }
+  @Put('lists/:listId') updateList(@Req() req: any, @Param('listId') listId: string, @Body() dto: TaskListDto) { return this.tasks.updateList(req.user.organizationId, listId, dto, req.user.userId); }
+  @Post('lists/:listId/delete') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') deleteList(@Req() req: any, @Param('listId') listId: string, @Body() dto: DeleteTaskListDto) { return this.tasks.deleteList(req.user.organizationId, listId, dto || {}, req.user.userId); }
+  @Post('lists/:listId/clear') @UseGuards(JwtAuthGuard, RolesGuard) @Roles('OWNER', 'ADMIN', 'SUPER_ADMIN') clearList(@Req() req: any, @Param('listId') listId: string) { return this.tasks.clearList(req.user.organizationId, listId, req.user.userId); }
+  @Get('labels') labels(@Req() req: any) { return this.tasks.labels(req.user.organizationId); }
+  @Post('labels') createLabel(@Req() req: any, @Body() dto: TaskLabelDto) { return this.tasks.createLabel(req.user.organizationId, dto, req.user.userId); }
+  @Put('labels/:labelId') updateLabel(@Req() req: any, @Param('labelId') labelId: string, @Body() dto: TaskLabelDto) { return this.tasks.updateLabel(req.user.organizationId, labelId, dto, req.user.userId); }
+  @Delete('labels/:labelId') deleteLabel(@Req() req: any, @Param('labelId') labelId: string) { return this.tasks.deleteLabel(req.user.organizationId, labelId, req.user.userId); }
+
   @Get() async list(@Req() req: any, @Query() q: any) { return this.tasks.list(req.user.organizationId, req.user.userId, q, await this.access.allowedIds(req.user)); }
   @Get('counts') async counts(@Req() req: any, @Query('session_id') sessionId?: string) { return this.tasks.counts(req.user.organizationId, req.user.userId, await this.access.allowedIds(req.user), sessionId || null); }
   @Post() async create(@Req() req: any, @Body() dto: TaskDto) { await this.guardChatId(req, dto.chat_id); return this.tasks.create(req.user.organizationId, req.user.userId, dto); }
   @Put(':id') async update(@Req() req: any, @Param('id') id: string, @Body() dto: TaskDto) { await this.guardTask(req, id); await this.guardChatId(req, dto.chat_id); return this.tasks.update(req.user.organizationId, req.user.userId, id, dto); }
+  @Post(':id/move') async move(@Req() req: any, @Param('id') id: string, @Body() dto: MoveTaskDto) { await this.guardTask(req, id); return this.tasks.move(req.user.organizationId, req.user.userId, id, dto); }
   @Post(':id/done') async done(@Req() req: any, @Param('id') id: string) { await this.guardTask(req, id); return this.tasks.setDone(req.user.organizationId, req.user.userId, id, true); }
   @Post(':id/reopen') async reopen(@Req() req: any, @Param('id') id: string) { await this.guardTask(req, id); return this.tasks.setDone(req.user.organizationId, req.user.userId, id, false); }
   @Delete(':id') async remove(@Req() req: any, @Param('id') id: string) { await this.guardTask(req, id); return this.tasks.remove(req.user.organizationId, id); }

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -12,8 +13,21 @@ import LoginShowcase from './LoginShowcase';
 // No mobile o painel esquerdo some e a marca sobe pro topo do formulário.
 
 export default function Login() {
+  useEffect(() => {
+    document.title = 'PM - Entrar';
+  }, []);
+
   return (
-    <Box sx={{ minHeight: '100vh', height: { md: '100vh' }, overflow: { md: 'hidden' }, display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1.05fr 1fr', lg: '1.15fr 1fr' }, bgcolor: 'background.default' }}>
+    <Box
+      sx={{
+        minHeight: '100vh',
+        height: { md: '100vh' },
+        overflow: { md: 'hidden' },
+        display: 'grid',
+        gridTemplateColumns: { xs: '1fr', md: '1.05fr 1fr', lg: '1.15fr 1fr' },
+        bgcolor: 'background.default'
+      }}
+    >
       <Box sx={{ display: { xs: 'none', md: 'block' }, minHeight: 0 }}>
         <LoginShowcase />
       </Box>

@@ -311,6 +311,8 @@ export class AdminService {
           await tx.organization_settings.deleteMany(where); // chaves de API da org
           await tx.whatsapp_ratings.deleteMany(where);
           await tx.whatsapp_tasks.deleteMany(where); // CRM do WhatsApp (tarefas, notas, funil, cobranças, assinaturas, clientes, produtos)
+          await tx.whatsapp_task_lists.deleteMany(where); // quadro de tarefas (colunas e etiquetas)
+          await tx.whatsapp_task_labels.deleteMany(where);
           await tx.whatsapp_chat_notes.deleteMany(where);
           await tx.whatsapp_pipeline_stages.deleteMany(where);
           await tx.whatsapp_outbox.deleteMany(where); // fila de envio (Fase 3 das assinaturas)

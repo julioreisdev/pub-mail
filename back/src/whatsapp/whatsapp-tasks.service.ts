@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppHooks } from './whatsapp-hooks.service';
@@ -14,6 +15,30 @@ import { ChatKey, WhatsAppAttendanceService } from './whatsapp-attendance.servic
 // ============================================================================
 
 const BRT = 'America/Sao_Paulo';
+
+// Quadro estilo Trello (14/10/2026): colunas da conta (`whatsapp_task_lists`), posição fracionária do cartão
+// (`position`, DOUBLE: entre dois vizinhos = média; sem folga = renumera a coluna), etiquetas da conta
+// (`whatsapp_task_labels`, ids em `label_ids`), checklist e cor de capa. A coluna marcada `is_done` = concluídas:
+// soltar nela conclui; tirar dela reabre; o checkbox "Concluir" move para ela (e "Reabrir" volta para a 1ª aberta).
+const STEP = 1024;
+const DONE_TAKE = 60; // cartões por coluna de concluídas no quadro (as mais recentes no topo)
+const OPEN_TAKE = 3000;
+const MAX_LISTS = 30;
+const MAX_LABELS = 30;
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const DEFAULT_LISTS = [
+  { name: 'A fazer', color: '#64748b', is_done: false },
+  { name: 'Fazendo', color: '#377ef0', is_done: false },
+  { name: 'Concluído', color: '#22c55e', is_done: true },
+];
+const DEFAULT_LABELS = [
+  { name: 'Urgente', color: '#f87168' },
+  { name: 'Importante', color: '#fea362' },
+  { name: 'Aguardando cliente', color: '#f5cd47' },
+  { name: 'Financeiro', color: '#4bce97' },
+  { name: 'Suporte', color: '#579dff' },
+  { name: 'Venda', color: '#9f8fef' },
+];
 
 @Injectable()
 export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
@@ -67,6 +92,11 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
       session_id: t.session_id || null,
       chat,
       customer_id: t.customer_id || null,
+      list_id: t.list_id || null,
+      position: Number(t.position || 0),
+      label_ids: Array.isArray(t.label_ids) ? t.label_ids : [],
+      checklist: Array.isArray(t.checklist) ? t.checklist : [],
+      cover: t.cover || null,
       created_at: t.created_at, updated_at: t.updated_at,
     };
   }
@@ -91,6 +121,33 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
 
   // ---------------------------------------------------------------- consultas
   /** scope: mine|all · status: open|done|overdue|today|all · chat_id (uuid) · session_id · customer_id */
+  /** Filtro comum da lista e do quadro (responsável, conversa/número, cliente, busca). null = nada a mostrar. */
+  private async baseWhere(orgId: string, userId: string | null, q: any, allowed: Set<string> | null): Promise<any | null> {
+    const where: any = { organization_id: orgId };
+    const and: any[] = [];
+    const scope = String(q.scope || 'all');
+    if (scope === 'mine' && userId) and.push({ OR: [{ assigned_user_id: userId }, { assigned_user_id: null, created_by: userId }] });
+    else if (scope === 'unassigned') where.assigned_user_id = null;
+    else if (scope && scope !== 'all' && scope !== 'mine') where.assigned_user_id = scope;
+    if (q.chat_id) {
+      const chat = await this.prisma.whatsapp_chats.findFirst({ where: { id: String(q.chat_id), organization_id: orgId }, select: { session_id: true, chat_id: true } });
+      if (!chat || (allowed !== null && !allowed.has(chat.session_id))) return null;
+      where.chat_id = chat.chat_id;
+      and.push({ OR: [{ session_id: chat.session_id }, { session_id: null }] });
+    } else if (q.session_id) {
+      const sid = String(q.session_id);
+      if (allowed !== null && !allowed.has(sid)) return null;
+      where.session_id = sid;
+    } else {
+      const ac = this.allowedClause(allowed);
+      if (ac) and.push(ac);
+    }
+    if (q.customer_id) where.customer_id = String(q.customer_id);
+    if (q.q) and.push({ OR: [{ title: { contains: String(q.q).trim() } }, { description: { contains: String(q.q).trim() } }] });
+    if (and.length) where.AND = and;
+    return where;
+  }
+
   async list(orgId: string, userId: string | null, q: any = {}, allowed: Set<string> | null = null) {
     const page = Math.max(1, parseInt(String(q.page || 1), 10) || 1);
     const size = Math.min(200, Math.max(10, parseInt(String(q.page_size || 50), 10) || 50));
@@ -171,8 +228,21 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
     if (!title) throw new BadRequestException('Dê um título à tarefa.');
     const assigned = await this.assertUser(orgId, dto?.assigned_user_id);
     const chat = dto?.chat_id ? await this.chatRow(orgId, String(dto.chat_id)) : null;
+    await this.ensureBoard(orgId);
+    const lists = await this.listRows(orgId);
+    const list = dto?.list_id ? lists.find((l) => l.id === String(dto.list_id)) : lists.find((l) => !l.is_done) || lists[0];
+    if (dto?.list_id && !list) throw new BadRequestException('Coluna não encontrada.');
+    const isDone = Boolean(list?.is_done);
     const row = await this.prisma.whatsapp_tasks.create({
-      data: { organization_id: orgId, title: title.slice(0, 160), description: dto?.description ? String(dto.description).slice(0, 4000) : null, due_at: this.parseDue(dto?.due_at) ?? null, assigned_user_id: assigned, session_id: chat?.session_id ?? null, chat_id: chat?.chat_id ?? null, customer_id: dto?.customer_id ? String(dto.customer_id) : null, created_by: userId },
+      data: {
+        organization_id: orgId, title: title.slice(0, 160), description: dto?.description ? String(dto.description).slice(0, 4000) : null, due_at: this.parseDue(dto?.due_at) ?? null, assigned_user_id: assigned, session_id: chat?.session_id ?? null, chat_id: chat?.chat_id ?? null, customer_id: dto?.customer_id ? String(dto.customer_id) : null, created_by: userId,
+        list_id: list?.id ?? null,
+        position: list ? await this.edgePosition(orgId, list.id, isDone ? 'top' : 'bottom') : 0,
+        label_ids: dto?.label_ids !== undefined ? await this.cleanLabels(orgId, dto.label_ids) : undefined,
+        checklist: dto?.checklist !== undefined ? this.cleanChecklist(dto.checklist) : undefined,
+        cover: dto?.cover !== undefined ? this.cleanColor(dto.cover) : undefined,
+        ...(isDone ? { done_at: new Date(), done_by: userId } : {}),
+      },
     });
     const shaped = await this.shapeOne(orgId, row);
     if (chat && !opts.silentEvent) await this.attendance.event(orgId, { session_id: chat.session_id, chat_id: chat.chat_id }, 'task_created', userId, { task_id: row.id, title: row.title, due_at: row.due_at, source: opts.source || 'manual' });
@@ -195,6 +265,13 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
       else { data.session_id = null; data.chat_id = null; }
     }
     if (dto?.customer_id !== undefined) data.customer_id = dto.customer_id ? String(dto.customer_id) : null;
+    if (dto?.label_ids !== undefined) data.label_ids = await this.cleanLabels(orgId, dto.label_ids);
+    if (dto?.checklist !== undefined) data.checklist = this.cleanChecklist(dto.checklist);
+    if (dto?.cover !== undefined) data.cover = this.cleanColor(dto.cover);
+    if (dto?.list_id && dto.list_id !== cur.list_id) {
+      if (Object.keys(data).length) await this.prisma.whatsapp_tasks.update({ where: { id }, data });
+      return this.move(orgId, userId, id, { list_id: String(dto.list_id) });
+    }
     const row = await this.prisma.whatsapp_tasks.update({ where: { id }, data });
     const shaped = await this.shapeOne(orgId, row);
     this.presenter.emit(orgId, 'wa:task', { action: 'updated', task: shaped, by: userId });
@@ -212,7 +289,12 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
   async setDone(orgId: string, userId: string | null, id: string, done: boolean) {
     const cur = await this.prisma.whatsapp_tasks.findFirst({ where: { id, organization_id: orgId } });
     if (!cur) throw new NotFoundException('Tarefa não encontrada.');
-    const row = await this.prisma.whatsapp_tasks.update({ where: { id }, data: done ? { done_at: new Date(), done_by: userId } : { done_at: null, done_by: null, reminded_at: null } });
+    await this.ensureBoard(orgId);
+    const lists = await this.listRows(orgId);
+    const curList = lists.find((l) => l.id === cur.list_id);
+    const target = done ? (curList?.is_done ? null : lists.find((l) => l.is_done)) : curList?.is_done ? lists.find((l) => !l.is_done) : null;
+    const move = target ? { list_id: target.id, position: await this.edgePosition(orgId, target.id, done ? 'top' : 'bottom') } : {};
+    const row = await this.prisma.whatsapp_tasks.update({ where: { id }, data: { ...(done ? { done_at: new Date(), done_by: userId } : { done_at: null, done_by: null, reminded_at: null }), ...move } });
     if (cur.chat_id && cur.session_id && done) {
       const key: ChatKey = { session_id: cur.session_id, chat_id: cur.chat_id };
       await this.attendance.event(orgId, key, 'task_done', userId, { task_id: row.id, title: row.title });
@@ -228,6 +310,249 @@ export class WhatsAppTasksService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.whatsapp_tasks.delete({ where: { id } });
     this.presenter.emit(orgId, 'wa:task', { action: 'deleted', task: { id } });
     return { ok: true };
+  }
+
+  // ---------------------------------------------------------------- quadro (Trello)
+  private readonly boardReady = new Map<string, Promise<void>>();
+
+  /** Cria as colunas/etiquetas padrão na 1ª leitura e põe as tarefas antigas (sem coluna) na coluna certa. Uma vez por org por processo. */
+  async ensureBoard(orgId: string) {
+    let p = this.boardReady.get(orgId);
+    if (!p) {
+      p = this.initBoard(orgId).catch((e) => { this.boardReady.delete(orgId); throw e; });
+      this.boardReady.set(orgId, p);
+    }
+    return p;
+  }
+
+  private async initBoard(orgId: string) {
+    if (!(await this.prisma.whatsapp_task_lists.count({ where: { organization_id: orgId } })))
+      await this.prisma.whatsapp_task_lists.createMany({ data: DEFAULT_LISTS.map((l, i) => ({ organization_id: orgId, ...l, position: i })) });
+    if (!(await this.prisma.whatsapp_task_labels.count({ where: { organization_id: orgId } })))
+      await this.prisma.whatsapp_task_labels.createMany({ data: DEFAULT_LABELS.map((l, i) => ({ organization_id: orgId, ...l, position: i })) });
+    const lists = await this.listRows(orgId);
+    const open = lists.find((l) => !l.is_done) || lists[0];
+    const doneList = lists.find((l) => l.is_done) || open;
+    if (!open) return;
+    // abertas por ordem de criação; concluídas com a mais recente no topo
+    await this.prisma.$executeRaw`UPDATE whatsapp_tasks SET list_id = ${open.id}, position = UNIX_TIMESTAMP(created_at) WHERE organization_id = ${orgId} AND list_id IS NULL AND done_at IS NULL`;
+    await this.prisma.$executeRaw`UPDATE whatsapp_tasks SET list_id = ${doneList.id}, position = -UNIX_TIMESTAMP(done_at) WHERE organization_id = ${orgId} AND list_id IS NULL AND done_at IS NOT NULL`;
+  }
+
+  /** Esquece o estado do quadro da org (ex.: organização apagada). */
+  forgetBoard(orgId: string) { this.boardReady.delete(orgId); }
+
+  private listRows(orgId: string) {
+    return this.prisma.whatsapp_task_lists.findMany({ where: { organization_id: orgId }, orderBy: [{ position: 'asc' }, { created_at: 'asc' }] });
+  }
+
+  private shapeList(l: any) { return { id: l.id, name: l.name, color: l.color || null, position: l.position, is_done: Boolean(l.is_done) }; }
+  private shapeLabel(l: any) { return { id: l.id, name: l.name || '', color: l.color, position: l.position }; }
+
+  /** Posição para entrar no topo ou no fim de uma coluna. */
+  private async edgePosition(orgId: string, listId: string, at: 'top' | 'bottom') {
+    const a = await this.prisma.whatsapp_tasks.aggregate({ where: { organization_id: orgId, list_id: listId }, _max: { position: true }, _min: { position: true } });
+    return at === 'top' ? (a._min.position ?? STEP) - STEP : (a._max.position ?? 0) + STEP;
+  }
+
+  private async cleanLabels(orgId: string, ids: any): Promise<string[]> {
+    if (!Array.isArray(ids)) return [];
+    const uniq = [...new Set(ids.map((x) => String(x)))].slice(0, 20);
+    if (!uniq.length) return [];
+    const ok = await this.prisma.whatsapp_task_labels.findMany({ where: { organization_id: orgId, id: { in: uniq } }, select: { id: true } });
+    const set = new Set(ok.map((x) => x.id));
+    return uniq.filter((x) => set.has(x));
+  }
+
+  private cleanChecklist(v: any) {
+    if (!Array.isArray(v)) return [];
+    return v.slice(0, 100).map((it: any) => ({ id: String(it?.id || '').replace(/[^\w-]/g, '').slice(0, 40) || randomUUID().slice(0, 8), text: String(it?.text || '').trim().slice(0, 300), done: Boolean(it?.done) })).filter((it) => it.text);
+  }
+
+  private cleanColor(v: any): string | null {
+    if (v === null || v === undefined || v === '') return null;
+    const c = String(v).trim();
+    if (!COLOR_RE.test(c)) throw new BadRequestException('Cor inválida (use #RRGGBB).');
+    return c.toLowerCase();
+  }
+
+  /** Quadro: colunas com os cartões (filtros iguais aos da lista + etiqueta e prazo), etiquetas da conta. */
+  async board(orgId: string, userId: string | null, q: any = {}, allowed: Set<string> | null = null) {
+    await this.ensureBoard(orgId);
+    const [lists, labels] = await Promise.all([this.listRows(orgId), this.prisma.whatsapp_task_labels.findMany({ where: { organization_id: orgId }, orderBy: [{ position: 'asc' }, { created_at: 'asc' }] })]);
+    const base = await this.baseWhere(orgId, userId, q, allowed);
+    const out = { lists: lists.map((l) => ({ ...this.shapeList(l), total: 0, tasks: [] as any[] })), labels: labels.map((l) => this.shapeLabel(l)), truncated: false };
+    if (!base) return out;
+    if (q.label_id) base.AND = [...(base.AND || []), { label_ids: { array_contains: String(q.label_id) } }];
+    const now = new Date();
+    const due = String(q.due || '');
+    if (due === 'none') base.due_at = null;
+    else if (due === 'overdue') { base.due_at = { lt: now }; base.done_at = null; }
+    else if (due === 'today' || due === 'week') {
+      const d = new Intl.DateTimeFormat('en-CA', { timeZone: BRT }).format(now);
+      const end = new Date(`${d}T23:59:59.999-03:00`);
+      if (due === 'week') end.setDate(end.getDate() + 6);
+      base.due_at = { gte: new Date(`${d}T00:00:00-03:00`), lte: end };
+    }
+    const openIds = lists.filter((l) => !l.is_done).map((l) => l.id);
+    const doneIds = lists.filter((l) => l.is_done).map((l) => l.id);
+    const order: any[] = [{ position: 'asc' }, { created_at: 'asc' }];
+    const [openRows, doneParts, totals] = await Promise.all([
+      openIds.length ? this.prisma.whatsapp_tasks.findMany({ where: { ...base, list_id: { in: openIds } }, orderBy: order, take: OPEN_TAKE + 1 }) : Promise.resolve([] as any[]),
+      Promise.all(doneIds.map((lid) => this.prisma.whatsapp_tasks.findMany({ where: { ...base, list_id: lid }, orderBy: order, take: DONE_TAKE }))),
+      this.prisma.whatsapp_tasks.groupBy({ by: ['list_id'], where: base, _count: { _all: true } }),
+    ]);
+    if (openRows.length > OPEN_TAKE) { out.truncated = true; openRows.length = OPEN_TAKE; }
+    const shaped = await this.shapeMany(orgId, [...openRows, ...doneParts.flat()]);
+    const byList = new Map(out.lists.map((l) => [l.id, l]));
+    for (const t of shaped) byList.get(t.list_id)?.tasks.push(t);
+    for (const g of totals as any[]) { const l = byList.get(g.list_id); if (l) l.total = g._count._all; }
+    return out;
+  }
+
+  /** Move o cartão para a coluna `list_id`, na posição `index` (sem index = fim). Coluna de concluídas conclui; sair dela reabre. */
+  async move(orgId: string, userId: string | null, id: string, dto: { list_id: string; index?: number }) {
+    const cur = await this.prisma.whatsapp_tasks.findFirst({ where: { id, organization_id: orgId } });
+    if (!cur) throw new NotFoundException('Tarefa não encontrada.');
+    await this.ensureBoard(orgId);
+    const lists = await this.listRows(orgId);
+    const list = lists.find((l) => l.id === String(dto?.list_id || ''));
+    if (!list) throw new BadRequestException('Coluna não encontrada.');
+    const from = lists.find((l) => l.id === cur.list_id);
+    const rows = await this.prisma.whatsapp_tasks.findMany({ where: { organization_id: orgId, list_id: list.id, NOT: { id } }, orderBy: [{ position: 'asc' }, { created_at: 'asc' }], select: { id: true, position: true } });
+    const idx = dto?.index === undefined || dto?.index === null ? rows.length : Math.min(Math.max(0, Math.floor(Number(dto.index) || 0)), rows.length);
+    const prev = idx > 0 ? rows[idx - 1].position : null;
+    const next = idx < rows.length ? rows[idx].position : null;
+    let pos = prev !== null && next !== null ? (prev + next) / 2 : prev !== null ? prev + STEP : next !== null ? next - STEP : 0;
+    if (prev !== null && next !== null && !(next - prev > 1e-6)) {
+      // sem folga entre os vizinhos: renumera a coluna deixando o lugar do cartão
+      for (let i = 0; i < rows.length; i++) {
+        const p = (i < idx ? i + 1 : i + 2) * STEP;
+        if (rows[i].position !== p) await this.prisma.whatsapp_tasks.update({ where: { id: rows[i].id }, data: { position: p } });
+      }
+      pos = (idx + 1) * STEP;
+    }
+    const data: any = { list_id: list.id, position: pos };
+    const becameDone = list.is_done && !cur.done_at;
+    if (becameDone) { data.done_at = new Date(); data.done_by = userId; }
+    else if (!list.is_done && cur.done_at && (from?.is_done || !from)) { data.done_at = null; data.done_by = null; data.reminded_at = null; }
+    const row = await this.prisma.whatsapp_tasks.update({ where: { id }, data });
+    if (becameDone && cur.chat_id && cur.session_id) await this.attendance.event(orgId, { session_id: cur.session_id, chat_id: cur.chat_id }, 'task_done', userId, { task_id: row.id, title: row.title });
+    const shaped = await this.shapeOne(orgId, row);
+    this.presenter.emit(orgId, 'wa:task', { action: 'moved', task: shaped, by: userId });
+    return shaped;
+  }
+
+  // colunas
+  async lists(orgId: string) { await this.ensureBoard(orgId); return (await this.listRows(orgId)).map((l) => this.shapeList(l)); }
+
+  async createList(orgId: string, dto: any, userId: string | null = null) {
+    await this.ensureBoard(orgId);
+    const name = String(dto?.name || '').trim();
+    if (!name) throw new BadRequestException('Dê um nome à coluna.');
+    const lists = await this.listRows(orgId);
+    if (lists.length >= MAX_LISTS) throw new BadRequestException(`No máximo ${MAX_LISTS} colunas.`);
+    const row = await this.prisma.whatsapp_task_lists.create({ data: { organization_id: orgId, name: name.slice(0, 60), color: this.cleanColor(dto?.color), is_done: Boolean(dto?.is_done), position: (lists[lists.length - 1]?.position ?? -1) + 1 } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return this.shapeList(row);
+  }
+
+  async updateList(orgId: string, id: string, dto: any, userId: string | null = null) {
+    const cur = await this.prisma.whatsapp_task_lists.findFirst({ where: { id, organization_id: orgId } });
+    if (!cur) throw new NotFoundException('Coluna não encontrada.');
+    const data: any = {};
+    if (dto?.name !== undefined) { const n = String(dto.name || '').trim(); if (!n) throw new BadRequestException('Dê um nome à coluna.'); data.name = n.slice(0, 60); }
+    if (dto?.color !== undefined) data.color = this.cleanColor(dto.color);
+    if (dto?.is_done !== undefined && Boolean(dto.is_done) !== cur.is_done) {
+      data.is_done = Boolean(dto.is_done);
+      if (data.is_done) await this.prisma.whatsapp_tasks.updateMany({ where: { organization_id: orgId, list_id: id, done_at: null }, data: { done_at: new Date(), done_by: userId } });
+      else await this.prisma.whatsapp_tasks.updateMany({ where: { organization_id: orgId, list_id: id, done_at: { not: null } }, data: { done_at: null, done_by: null, reminded_at: null } });
+    }
+    const row = Object.keys(data).length ? await this.prisma.whatsapp_task_lists.update({ where: { id }, data }) : cur;
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return this.shapeList(row);
+  }
+
+  async reorderLists(orgId: string, ids: string[], userId: string | null = null) {
+    const lists = await this.listRows(orgId);
+    const known = new Set(lists.map((l) => l.id));
+    const order = [...(ids || []).map(String).filter((x) => known.has(x)), ...lists.map((l) => l.id).filter((x) => !(ids || []).includes(x))];
+    for (let i = 0; i < order.length; i++) await this.prisma.whatsapp_task_lists.updateMany({ where: { id: order[i], organization_id: orgId }, data: { position: i } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return (await this.listRows(orgId)).map((l) => this.shapeList(l));
+  }
+
+  /** Apaga a coluna. Com cartões: `move_to` (outra coluna, vão para o fim dela) ou `delete_tasks: true`. Sempre sobra 1 coluna. */
+  async deleteList(orgId: string, id: string, dto: { move_to?: string; delete_tasks?: boolean } = {}, userId: string | null = null) {
+    const lists = await this.listRows(orgId);
+    const cur = lists.find((l) => l.id === id);
+    if (!cur) throw new NotFoundException('Coluna não encontrada.');
+    if (lists.length <= 1) throw new BadRequestException('O quadro precisa de pelo menos uma coluna.');
+    const n = await this.prisma.whatsapp_tasks.count({ where: { organization_id: orgId, list_id: id } });
+    if (n && dto?.move_to) {
+      const target = lists.find((l) => l.id === String(dto.move_to) && l.id !== id);
+      if (!target) throw new BadRequestException('Coluna de destino inválida.');
+      const base = await this.edgePosition(orgId, target.id, 'bottom');
+      const minSrc = (await this.prisma.whatsapp_tasks.aggregate({ where: { organization_id: orgId, list_id: id }, _min: { position: true } }))._min.position ?? 0;
+      const shift = base - minSrc;
+      await this.prisma.$executeRaw`UPDATE whatsapp_tasks SET list_id = ${target.id}, position = position + ${shift} WHERE organization_id = ${orgId} AND list_id = ${id}`;
+      if (target.is_done) await this.prisma.whatsapp_tasks.updateMany({ where: { organization_id: orgId, list_id: target.id, done_at: null }, data: { done_at: new Date(), done_by: userId } });
+      else if (cur.is_done) await this.prisma.whatsapp_tasks.updateMany({ where: { organization_id: orgId, list_id: target.id, done_at: { not: null } }, data: { done_at: null, done_by: null, reminded_at: null } });
+    } else if (n && dto?.delete_tasks) {
+      await this.prisma.whatsapp_tasks.deleteMany({ where: { organization_id: orgId, list_id: id } });
+    } else if (n) {
+      throw new BadRequestException(`A coluna tem ${n} cartão(ões). Escolha para onde movê-los ou apague-os junto.`);
+    }
+    await this.prisma.whatsapp_task_lists.delete({ where: { id } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return { ok: true, moved: dto?.move_to ? n : 0, deleted: dto?.move_to ? 0 : n };
+  }
+
+  /** Apaga todos os cartões de uma coluna (ex.: limpar as concluídas). */
+  async clearList(orgId: string, id: string, userId: string | null = null) {
+    const cur = await this.prisma.whatsapp_task_lists.findFirst({ where: { id, organization_id: orgId } });
+    if (!cur) throw new NotFoundException('Coluna não encontrada.');
+    const r = await this.prisma.whatsapp_tasks.deleteMany({ where: { organization_id: orgId, list_id: id } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return { ok: true, deleted: r.count };
+  }
+
+  // etiquetas
+  async labels(orgId: string) {
+    await this.ensureBoard(orgId);
+    return (await this.prisma.whatsapp_task_labels.findMany({ where: { organization_id: orgId }, orderBy: [{ position: 'asc' }, { created_at: 'asc' }] })).map((l) => this.shapeLabel(l));
+  }
+
+  async createLabel(orgId: string, dto: any, userId: string | null = null) {
+    await this.ensureBoard(orgId);
+    const n = await this.prisma.whatsapp_task_labels.count({ where: { organization_id: orgId } });
+    if (n >= MAX_LABELS) throw new BadRequestException(`No máximo ${MAX_LABELS} etiquetas.`);
+    const color = this.cleanColor(dto?.color);
+    if (!color) throw new BadRequestException('Escolha uma cor.');
+    const row = await this.prisma.whatsapp_task_labels.create({ data: { organization_id: orgId, name: String(dto?.name || '').trim().slice(0, 40), color, position: n } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return this.shapeLabel(row);
+  }
+
+  async updateLabel(orgId: string, id: string, dto: any, userId: string | null = null) {
+    const cur = await this.prisma.whatsapp_task_labels.findFirst({ where: { id, organization_id: orgId } });
+    if (!cur) throw new NotFoundException('Etiqueta não encontrada.');
+    const data: any = {};
+    if (dto?.name !== undefined) data.name = String(dto.name || '').trim().slice(0, 40);
+    if (dto?.color !== undefined) { const c = this.cleanColor(dto.color); if (!c) throw new BadRequestException('Escolha uma cor.'); data.color = c; }
+    const row = await this.prisma.whatsapp_task_labels.update({ where: { id }, data });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return this.shapeLabel(row);
+  }
+
+  async deleteLabel(orgId: string, id: string, userId: string | null = null) {
+    const cur = await this.prisma.whatsapp_task_labels.findFirst({ where: { id, organization_id: orgId } });
+    if (!cur) throw new NotFoundException('Etiqueta não encontrada.');
+    const tasks = await this.prisma.whatsapp_tasks.findMany({ where: { organization_id: orgId, label_ids: { array_contains: id } }, select: { id: true, label_ids: true } });
+    for (const t of tasks) await this.prisma.whatsapp_tasks.update({ where: { id: t.id }, data: { label_ids: (Array.isArray(t.label_ids) ? (t.label_ids as string[]) : []).filter((x) => x !== id) } });
+    await this.prisma.whatsapp_task_labels.delete({ where: { id } });
+    this.presenter.emit(orgId, 'wa:task', { action: 'board', by: userId });
+    return { ok: true, removed_from: tasks.length };
   }
 
   // ---------------------------------------------------------------- lembretes

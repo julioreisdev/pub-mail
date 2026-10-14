@@ -31,6 +31,29 @@ export class TaskDto {
   @IsOptional() @IsString() assigned_user_id?: string | null;
   @IsOptional() @IsString() chat_id?: string | null; // uuid da conversa
   @IsOptional() @IsString() customer_id?: string | null;
+  // quadro (Trello): coluna, etiquetas, checklist e capa
+  @IsOptional() @IsString() list_id?: string | null;
+  @IsOptional() @IsArray() @IsString({ each: true }) label_ids?: string[];
+  @IsOptional() @IsArray() checklist?: { id?: string; text?: string; done?: boolean }[];
+  @IsOptional() @IsString() @MaxLength(16) cover?: string | null;
+}
+
+export class TaskListDto {
+  @IsOptional() @IsString() @MaxLength(60) name?: string;
+  @IsOptional() @IsString() @MaxLength(16) color?: string | null;
+  @IsOptional() @IsBoolean() is_done?: boolean;
+}
+export class TaskLabelDto {
+  @IsOptional() @IsString() @MaxLength(40) name?: string;
+  @IsOptional() @IsString() @MaxLength(16) color?: string;
+}
+export class MoveTaskDto {
+  @IsString() list_id!: string;
+  @IsOptional() @IsInt() @Min(0) @Max(100000) index?: number;
+}
+export class DeleteTaskListDto {
+  @IsOptional() @IsString() move_to?: string;
+  @IsOptional() @IsBoolean() delete_tasks?: boolean;
 }
 
 export class NoteDto {

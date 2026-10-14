@@ -18,6 +18,7 @@ import NotificationCenter from './NotificationCenter';
 import Loader from 'ui-component/Loader';
 
 import useConfig from 'hooks/useConfig';
+import usePageTitle from 'hooks/usePageTitle';
 import { handlerDrawerOpen, useGetMenuMaster } from 'api/menu';
 
 // assets
@@ -34,6 +35,9 @@ export default function MainLayout() {
   } = useConfig();
   const { menuMaster, menuMasterLoading } = useGetMenuMaster();
   const drawerOpen = menuMaster?.isDashboardDrawerOpened;
+
+  // título da aba = tela atual ("PM - Chat")
+  usePageTitle();
 
   useEffect(() => {
     handlerDrawerOpen(!miniDrawer);

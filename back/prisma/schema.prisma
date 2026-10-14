@@ -2300,6 +2300,11 @@ model whatsapp_tasks {
   assigned_user_id String?   @db.Char(36)
   chat_id          String?   @db.VarChar(64)
   customer_id      String?   @db.Char(36)
+  list_id          String?   @db.Char(36)
+  position         Float     @default(0)
+  label_ids        Json?
+  checklist        Json?
+  cover            String?   @db.VarChar(16)
   done_at          DateTime? @db.DateTime(3)
   done_by          String?   @db.Char(36)
   reminded_at      DateTime? @db.DateTime(3)
@@ -2310,6 +2315,31 @@ model whatsapp_tasks {
   @@index([organization_id, done_at, due_at], map: "idx_watask_org_due")
   @@index([organization_id, assigned_user_id], map: "idx_watask_org_user")
   @@index([organization_id, chat_id], map: "idx_watask_org_chat")
+  @@index([organization_id, list_id, position], map: "idx_watask_org_list")
+}
+
+model whatsapp_task_lists {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @db.VarChar(60)
+  color           String?  @db.VarChar(16)
+  position        Int      @default(0)
+  is_done         Boolean  @default(false)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+  updated_at      DateTime @updatedAt @db.DateTime(3)
+
+  @@index([organization_id, position], map: "idx_watasklist_org_pos")
+}
+
+model whatsapp_task_labels {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  name            String   @default("") @db.VarChar(40)
+  color           String   @db.VarChar(16)
+  position        Int      @default(0)
+  created_at      DateTime @default(now()) @db.DateTime(3)
+
+  @@index([organization_id, position], map: "idx_wataskl_org_pos")
 }
 
 model whatsapp_chat_notes {
