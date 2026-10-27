@@ -599,6 +599,17 @@ ok('boot pré-tradução ignora o ?notranslate da aba', b.T && b.T.warm);
   r5.w.history.replaceState(null, '', '/endereco-traduzido/');
   await sleep(1600);
   ok('endereço: quem lê no idioma do conteúdo volta ao endereço original', r5.w.location.pathname === '/post-original/', r5.w.location.pathname);
+  // tradução de URL DESLIGADA (padrão da 1.5.0): sem `ul` no cfg nada é trocado nem pedido…
+  const c6 = [];
+  const f6 = async (url, o = {}) => { if (String(url).includes('/trinv/v1/s')) c6.push(String(url)); return fakeNet({}).f(url, o); };
+  const r6 = page('<p>Some English text long enough to translate here.</p>', { tl: 'pt', full: true, cfg: { p: 9, su: 'https://s.test/wp-json/trinv/v1/s', ps: { pt: '/cultivando-tomates/' } }, fetch: f6 });
+  await sleep(1600);
+  ok('endereço desligado: barra fica no original e o servidor não é consultado', r6.w.location.pathname === '/post-x/' && c6.length === 0, [r6.w.location.pathname, c6]);
+  // …e quem chegou por um endereço traduzido já criado volta a ver o original na barra
+  const r7 = page('<p>Some English text long enough to translate here.</p>', { tl: 'pt', full: true, cfg: { p: 9, op: '/post-original/' }, fetch: fakeNet({}).f });
+  r7.w.history.replaceState(null, '', '/endereco-traduzido/');
+  await sleep(1600);
+  ok('endereço desligado: aberto por endereço traduzido, a barra volta ao original', r7.w.location.pathname === '/post-original/', r7.w.location.pathname);
 }
 
 // =========================================================== emoji do WordPress (imagem) = o caractere

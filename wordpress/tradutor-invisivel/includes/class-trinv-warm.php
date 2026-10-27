@@ -485,7 +485,7 @@ class TRINV_Warm {
 			);
 		}
 		$n    = self::enabled() ? self::enqueue_ids( $ids ) : 0;
-		$back = wp_get_referer() ? wp_get_referer() : admin_url( 'options-general.php?page=' . TRINV_Admin::SLUG );
+		$back = wp_get_referer() ? wp_get_referer() : TRINV_Admin::url( true );
 		wp_safe_redirect( add_query_arg( 'trinv_warm_q', $n, remove_query_arg( 'trinv_warm_q', $back ) ) );
 		exit;
 	}
@@ -500,7 +500,7 @@ class TRINV_Warm {
 		}
 		$n = absint( $_GET['trinv_warm_q'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		if ( ! $n ) {
-			echo '<div class="notice notice-warning is-dismissible"><p>Nenhuma página publicada para pré-traduzir. Confira os idiomas da campanha em Configurações → Tradutor Invisível.</p></div>';
+			echo '<div class="notice notice-warning is-dismissible"><p>Nenhuma página publicada para pré-traduzir. Confira os idiomas da campanha em Tradutor Invisível → Ajustes.</p></div>';
 			return;
 		}
 		$msg = 1 === $n ? 'Página na fila de pré-tradução.' : sprintf( '%d páginas na fila de pré-tradução.', $n );

@@ -20,7 +20,7 @@ defined( 'ABSPATH' ) || exit;
  */
 class TRINV_Store {
 
-	const DB_VERSION = '3';
+	const DB_VERSION = '4';
 	const PAGE_MAX   = 3000; // itens por mapa de página.
 
 	/**
@@ -95,10 +95,28 @@ class TRINV_Store {
 		if ( '' !== $was && version_compare( $was, '3', '<' ) && class_exists( 'TRINV_Slugs' ) ) {
 			TRINV_Slugs::forget_store_pages(); // endereços da loja passam a sair com contexto de loja ("/confira/" → "/finalizar-compra/").
 		}
+		if ( '' !== $was && version_compare( $was, '4', '<' ) ) {
+			self::keep_urls_on_upgrade(); // 1.5.0: a tradução de URL passou a nascer desligada; quem já tinha o plugin continua como estava.
+		}
 		delete_option( 'trinv_static' ); // testa de novo a pasta de arquivos estáticos.
 		if ( ! wp_next_scheduled( 'trinv_prune' ) ) {
 			wp_schedule_event( time() + DAY_IN_SECONDS, 'daily', 'trinv_prune' );
 		}
+	}
+
+	/**
+	 * 1.5.0: o padrão da tradução de URL virou "desligada" (só para instalações novas). Um site que já
+	 * usava o plugin sem nunca ter salvo os ajustes rodava com ela ligada — grava isso explicitamente
+	 * para nada mudar na atualização. Quem já tinha escolhido (chave 'urls' salva) fica como escolheu.
+	 */
+	private static function keep_urls_on_upgrade() {
+		$saved = get_option( 'trinv_options', array() );
+		$saved = is_array( $saved ) ? $saved : array();
+		if ( array_key_exists( 'urls', $saved ) ) {
+			return;
+		}
+		$saved['urls'] = 1;
+		update_option( 'trinv_options', $saved );
 	}
 
 	/**

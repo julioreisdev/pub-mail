@@ -139,14 +139,16 @@ class TRINV_Frontend {
 		if ( $store ) {
 			$cfg = array_merge( $cfg, $store ); // loja: "Checkout" vira "Finalizar compra", não "Check-out".
 		}
+		if ( TRINV_Slugs::$resolved ) {
+			// aberto por um endereço traduzido (vale mesmo com a tradução de URL desligada): o original é a
+			// chave do cache e, se a troca de endereço estiver desligada, a barra volta a mostrar o original.
+			$cfg['ou'] = self::request_path();
+			$cfg['op'] = TRINV_Slugs::original_path( get_post( TRINV_Slugs::$resolved ) );
+		}
 		if ( TRINV_Slugs::enabled() && $cfg['p'] && TRINV_Slugs::swappable( get_post( $cfg['p'] ) ) ) {
 			$cfg['ul'] = 1;
 			$cfg['su'] = rest_url( 'trinv/v1/s' );
 			$cfg['ps'] = (object) TRINV_Slugs::known_paths( get_post( $cfg['p'] ) ); // endereços traduzidos prontos.
-			if ( TRINV_Slugs::$resolved ) {
-				$cfg['ou'] = self::request_path(); // aberto por endereço traduzido: o original é a chave do cache.
-				$cfg['op'] = TRINV_Slugs::original_path( get_post( $cfg['p'] ) );
-			}
 		}
 		if ( TRINV_Store::static_ok() ) {
 			$d         = TRINV_Store::static_dir();

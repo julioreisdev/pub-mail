@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Push In Play
  * Description:       Notificações push para o seu site WordPress: copys, broadcasts e layout do popup de permissão, num painel próprio.
- * Version:           0.10.2
+ * Version:           0.10.3
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            Júlio Cezar Reis
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'PIP_VERSION', '0.10.2' );
+define( 'PIP_VERSION', '0.10.3' );
 define( 'PIP_EDITION', 'standalone' ); // o pacote baixado pelo Pub Mail vem como 'pubmail'.
 define( 'PIP_FILE', __FILE__ );
 define( 'PIP_DIR', plugin_dir_path( __FILE__ ) );
@@ -40,6 +40,7 @@ require_once PIP_DIR . 'includes/class-pip-popup-layout.php';
 require_once PIP_DIR . 'includes/class-pip-admin.php';
 
 register_activation_hook( __FILE__, 'pip_activate' );
+register_deactivation_hook( __FILE__, 'pip_deactivate' );
 
 /**
  * Ativação: guarda a versão instalada (base para migrações futuras).
@@ -52,6 +53,14 @@ function pip_activate() {
 		PIP_License::check();
 		PIP_Sync::push_or_soon( 'install' ); // o Pub Mail vê a versão nova na hora (admin/CLI/cron) ou no próximo tick (visita)
 	}
+}
+
+/**
+ * Desativação: avisa o Pub Mail (o site sai da lista "Sites usando o plugin" e do painel de métricas).
+ * Dados, fila e agendamentos ficam no banco para a reativação.
+ */
+function pip_deactivate() {
+	PIP_License::goodbye( 'deactivate' );
 }
 
 add_action( 'plugins_loaded', 'pip_boot' );

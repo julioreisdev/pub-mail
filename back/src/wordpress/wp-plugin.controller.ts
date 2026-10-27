@@ -133,6 +133,13 @@ export class WpPluginPublicController {
     return this.svc.updateInfo(body);
   }
 
+  /** Plugin desativado ou apagado no site: sai da lista "Sites usando o plugin". */
+  @Post('remove')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  remove(@Body() body: any) {
+    return this.svc.remove(body);
+  }
+
   /** Push In Play: resumo de métricas do site (a cada 15 min / fim de disparo). */
   @Post('stats')
   @Throttle({ default: { limit: 30, ttl: 60_000 } })

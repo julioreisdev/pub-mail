@@ -44,13 +44,37 @@ class TRINV_Slugs {
 	}
 
 	/**
-	 * Ligado? (ajuste "Traduzir o endereço", endereços bonitos e licença).
+	 * Ligado? (ajuste "Tradução de URL" no menu Tradutor Invisível, endereços bonitos e licença).
+	 * Vale para GERAR endereços novos e trocar o endereço na barra do visitante.
 	 *
 	 * @return bool
 	 */
 	public static function enabled() {
 		$o = trinv_options();
-		return ! empty( $o['urls'] ) && ! empty( $o['enabled'] ) && '' !== (string) get_option( 'permalink_structure' ) && TRINV_License::active();
+		return ! empty( $o['urls'] ) && self::resolving();
+	}
+
+	/**
+	 * Endereços traduzidos já criados continuam abrindo o post mesmo com a tradução de URL
+	 * desligada (links compartilhados ou guardados não podem virar 404). Só exige o plugin ligado,
+	 * endereços bonitos e licença.
+	 *
+	 * @return bool
+	 */
+	public static function resolving() {
+		$o = trinv_options();
+		return ! empty( $o['enabled'] ) && '' !== (string) get_option( 'permalink_structure' ) && TRINV_License::active();
+	}
+
+	/**
+	 * Quantos endereços traduzidos já foram criados (para a tela do menu).
+	 *
+	 * @return int
+	 */
+	public static function count() {
+		global $wpdb;
+		$table = self::table();
+		return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery,PluginCheck.Security.DirectDB.UnescapedDBParameter -- nome de tabela vem de $wpdb->prefix
 	}
 
 	/**
@@ -70,7 +94,7 @@ class TRINV_Slugs {
 		} elseif ( ! empty( $qv['pagename'] ) && is_string( $qv['pagename'] ) ) {
 			$name = $qv['pagename'];
 		}
-		if ( '' === $name || ! self::enabled() ) {
+		if ( '' === $name || ! self::resolving() ) {
 			return $qv;
 		}
 		$parts = explode( '/', trim( $name, '/' ) );

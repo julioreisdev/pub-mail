@@ -7,6 +7,28 @@
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
+// Edição do Pub Mail: avisa que o plugin foi apagado deste site (sai da lista "Sites usando o plugin").
+if ( is_readable( __DIR__ . '/license.php' ) ) {
+	require_once __DIR__ . '/license.php';
+}
+if ( defined( 'TRINV_LICENSE_KEY' ) && defined( 'TRINV_LICENSE_API' ) && 0 === strpos( (string) TRINV_LICENSE_API, 'https://' ) ) {
+	wp_remote_post(
+		TRINV_LICENSE_API . '/public/wp-plugin/remove',
+		array(
+			'timeout' => 5,
+			'headers' => array( 'Content-Type' => 'application/json' ),
+			'body'    => wp_json_encode(
+				array(
+					'key'    => TRINV_LICENSE_KEY,
+					'plugin' => 'tradutor-invisivel',
+					'site'   => home_url( '/' ),
+					'reason' => 'uninstall',
+				)
+			),
+		)
+	);
+}
+
 global $wpdb;
 
 $trinv_tables = array( $wpdb->prefix . 'trinv_seg', $wpdb->prefix . 'trinv_page', $wpdb->prefix . 'trinv_slug' );

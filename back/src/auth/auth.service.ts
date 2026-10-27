@@ -73,12 +73,13 @@ export class AuthService {
     return { refreshToken, expiresIn };
   }
 
-  private async setUserRefreshTokenHash(userId: string, refreshToken: string) {
+  // `markLogin` = login/cadastro (grava `last_login_at`); o refresh só rotaciona o token.
+  private async setUserRefreshTokenHash(userId: string, refreshToken: string, markLogin = false) {
     const refreshHash = this.hashToken(refreshToken);
 
     await this.prisma.users.update({
       where: { id: userId },
-      data: { refresh_token: refreshHash },
+      data: { refresh_token: refreshHash, ...(markLogin ? { last_login_at: new Date() } : {}) },
     });
   }
 
@@ -124,7 +125,7 @@ export class AuthService {
     const { accessToken, expiresIn: accessExpiresIn } = this.signAccessToken(user);
     const { refreshToken, expiresIn: refreshExpiresIn } = this.signRefreshToken(user.id);
 
-    await this.setUserRefreshTokenHash(user.id, refreshToken);
+    await this.setUserRefreshTokenHash(user.id, refreshToken, true);
 
     return {
       ...result,
@@ -144,7 +145,7 @@ export class AuthService {
     const { accessToken, expiresIn: accessExpiresIn } = this.signAccessToken(user);
     const { refreshToken, expiresIn: refreshExpiresIn } = this.signRefreshToken(user.id);
 
-    await this.setUserRefreshTokenHash(user.id, refreshToken);
+    await this.setUserRefreshTokenHash(user.id, refreshToken, true);
 
     return {
       user: { id: user.id, organizationId: user.organization_id, role: user.role },

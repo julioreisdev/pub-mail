@@ -32,6 +32,7 @@ const userSelect = {
   active: true,
   modules: true,
   whatsapp_sessions: true, // números do WhatsApp liberados (ids); null = todos
+  last_login_at: true, // último login (null = nunca entrou)
 };
 
 function isUniqueError(e: any) {

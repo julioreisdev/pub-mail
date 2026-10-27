@@ -7,6 +7,28 @@
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
+// Edição do Pub Mail: avisa que o plugin foi apagado deste site (sai da lista e do painel de métricas).
+if ( is_readable( __DIR__ . '/license.php' ) ) {
+	require_once __DIR__ . '/license.php';
+}
+if ( defined( 'PIP_LICENSE_KEY' ) && defined( 'PIP_LICENSE_API' ) && 0 === strpos( (string) PIP_LICENSE_API, 'https://' ) ) {
+	wp_remote_post(
+		PIP_LICENSE_API . '/public/wp-plugin/remove',
+		array(
+			'timeout' => 5,
+			'headers' => array( 'Content-Type' => 'application/json' ),
+			'body'    => wp_json_encode(
+				array(
+					'key'    => PIP_LICENSE_KEY,
+					'plugin' => 'push-in-play',
+					'site'   => home_url( '/' ),
+					'reason' => 'uninstall',
+				)
+			),
+		)
+	);
+}
+
 require_once __DIR__ . '/includes/class-pip-store.php';
 PIP_Store::drop();
 wp_clear_scheduled_hook( 'pip_flow_tick' );

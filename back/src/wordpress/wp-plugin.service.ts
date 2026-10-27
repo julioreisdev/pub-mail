@@ -74,6 +74,10 @@ const PLUGINS: Record<PluginSlug, PluginDef> = {
 };
 
 const KEY_RE = /^trinv_[A-Za-z0-9_-]{32,64}$/;
+// Um site só aparece na lista enquanto o plugin está instalado e ativo nele: o próprio plugin avisa ao
+// ser desativado/apagado (`removed_at`) e, se sumiu sem avisar (pasta apagada por FTP, site fora do
+// ar), cai da lista depois deste tempo sem verificar a licença (o plugin verifica de hora em hora).
+const SITE_STALE_MS = 3 * 24 * 60 * 60 * 1000;
 const GOOGLE_HOSTS =
   /^https:\/\/(translate\.googleapis\.com|clients\d?\.google\.com|translate\.google\.com)\/translate_a\/t\?client=[a-z-]+$/;
 
@@ -546,7 +550,7 @@ export class WpPluginService {
     });
     const revoked = new Set(lics.filter((l) => l.revoked_at).map((l) => l.id));
     const sites = await this.prisma.wp_plugin_sites.findMany({
-      where: { organization_id: orgId, plugin: slug },
+      where: this.installedWhere(orgId, slug),
       orderBy: { last_seen_at: 'desc' },
       take: 300,
     });
@@ -677,6 +681,47 @@ export class WpPluginService {
   }
 
   // ---------------------------------------------------------------- rotas públicas (plugin)
+  /** Sites em que o plugin está instalado e ativo agora (ver SITE_STALE_MS). */
+  private installedWhere(orgId: string, slug: PluginSlug): Prisma.wp_plugin_sitesWhereInput {
+    return {
+      organization_id: orgId,
+      plugin: slug,
+      removed_at: null,
+      last_seen_at: { gte: new Date(Date.now() - SITE_STALE_MS) },
+    };
+  }
+
+  /**
+   * O plugin foi desativado ou apagado num site (gancho de desativação / uninstall.php): o site sai da
+   * lista na hora. Vale para todas as linhas daquele endereço na conta (chave atual e antigas); a
+   * próxima verificação de licença (reativar/reinstalar) zera o `removed_at`.
+   */
+  async remove(body: any) {
+    const key = String(body?.key || '').trim();
+    const site = normSite(body?.site);
+    const def = pluginOf(body?.plugin);
+    const lic = await this.byKey(key).catch(() => null);
+    if (!lic || !site) return { ok: false };
+    const r = await this.prisma.wp_plugin_sites
+      .updateMany({
+        where: {
+          organization_id: lic.organization_id,
+          site_host: site.host,
+          plugin: def.slug,
+          removed_at: null,
+        },
+        data: { removed_at: new Date() },
+      })
+      .catch((e) => {
+        this.logger.warn(`wp site remove: ${e?.message || e}`);
+        return { count: 0 };
+      });
+    this.logger.log(
+      `plugin ${def.slug} ${clean(body?.reason, 16) || 'removido'} em ${site.host} (${r.count} linha(s))`,
+    );
+    return { ok: true, removed: r.count };
+  }
+
   private async byKey(key: string) {
     if (!KEY_RE.test(key)) return null;
     return this.prisma.wp_plugin_licenses.findUnique({
@@ -707,6 +752,7 @@ export class WpPluginService {
           php_version: clean(body?.php),
           last_active: st.active,
           last_seen_at: at,
+          removed_at: null, // reinstalou/reativou: volta à lista
         };
         await this.prisma.wp_plugin_sites
           .upsert({
@@ -793,6 +839,7 @@ export class WpPluginService {
           site_url: site.url,
           plugin_version: clean(body?.v) || undefined,
           last_seen_at: new Date(),
+          removed_at: null,
           ...this.snapData(snap),
         },
         create: {
@@ -852,7 +899,7 @@ export class WpPluginService {
   private async pushSites(orgId: string) {
     const [sites, lics] = await Promise.all([
       this.prisma.wp_plugin_sites.findMany({
-        where: { organization_id: orgId, plugin: PUSH },
+        where: this.installedWhere(orgId, PUSH),
         orderBy: { last_seen_at: 'desc' },
         take: 300,
       }),

@@ -815,7 +815,7 @@ export default function PushInPlay() {
             <SectionTitle
               icon={IconWorldWww}
               title="Por site"
-              sub={`Inscritos de hoje e o que aconteceu nos últimos ${days} dias em cada site. Clique num site para ver só ele.`}
+              sub={`Inscritos de hoje e o que aconteceu nos últimos ${days} dias em cada site com o plugin ativo agora (desativou ou apagou, sai daqui). Clique num site para ver só ele.`}
               action={site ? <Chip size="small" label="Ver todos" onClick={() => setSite('')} onDelete={() => setSite('')} /> : null}
             />
             {anLoading && !an ? (

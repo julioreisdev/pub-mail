@@ -4,7 +4,7 @@ Tags: push notifications, web push, notifications, leads, broadcast
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.10.2
+Stable tag: 0.10.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,6 +28,9 @@ Sending is done in plain PHP (VAPID + RFC 8291) straight from your server: subsc
 2. Open "Push In Play" in the admin sidebar.
 
 == Changelog ==
+
+= 0.10.3 =
+* Pub Mail edition: when the plugin is deactivated or deleted, the site leaves "Sites using the plugin" and the metrics panel in Pub Mail right away (it comes back on reactivation).
 
 = 0.10.2 =
 * Sync hardening: subscribers counted with one index-covered query, summary only re-sent when a blast actually finishes, install push deferred on visitor requests, no retries after the key was revoked, 10 s timeout.

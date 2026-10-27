@@ -256,6 +256,11 @@ delete_transient( 'trinv_official_error' );
 // ---------------------------------------------------------------- endereço traduzido
 global $wpdb;
 TRINV_Store::install();
+$urls_saved = get_option( 'trinv_options' );
+ok( '1.5.0: tradução de URL nasce DESLIGADA (padrão sem ajustes salvos)', ( function () use ( $urls_saved ) { delete_option( 'trinv_options' ); $r = trinv_options(); if ( false === $urls_saved ) { delete_option( 'trinv_options' ); } else { update_option( 'trinv_options', $urls_saved ); } return 0 === (int) $r['urls'] && ! TRINV_Slugs::enabled() && TRINV_Slugs::resolving(); } )() );
+ok( '1.5.0: atualização de site antigo sem ajustes salvos mantém a tradução de URL ligada', ( function () use ( $urls_saved ) { delete_option( 'trinv_options' ); update_option( 'trinv_db_version', '3' ); TRINV_Store::maybe_upgrade(); $o = get_option( 'trinv_options' ); $r = is_array( $o ) && 1 === (int) ( $o['urls'] ?? 0 ) && '4' === (string) get_option( 'trinv_db_version' ); if ( false === $urls_saved ) { delete_option( 'trinv_options' ); } else { update_option( 'trinv_options', $urls_saved ); } return $r; } )() );
+ok( '1.5.0: atualização de site que já tinha escolhido (urls=0) respeita a escolha', ( function () use ( $urls_saved ) { update_option( 'trinv_options', array( 'urls' => 0 ) ); update_option( 'trinv_db_version', '3' ); TRINV_Store::maybe_upgrade(); $o = get_option( 'trinv_options' ); $r = 0 === (int) $o['urls']; if ( false === $urls_saved ) { delete_option( 'trinv_options' ); } else { update_option( 'trinv_options', $urls_saved ); } return $r; } )() );
+update_option( 'trinv_options', array_merge( trinv_options(), array( 'urls' => 1 ) ) ); // o resto desta seção testa a tradução de URL LIGADA
 $st  = TRINV_Slugs::table();
 $rowf = function ( $id, $l ) use ( $wpdb, $st ) { return (string) $wpdb->get_var( $wpdb->prepare( "SELECT slug FROM {$st} WHERE post_id = %d AND l = %s", $id, $l ) ); }; // phpcs:ignore
 $EN  = 'Growing your own tomatoes is one of the most rewarding things you can do in a small garden. In this guide we walk through every step.';
@@ -344,6 +349,13 @@ if ( function_exists( 'wc_get_page_id' ) && function_exists( 'is_checkout' ) && 
 	}
 }
 $_SERVER['REQUEST_URI'] = $old_uri;
+update_option( 'trinv_options', array_merge( trinv_options(), array( 'urls' => 0 ) ) );
+ok( 'desligada: não cria endereço novo (ensure devolve vazio)', '' === TRINV_Slugs::ensure( $c1, 'ja' ) && '' === $rowf( $c1, 'ja' ) );
+$qv = TRINV_Slugs::request( array( 'name' => $row ) );
+ok( 'desligada: endereço traduzido já criado continua abrindo o post (link compartilhado não quebra)', $sp === ( $qv['p'] ?? 0 ) && TRINV_Slugs::$resolved === $sp, $qv );
+TRINV_Slugs::$resolved = 0;
+ok( 'desligada: API /s não gera e devolve só o original', ( function () use ( $c1 ) { $r = TRINV_API::slug( $c1, 'ja' ); return '' === $r['body']['s'] && '' !== $r['body']['o']; } )() );
+if ( false === $urls_saved ) { delete_option( 'trinv_options' ); } else { update_option( 'trinv_options', $urls_saved ); }
 wp_delete_post( $sp, true );
 ok( 'post apagado: endereços traduzidos dele somem', '' === $rowf( $sp, 'pt' ) && '' === $rowf( $sp, 'ja' ) );
 foreach ( array( $ptp, $c1, $c2, $child, $parent ) as $x ) {

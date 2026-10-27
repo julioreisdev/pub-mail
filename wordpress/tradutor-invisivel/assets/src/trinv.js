@@ -914,7 +914,8 @@
     try { w.history.replaceState(w.history.state, '', p + w.location.search + w.location.hash); } catch (e) { /* bloqueado */ }
   }
   function urlSwap() {
-    if (!C.ul || !C.p || T.warm || T.stop) return;
+    if (T.warm || T.stop) return;
+    if (!C.ul || !C.p) { if (C.op) setPath(C.op); return; } // tradução de URL desligada: quem chegou por um endereço traduzido vê o original
     if (T.mode !== 'full') { if (C.op) setPath(C.op); return; } // conteúdo já na língua do visitante: o original
     if (C.ps && C.ps[TL]) { setPath(C.ps[TL]); return; }
     var ck = 'trinv_ps:' + C.p + ':' + TL, saved = lsGet(ck);

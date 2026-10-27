@@ -45,20 +45,50 @@ import {
   IconLockOpen,
   IconUser,
   IconReceipt2,
-  IconBrandWhatsapp
+  IconBrandWhatsapp,
+  IconClock
 } from '@tabler/icons-react';
 
 import MainCard from 'ui-component/cards/MainCard';
 import { get, post, patch, remove } from 'api/api';
 
 import ModulesPicker, { ModuleChips, ALL_MODULE_KEYS, normalizeModules } from './ModulesPicker';
-import PlanFields, { planLabel, AccessPill, fmtBRL, fmtDate, ExtendDialog } from './PlanFields';
+import PlanFields, { planLabel, AccessPill, fmtBRL, fmtDate, fmtDateTime, ExtendDialog } from './PlanFields';
 import WhatsAppNumbersPicker, {
   WhatsAppAccessChip,
   roleSeesAllNumbers,
   normalizeWaSessions,
   sameWaSessions
 } from './WhatsAppNumbersPicker';
+
+// Último login do usuário, em uma linha discreta sob o e-mail (a tabela já está cheia — sem coluna nova).
+function LastLogin({ value }) {
+  const never = !value;
+  const when = never ? null : new Date(value);
+  const diffH = when ? (Date.now() - when.getTime()) / 36e5 : null;
+  const rel =
+    diffH === null ? '' : diffH < 1 ? 'agora há pouco' : diffH < 24 ? `há ${Math.floor(diffH)} h` : diffH < 24 * 30 ? `há ${Math.floor(diffH / 24)} d` : '';
+  return (
+    <Tooltip title={never ? 'Este usuário nunca entrou no painel' : `Último acesso em ${fmtDateTime(value)}`} placement="top-start">
+      <Box
+        component="span"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.5,
+          mt: 0.25,
+          fontSize: 11,
+          lineHeight: 1.2,
+          whiteSpace: 'nowrap',
+          color: never ? 'warning.main' : 'text.disabled'
+        }}
+      >
+        <IconClock size={12} stroke={1.8} />
+        {never ? 'Nunca acessou' : `Acesso ${fmtDateTime(value)}${rel ? ` · ${rel}` : ''}`}
+      </Box>
+    </Tooltip>
+  );
+}
 import WaPermissionsPicker, { WaPermsChip, initialWaPerms, modulesWithWaPerms, sameWaPerms } from './WaPermissionsPicker';
 import { WA_SUB_KEYS } from 'views/pages/access/modules';
 
@@ -1317,9 +1347,10 @@ export default function AdminUsers() {
                         <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
                           {u.name}
                         </Typography>
-                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                           {u.email}
                         </Typography>
+                        <LastLogin value={u.last_login_at} />
                       </TableCell>
                       <TableCell>{u.organizations?.name || orgsById[u.organization_id]?.name || '—'}</TableCell>
                       <TableCell align="center">

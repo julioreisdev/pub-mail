@@ -4,7 +4,7 @@ Tags: translation, translate, language, multilingual, automatic
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.2
+Stable tag: 1.5.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,7 +20,7 @@ Automatically shows every post and page in the language of each visitor's browse
 
 * **Campaign languages:** list the countries' languages of your campaign and every post or page you publish is translated in advance, so even the first visitor from each country gets the page instantly.
 * **100% of the page:** when a post is already in the visitor's language, everything around it is still translated — menus, links and lists of other posts in other languages, comments and theme texts — without touching the post itself.
-* **Translated addresses (URLs):** after the page is translated, the address bar shows the post or page address in the visitor's language (/grow-tomatoes/ → /cultivando-tomates-em-casa/). The translated address opens the same page when shared; the canonical link stays on the original.
+* **Translated addresses (URLs), optional:** turn it on with one switch in the **Tradutor Invisível** menu of the WordPress sidebar. After the page is translated, the address bar shows the post or page address in the visitor's language (/grow-tomatoes/ → /cultivando-tomates-em-casa/). The translated address opens the same page when shared; the canonical link stays on the original. Off by default.
 * **Right-to-left languages:** visitors reading Arabic, Hebrew, Persian or Urdu get the text written right to left, without mirroring the theme layout.
 * **Optional official translator:** add a Google Cloud Translation or Microsoft Translator key to guarantee translation even if the free service is unavailable (as a backup or always).
 
@@ -30,13 +30,17 @@ Whole sentences are translated at once, and the original links, bold text, icons
 
 1. Plugins → Add New → Upload Plugin → choose `tradutor-invisivel.zip`.
 2. Activate. That's it.
+3. Optional: to translate the addresses (URLs) too, open **Tradutor Invisível** in the sidebar and turn on "Habilitar tradução de URL".
 
-Optional settings are under Settings → Tradutor Invisível.
+Other optional settings are under Tradutor Invisível → Ajustes.
 
 == Frequently Asked Questions ==
 
 = How can I see the site as a visitor from another country? =
 Add `?trinv_lang=en` (or `es`, `fr`, `ja`…) to the address. `?trinv=on` returns to normal.
+
+= How do I translate the addresses (URLs) as well? =
+Open **Tradutor Invisível** in the WordPress sidebar and turn on "Habilitar tradução de URL". It is off by default. Turning it off later does not break anything: translated addresses already shared keep opening the page, only the address bar goes back to the original.
 
 = How can I see the original? =
 Add `?notranslate` to the address (valid for that browser tab).
@@ -57,6 +61,14 @@ Chrome, Edge, Firefox and Safari on computers, iPhone and Android.
 The public text of your pages is sent to Google Translate. When the visitor's browser translates directly, that request comes from the visitor's browser. If you configure an official translator, the text is also sent to that provider (Google Cloud or Microsoft) from your server; the API key never reaches the browser.
 
 == Changelog ==
+
+= 1.5.1 =
+* Pub Mail edition: when the plugin is deactivated or deleted, the site is removed from "Sites using the plugin" in the Pub Mail panel right away (it comes back on reactivation).
+
+= 1.5.0 =
+* New "Tradutor Invisível" menu in the WordPress sidebar with a single switch: "Habilitar tradução de URL". Translated addresses are now OFF by default on new installs (sites that already had the plugin keep them on). The old settings page moved to Tradutor Invisível → Ajustes.
+* With the switch off, translated addresses that were already created keep opening the page (shared links never break); the address bar shows the original.
+* Turning the switch on or off clears the page cache of known cache plugins, so the change applies immediately.
 
 = 1.4.2 =
 * Theme labels inside a mixed line (for example "By" + author + date) are translated on their own from the English original, so a short label is never read as a different word ("Por" became "Setzen" in German).

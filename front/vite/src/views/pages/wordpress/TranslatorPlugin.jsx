@@ -51,6 +51,9 @@ const STEPS = [
   { icon: IconUpload, title: 'Envie no WordPress', text: 'Plugins → Adicionar novo → Enviar plugin → Ativar.' },
   { icon: IconLanguage, title: 'Pronto', text: 'Cada visitante lê no idioma do navegador dele.' }
 ];
+// 1.5.0: a tradução do endereço (URL) nasce desligada e liga com um interruptor no menu do WordPress.
+const URL_HINT =
+  'Quer traduzir também o endereço das páginas? No WordPress, abra o menu Tradutor Invisível → Tradução de URL e ligue "Habilitar tradução de URL". Vem desligado por padrão.';
 
 function accessLabel(access) {
   if (!access) return { status: 'inactive', label: '—' };
@@ -256,6 +259,9 @@ export default function TranslatorPlugin() {
             </Stack>
           ))}
         </Box>
+        <Typography variant="body2" sx={{ mt: 1.5, color: 'text.secondary' }}>
+          {URL_HINT}
+        </Typography>
       </TgCard>
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: 'minmax(0, 2fr) minmax(0, 1fr)' }, gap: 2.5 }}>
@@ -263,9 +269,14 @@ export default function TranslatorPlugin() {
         <TgCard hover={false} sx={{ p: { xs: 2.5, sm: 3 } }}>
           <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
             <IconWorldWww size={20} stroke={1.8} />
-            <Typography variant="h5" sx={{ fontWeight: 700, flex: 1 }}>
-              Sites usando o plugin
-            </Typography>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                Sites usando o plugin
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                Só os sites com o plugin instalado e ativo agora. Desativou ou apagou no WordPress, sai daqui na hora.
+              </Typography>
+            </Box>
             <Tooltip title="Atualizar">
               <span>
                 <Button size="small" onClick={load} disabled={loading} sx={{ minWidth: 0, px: 1 }}>

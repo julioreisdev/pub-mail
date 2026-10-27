@@ -195,6 +195,35 @@ class TRINV_License {
 	}
 
 	/**
+	 * Avisa o Pub Mail que o plugin saiu deste site (desativado ou apagado): o site some da lista
+	 * "Sites usando o plugin" na hora. Best-effort (5 s); ao reativar/reinstalar, a 1ª verificação da
+	 * licença põe o site de volta.
+	 *
+	 * @param string $reason 'deactivate' | 'uninstall'.
+	 */
+	public static function goodbye( $reason = 'deactivate' ) {
+		if ( ! self::managed() || ! self::configured() ) {
+			return;
+		}
+		wp_remote_post(
+			TRINV_LICENSE_API . '/public/wp-plugin/remove',
+			array(
+				'timeout' => 5,
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => wp_json_encode(
+					array(
+						'key'    => TRINV_LICENSE_KEY,
+						'plugin' => self::SLUG,
+						'site'   => home_url( '/' ),
+						'reason' => $reason,
+						'v'      => TRINV_VERSION,
+					)
+				),
+			)
+		);
+	}
+
+	/**
 	 * Aplica a mudança de estado, se houve.
 	 */
 	private static function sync() {
@@ -368,7 +397,7 @@ class TRINV_License {
 		check_admin_referer( 'trinv_license_check' );
 		delete_transient( 'trinv_lic_lock' );
 		$ok   = self::check();
-		$back = wp_get_referer() ? wp_get_referer() : admin_url( 'options-general.php?page=' . TRINV_Admin::SLUG );
+		$back = wp_get_referer() ? wp_get_referer() : TRINV_Admin::url( true );
 		wp_safe_redirect( add_query_arg( 'trinv_msg', $ok ? ( self::active() ? 'lic_on' : 'lic_off' ) : 'lic_err', remove_query_arg( 'trinv_msg', $back ) ) );
 		exit;
 	}

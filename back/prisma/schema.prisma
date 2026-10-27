@@ -87,6 +87,7 @@ model users {
   active            Boolean       @default(dbgenerated("(true)"))
   modules           Json? // módulos liberados p/ este usuário: ['email','webchat','quiz','telegram','settings']
   welcomed_at       DateTime?     @db.DateTime(3) // modal de boas-vindas já visto
+  last_login_at     DateTime?     @db.DateTime(3) // último login (null = nunca entrou)
   whatsapp_sessions Json? // números do WhatsApp liberados p/ este usuário (ids); null = todos
   organizations     organizations @relation(fields: [organization_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_users_organization_id")
 
@@ -2246,6 +2247,7 @@ model wp_plugin_sites {
   site_name       String?   @db.VarChar(120)
   stats           Json?
   stats_at        DateTime? @db.DateTime(3)
+  removed_at      DateTime? @db.DateTime(3) // plugin desativado/apagado no site (avisado pelo próprio plugin); null = instalado
 
   @@unique([license_id, site_host, plugin], map: "uk_wpsite_lic_host_plugin")
   @@index([organization_id, last_seen_at], map: "idx_wpsite_org")

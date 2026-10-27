@@ -344,7 +344,7 @@ if (run('S')) {
   const ck = wpx('echo SECURE_AUTH_COOKIE.PHP_EOL.wp_generate_auth_cookie(1,time()+1800,"secure_auth").PHP_EOL.LOGGED_IN_COOKIE.PHP_EOL.wp_generate_auth_cookie(1,time()+1800,"logged_in");').trim().split('\n');
   const b = await browser({ lang: 'pt-BR', w: 1280, h: 1500 });
   for (const [name, value] of [[ck[0], ck[1]], [ck[2], ck[3]]]) await b.send('Network.setCookie', { name, value, domain: 'sites.reveleonline.com', path: '/', secure: true, httpOnly: true });
-  const ADM = `${BASE}/wp-admin/options-general.php?page=tradutor-invisivel`;
+  const ADM = `${BASE}/wp-admin/admin.php?page=tradutor-invisivel-ajustes`;
   const st = () => b.eval(`(function(){var f=document.querySelector('.trinv-prov-fields'),r=document.querySelector('.trinv-ms-only'),row=document.getElementById('trinv-official');
     return {fields:f&&getComputedStyle(f).display,region:r&&getComputedStyle(r).display,prov:(document.getElementById('trinv-prov')||{}).value,ph:(document.getElementById('trinv-key')||{}).placeholder,keyVal:(document.getElementById('trinv-key')||{}).value,
     notice:[].map.call(document.querySelectorAll('.notice'),function(n){return n.className+' | '+n.innerText.trim()}).join(' || '),testBtn:!![].filter.call(document.querySelectorAll('button'),function(x){return /Testar tradutor oficial/.test(x.textContent)}).length,
@@ -463,7 +463,7 @@ if (run('W')) {
 
   // tela de ajustes com os idiomas da campanha
   const b4 = await adminBrowser({ h: 1400 });
-  await b4.go(`${BASE}/wp-admin/options-general.php?page=tradutor-invisivel`);
+  await b4.go(`${BASE}/wp-admin/admin.php?page=tradutor-invisivel-ajustes`);
   const row = await b4.eval(`(function(){var r=document.getElementById('trinv-campaign');return r?{v:document.getElementById('trinv-camp').value,t:r.innerText.replace(/\\s+/g,' '),ov:document.documentElement.scrollWidth>document.documentElement.clientWidth}:null})()`);
   ok('W ajustes: idiomas da campanha, botão e fila', row && row.v === 'es, de, ja' && /Pré-traduzir as 20 mais recentes/.test(row.t) && /Fila vazia/.test(row.t) && !row.ov, row);
   await b4.shot('W4-ajustes-campanha');
@@ -910,7 +910,7 @@ if (FILTER === 'LICSHOT') {
   const VER = (fs.readFileSync(new URL('../tradutor-invisivel/tradutor-invisivel.php', import.meta.url), 'utf8').match(/Version:\s*([\d.]+)/) || [])[1];
   ok(`LICSHOT lista de plugins: autor Júlio Cezar Reis, versão ${VER}`, /Júlio Cezar Reis/.test(row || '') && (row || '').includes(VER), row);
   await b.shot('LIC1-plugins');
-  await b.go(`${BASE}/wp-admin/options-general.php?page=tradutor-invisivel`);
+  await b.go(`${BASE}/wp-admin/admin.php?page=tradutor-invisivel-ajustes`);
   const card = await b.eval(`(function(){var c=[].filter.call(document.querySelectorAll('.trinv-card'),function(x){return /Licença do Pub Mail/.test(x.innerText)})[0];return c?c.innerText.replace(/\\s+/g,' '):null})()`);
   ok('LICSHOT ajustes: card "Licença do Pub Mail" ativa (com data de fim ou vitalícia)', /Ativa/.test(card || '') && /Válida até|sem data de fim/.test(card || ''), card);
   await b.shot('LIC2-ajustes-ativa');
@@ -919,7 +919,7 @@ if (FILTER === 'LICSHOT') {
   const note = await b.eval(`(function(){var n=[].filter.call(document.querySelectorAll('.notice'),function(x){return /Tradutor Invisível pausado/.test(x.innerText)})[0];return n?n.innerText.replace(/\\s+/g,' '):null})()`);
   ok('LICSHOT pausado: aviso na lista de plugins com "Abrir o Pub Mail" e "Verificar agora"', /venceu/.test(note || '') && /Abrir o Pub Mail/.test(note || '') && /Verificar agora/.test(note || ''), note);
   await b.shot('LIC3-plugins-pausado');
-  await b.go(`${BASE}/wp-admin/options-general.php?page=tradutor-invisivel`);
+  await b.go(`${BASE}/wp-admin/admin.php?page=tradutor-invisivel-ajustes`);
   await b.shot('LIC4-ajustes-pausado');
   await b.eval(`[].filter.call(document.querySelectorAll('a.button'),function(a){return /Verificar agora/.test(a.textContent)})[0].click()`);
   for (let i = 0; i < 50 && !(await b.eval('location.search')).includes('trinv_msg'); i++) await sleep(200);

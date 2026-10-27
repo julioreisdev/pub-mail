@@ -129,6 +129,35 @@ class PIP_License {
 	}
 
 	/**
+	 * Avisa o Pub Mail que o plugin saiu deste site (desativado ou apagado): o site some da lista
+	 * "Sites usando o plugin" e do painel de métricas na hora. Best-effort (5 s); ao reativar/reinstalar,
+	 * a 1ª verificação da licença põe o site de volta.
+	 *
+	 * @param string $reason 'deactivate' | 'uninstall'.
+	 */
+	public static function goodbye( $reason = 'deactivate' ) {
+		if ( ! self::managed() || ! self::configured() ) {
+			return;
+		}
+		wp_remote_post(
+			PIP_LICENSE_API . '/public/wp-plugin/remove',
+			array(
+				'timeout' => 5,
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => wp_json_encode(
+					array(
+						'key'    => PIP_LICENSE_KEY,
+						'plugin' => self::SLUG,
+						'site'   => home_url( '/' ),
+						'reason' => $reason,
+						'v'      => PIP_VERSION,
+					)
+				),
+			)
+		);
+	}
+
+	/**
 	 * Verifica a licença no Pub Mail.
 	 *
 	 * @return bool Resposta válida recebida.

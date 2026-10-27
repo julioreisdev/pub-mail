@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Tradutor Invisível
  * Description:       Traduz automaticamente posts e páginas para o idioma do navegador de cada visitante, sem botões, avisos ou configuração. O idioma de origem é detectado pelo próprio conteúdo.
- * Version:           1.4.2
+ * Version:           1.5.1
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * Author:            Júlio Cezar Reis
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'TRINV_VERSION', '1.4.2' );
+define( 'TRINV_VERSION', '1.5.1' );
 define( 'TRINV_EDITION', 'standalone' ); // o pacote baixado pelo Pub Mail vem como 'pubmail' (com licença).
 define( 'TRINV_FILE', __FILE__ );
 define( 'TRINV_DIR', plugin_dir_path( __FILE__ ) );
@@ -38,7 +38,7 @@ require_once TRINV_DIR . 'includes/class-trinv-frontend.php';
 require_once TRINV_DIR . 'includes/class-trinv-admin.php';
 
 register_activation_hook( __FILE__, 'trinv_activate' );
-register_deactivation_hook( __FILE__, array( 'TRINV_Store', 'deactivate' ) );
+register_deactivation_hook( __FILE__, 'trinv_deactivate' );
 
 /**
  * Ativação: tabelas e, na edição do Pub Mail, a 1ª verificação da licença.
@@ -48,6 +48,14 @@ function trinv_activate() {
 	if ( TRINV_License::managed() ) {
 		TRINV_License::check();
 	}
+}
+
+/**
+ * Desativação: para as tarefas agendadas e avisa o Pub Mail (o site sai da lista "Sites usando o plugin").
+ */
+function trinv_deactivate() {
+	TRINV_Store::deactivate();
+	TRINV_License::goodbye( 'deactivate' );
 }
 
 add_action( 'plugins_loaded', 'trinv_boot' );
@@ -80,7 +88,7 @@ function trinv_options() {
 		'selectors' => '', // seletores CSS extras que nunca devem ser traduzidos.
 		'maxwait'   => 3000, // tempo máximo (ms) com a página escondida esperando a tradução.
 		'campaign'  => '', // idiomas da campanha: páginas publicadas são pré-traduzidas neles.
-		'urls'      => 1,  // endereço (URL) dos posts e páginas no idioma do visitante.
+		'urls'      => 0,  // endereço (URL) no idioma do visitante: DESLIGADO por padrão; liga no menu Tradutor Invisível → Tradução de URL.
 		// tradutor oficial opcional (chave do dono do site): 'google' | 'microsoft'.
 		'provider'        => '',
 		'provider_key'    => '',
