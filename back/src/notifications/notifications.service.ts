@@ -117,7 +117,14 @@ export class NotificationsService {
     return rows.map((r) => ({ id: r.id, device_label: r.device_label, user_agent: r.user_agent, failures: r.failures, last_sent_at: r.last_sent_at, last_seen_at: r.last_seen_at, created_at: r.created_at }));
   }
 
-  async subscribe(orgId: string, userId: string, dto: { endpoint: string; keys: { p256dh: string; auth: string }; user_agent?: string; device_label?: string }) {
+  /**
+   * Inscrição de push de um aparelho. O endereço da inscrição muda quando o navegador refaz a inscrição
+   * (reativar, service worker novo, chave trocada) — sem o `device_id` cada troca virava um "aparelho" novo
+   * e as antigas (mortas) só saíam no 1º push que falhasse. Com o `device_id` (fixo no localStorage do
+   * navegador) a linha antiga do MESMO aparelho é apagada. Linhas de antes do `device_id` saem quando o
+   * mesmo usuário reinscreve com o MESMO User-Agent exato (mesma versão de navegador no mesmo sistema).
+   */
+  async subscribe(orgId: string, userId: string, dto: { endpoint: string; keys: { p256dh: string; auth: string }; user_agent?: string; device_label?: string; device_id?: string }) {
     const endpoint = String(dto?.endpoint || '').trim();
     const p256dh = String(dto?.keys?.p256dh || '').trim();
     const auth = String(dto?.keys?.auth || '').trim();
@@ -127,12 +134,22 @@ export class NotificationsService {
     const hash = sha(endpoint);
     const now = new Date();
     // o mesmo aparelho pode trocar de usuário (logout/login): a inscrição passa a ser do usuário atual
+    const deviceId = String(dto?.device_id || '').replace(/[^\w-]/g, '').slice(0, 64) || null;
     const row = await this.prisma.push_subscriptions.upsert({
       where: { endpoint_hash: hash },
-      create: { organization_id: orgId, user_id: userId, endpoint_hash: hash, endpoint, p256dh, auth, user_agent: ua, device_label: label, last_seen_at: now },
-      update: { organization_id: orgId, user_id: userId, endpoint, p256dh, auth, user_agent: ua, ...(dto.device_label ? { device_label: label } : {}), last_seen_at: now, failures: 0 },
+      create: { organization_id: orgId, user_id: userId, endpoint_hash: hash, endpoint, p256dh, auth, user_agent: ua, device_label: label, device_id: deviceId, last_seen_at: now },
+      update: { organization_id: orgId, user_id: userId, endpoint, p256dh, auth, user_agent: ua, ...(dto.device_label ? { device_label: label } : {}), ...(deviceId ? { device_id: deviceId } : {}), last_seen_at: now, failures: 0 },
     });
-    return { id: row.id, device_label: row.device_label };
+    let replaced = 0;
+    if (deviceId) {
+      const same = await this.prisma.push_subscriptions.deleteMany({ where: { organization_id: orgId, user_id: userId, device_id: deviceId, NOT: { id: row.id } } });
+      replaced += same.count;
+      if (ua) {
+        const legacy = await this.prisma.push_subscriptions.deleteMany({ where: { organization_id: orgId, user_id: userId, device_id: null, user_agent: ua, NOT: { id: row.id } } });
+        replaced += legacy.count;
+      }
+    }
+    return { id: row.id, device_label: row.device_label, replaced };
   }
 
   async unsubscribe(orgId: string, userId: string, by: { id?: string; endpoint?: string }) {

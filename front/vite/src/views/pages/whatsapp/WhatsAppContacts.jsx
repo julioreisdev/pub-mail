@@ -1115,7 +1115,7 @@ export default function WhatsAppContacts() {
         </Box>
       ) : (
         <TableContainer sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 3, bgcolor: 'background.paper' }}>
-          <Table size="small" sx={{ minWidth: 760 }}>
+          <Table size="small" sx={{ minWidth: 760, '& tbody tr:last-of-type td': { borderBottom: 0 } }}>
             <TableHead>
               <TableRow sx={{ '& th': { fontWeight: 800, bgcolor: 'action.hover', whiteSpace: 'nowrap' } }}>
                 <TableCell padding="checkbox">

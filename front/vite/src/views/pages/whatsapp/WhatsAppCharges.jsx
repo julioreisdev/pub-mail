@@ -979,7 +979,7 @@ export default function WhatsAppCharges() {
             </Box>
           ) : (
             <TableContainer>
-              <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' } }}>
+              <Table size="small" sx={{ '& td, & th': { whiteSpace: 'nowrap' }, '& tbody tr:last-of-type td': { borderBottom: 0 } }}>
                 <TableHead>
                   <TableRow>
                     <TableCell>Cliente</TableCell>
@@ -1135,7 +1135,7 @@ export default function WhatsAppCharges() {
             spacing={1}
             alignItems="center"
             justifyContent="space-between"
-            sx={{ px: 2, py: 1.25, borderTop: { sm: '1px solid' }, borderColor: 'divider' }}
+            sx={{ px: 2, py: 1.25, borderTop: { sm: '1px solid' }, borderColor: { sm: 'divider' } }}
           >
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               Mostrando {from}–{to} de {total.toLocaleString('pt-BR')}

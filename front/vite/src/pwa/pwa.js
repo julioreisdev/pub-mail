@@ -229,6 +229,23 @@ const lsSet = (k, v) => {
   }
 };
 
+// id fixo deste navegador: o servidor troca a inscrição antiga do MESMO aparelho em vez de acumular linhas
+// (o endereço da inscrição muda sempre que o navegador refaz a inscrição). Não sai do localStorage.
+const DEVICE_LS = 'pm-device-id';
+function deviceId() {
+  let v = lsGet(DEVICE_LS);
+  if (typeof v === 'string' && /^[\w-]{8,64}$/.test(v)) return v;
+  try {
+    v = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  } catch {
+    v = `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+  lsSet(DEVICE_LS, v);
+  return v;
+}
+
 async function sha256Hex(text) {
   try {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -310,10 +327,15 @@ export async function subscribePush() {
       }
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes });
       const json = sub.toJSON();
-      const r = await post('/notifications/subscriptions', { endpoint: json.endpoint, keys: json.keys, user_agent: navigator.userAgent });
+      const r = await post('/notifications/subscriptions', {
+        endpoint: json.endpoint,
+        keys: json.keys,
+        user_agent: navigator.userAgent,
+        device_id: deviceId()
+      });
       const id = r?.data?.id || r?.id || null;
       const hash = await sha256Hex(json.endpoint);
-      lsSet(PUSH_LS, { id, endpoint: json.endpoint, hash });
+      lsSet(PUSH_LS, { id, endpoint: json.endpoint, hash, dev: 1 });
       setState({ pushSubscribed: true, pushId: id, pushError: null });
       refreshSocketAuth(); // o servidor passa a saber que ESTE aparelho está com o painel aberto
       return { ok: true, id };
@@ -410,7 +432,8 @@ export async function syncPush() {
     else setState({ pushSubscribed: false });
     return;
   }
-  if (!saved || saved.endpoint !== sub.endpoint) {
+  // `dev` ausente = inscrito antes do id do aparelho: reenvia 1× para o servidor juntar as linhas repetidas
+  if (!saved || saved.endpoint !== sub.endpoint || !saved.dev) {
     await subscribePush();
     return;
   }

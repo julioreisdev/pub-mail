@@ -17,7 +17,7 @@ const start = new Date();
 const P1 = '5500999990077', P2 = '5500999990078';
 try {
   let r = await call('GET', '/notifications/catalog');
-  ok('catalog: push ligado + vapid + 19 tipos', r.s === 200 && r.j.push_enabled === true && String(r.j.vapid_public_key).length === 87 && r.j.kinds.length === 19, r.j && { pe: r.j.push_enabled, k: r.j.kinds?.length });
+  ok('catalog: push ligado + vapid + 19 tipos', r.s === 200 && r.j.push_enabled === true && String(r.j.vapid_public_key).length === 87 && r.j.kinds.length >= 19, r.j && { pe: r.j.push_enabled, k: r.j.kinds?.length }); // 19 na criação; cresce com módulos novos
   const defaults = r.j.defaults;
   r = await call('GET', '/notifications/prefs'); ok('prefs carregam', r.s === 200 && typeof r.j.enabled === 'boolean' && r.j.message, r.j);
   const orig = r.j; // preferências REAIS do usuário: restauradas no fim
@@ -38,9 +38,12 @@ try {
   r = await call('GET', '/notifications/subscriptions'); ok('lista 1 aparelho', r.s === 200 && r.j.some((d) => d.id === subId && d.device_label === 'E2E Android · Chrome'), r.j);
   r = await call('POST', '/notifications/subscriptions/touch', { endpoint }); ok('touch', r.s === 201 && r.j.ok);
   r = await call('POST', '/notifications/subscriptions', { endpoint: 'http://nao-https/x', keys: { p256dh: 'a', auth: 'b' } }); ok('endpoint sem https → 400', r.s === 400);
-  r = await call('POST', '/notifications/test', { channel: 'push' }); ok('teste push (aparelho falso → 0 entregues, sem erro)', r.s === 201 && r.j.push === 0 && r.j.push_enabled === true, r.j);
+  // a conta do superadmin é a do Júlio: com aparelho REAL inscrito o teste mandaria notificação para ele → só roda sem aparelho real
+  const realDevs = (await call('GET', '/notifications/subscriptions')).j.filter((d) => d.id !== subId).length;
+  if (realDevs) { console.log(`PULADO teste push: a conta tem ${realDevs} aparelho(s) real(is) inscrito(s) — não manda notificação de teste para eles`); n++; }
+  else { r = await call('POST', '/notifications/test', { channel: 'push' }); ok('teste push (aparelho falso → 0 entregues, sem erro)', r.s === 201 && r.j.push === 0 && r.j.push_enabled === true, r.j); }
   r = await call('POST', '/notifications/test', { channel: 'inapp' }); ok('teste painel (inapp = true se o superadmin está com o painel aberto, senão false)', r.s === 201 && typeof r.j.inapp === 'boolean', r.j);
-  r = await call('GET', '/notifications/subscriptions'); ok('aparelho falso: falha contada ou removido (404/410)', r.s === 200 && (!r.j.some((d) => d.id === subId) || r.j.find((d) => d.id === subId).failures >= 1), r.j);
+  r = await call('GET', '/notifications/subscriptions'); if (realDevs) { n++; } else ok('aparelho falso: falha contada ou removido (404/410)', r.s === 200 && (!r.j.some((d) => d.id === subId) || r.j.find((d) => d.id === subId).failures >= 1), r.j);
   r = await call('DELETE', `/notifications/subscriptions/${subId}`); ok('delete por id', r.s === 200);
 
   // ícone: upload de um PNG mínimo (1x1) e preferência com emoji/url

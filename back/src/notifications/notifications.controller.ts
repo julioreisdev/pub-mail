@@ -16,6 +16,7 @@ class SubscribeDto {
   @ValidateNested() @Type(() => PushKeysDto) keys!: PushKeysDto;
   @IsOptional() @IsString() @MaxLength(255) user_agent?: string;
   @IsOptional() @IsString() @MaxLength(80) device_label?: string;
+  @IsOptional() @IsString() @MaxLength(64) device_id?: string;
 }
 class UnsubscribeDto {
   @IsOptional() @IsString() id?: string;

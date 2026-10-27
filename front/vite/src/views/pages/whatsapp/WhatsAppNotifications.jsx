@@ -14,6 +14,7 @@ import {
   IconButton,
   InputLabel,
   MenuItem,
+  Pagination,
   Radio,
   RadioGroup,
   Select,
@@ -56,6 +57,7 @@ import { WaPageHeader, WaNumberMultiSelect, useWaSessions, waButtonSx } from './
 import { fmtAgo } from './waShared';
 import { SettingsCardHeader, cardSx, errText } from './settings/settingsKit';
 import { CrmModal } from './crm/crmKit';
+import { THIN_SCROLL } from './chat/chatKit';
 import WaChatPicker from './WaChatPicker';
 import { GROUP_ICON, GROUP_TONE, KIND_ICON } from './notifications/kinds';
 import { CustomCard, HistoryCard } from './notifications/CustomAndHistory';
@@ -175,6 +177,7 @@ function SwitchRow({ icon: Icon, tone = 'primary', label, hint, checked, onChang
 function DeviceCard() {
   const pwa = usePwa();
   const [devices, setDevices] = useState(null);
+  const [devPage, setDevPage] = useState(1);
   const [busy, setBusy] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [diag, setDiag] = useState(null);
@@ -230,6 +233,17 @@ function DeviceCard() {
       toast.error(errText(e));
     }
   };
+
+  // este aparelho primeiro; o resto do mais recente para o mais antigo (o servidor já manda assim)
+  const DEV_PAGE = 5;
+  const ordered = useMemo(() => {
+    const list = devices || [];
+    const mine = list.filter((d) => d.id === pwa.pushId);
+    return [...mine, ...list.filter((d) => d.id !== pwa.pushId)];
+  }, [devices, pwa.pushId]);
+  const devPages = Math.max(1, Math.ceil(ordered.length / DEV_PAGE));
+  const pageNow = Math.min(devPage, devPages);
+  const pageItems = ordered.slice((pageNow - 1) * DEV_PAGE, pageNow * DEV_PAGE);
 
   const perm = pwa.permission;
   const subscribed = pwa.pushSubscribed === true;
@@ -407,7 +421,8 @@ function DeviceCard() {
       <Divider sx={{ my: 1 }} />
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1, mb: 0.5 }}>
         <IconDevices size={18} />
-        <Typography sx={{ fontWeight: 700, fontSize: 14 }}>Aparelhos inscritos</Typography>
+        <Typography sx={{ fontWeight: 700, fontSize: 14, flex: 1 }}>Aparelhos inscritos</Typography>
+        {devices?.length ? <Chip size="small" label={devices.length} sx={{ height: 20, fontWeight: 700 }} /> : null}
       </Stack>
       {devices === null ? (
         <Skeleton height={48} />
@@ -416,29 +431,45 @@ function DeviceCard() {
           Nenhum aparelho recebe push ainda.
         </Typography>
       ) : (
-        <Stack divider={<Divider />} sx={{ mt: 0.5 }}>
-          {devices.map((d) => (
-            <Stack key={d.id} direction="row" alignItems="center" spacing={1} sx={{ py: 0.75 }}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 700, fontSize: 13.5 }} noWrap>
-                  {d.device_label || 'Aparelho'}{' '}
-                  {pwa.pushId === d.id ? (
-                    <Chip size="small" label="este" color="success" sx={{ ml: 0.5, height: 18, fontSize: 10.5, fontWeight: 700 }} />
-                  ) : null}
-                </Typography>
-                <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                  {d.last_sent_at ? `último push ${fmtAgo(d.last_sent_at)}` : `inscrito ${fmtAgo(d.created_at)}`}
-                  {d.failures ? ` · ${d.failures} falhas` : ''}
-                </Typography>
-              </Box>
-              <Tooltip title="Remover este aparelho">
-                <IconButton size="small" onClick={() => removeDevice(d.id)} aria-label="remover aparelho">
-                  <IconTrash size={16} />
-                </IconButton>
-              </Tooltip>
+        <>
+          <Stack divider={<Divider />} sx={(t) => ({ mt: 0.5, maxHeight: 300, overflowY: 'auto', pr: 0.5, ...THIN_SCROLL(t) })}>
+            {pageItems.map((d) => (
+              <Stack key={d.id} direction="row" alignItems="center" spacing={1} sx={{ py: 0.75 }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography sx={{ fontWeight: 700, fontSize: 13.5 }} noWrap>
+                    {d.device_label || 'Aparelho'}{' '}
+                    {pwa.pushId === d.id ? (
+                      <Chip size="small" label="este" color="success" sx={{ ml: 0.5, height: 18, fontSize: 10.5, fontWeight: 700 }} />
+                    ) : null}
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    {d.last_sent_at ? `último push ${fmtAgo(d.last_sent_at)}` : `inscrito ${fmtAgo(d.created_at)}`}
+                    {d.last_seen_at && pwa.pushId !== d.id ? ` · visto ${fmtAgo(d.last_seen_at)}` : ''}
+                    {d.failures ? ` · ${d.failures} falhas` : ''}
+                  </Typography>
+                </Box>
+                <Tooltip title="Remover este aparelho">
+                  <IconButton size="small" onClick={() => removeDevice(d.id)} aria-label="remover aparelho">
+                    <IconTrash size={16} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            ))}
+          </Stack>
+          {devPages > 1 ? (
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}
+            >
+              <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                {(pageNow - 1) * DEV_PAGE + 1}–{Math.min(pageNow * DEV_PAGE, ordered.length)} de {ordered.length}
+              </Typography>
+              <Pagination size="small" count={devPages} page={pageNow} onChange={(_, v) => setDevPage(v)} siblingCount={0} />
             </Stack>
-          ))}
-        </Stack>
+          ) : null}
+        </>
       )}
     </TgCard>
   );
