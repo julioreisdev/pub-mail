@@ -915,7 +915,7 @@ function LeadCaptureSection({ sequence, funil, onSetLeadCapture, onSetLeadCaptur
       {isActiveHere && activeFields.length > 0 ? (
         <>
           <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
-            Todas as mensagens do bot durante a captação. Pode usar {'{{nome}}'}, {'{{telefone}}'} ou {'{{email}}'} pra referenciar valores já capturados, e {'{{q_algo}}'} para um parâmetro da URL do chat (ex.: ?q_algo=valor).
+            Todas as mensagens do bot durante a captação. Pode usar {'{{nome}}'}, {'{{telefone}}'} ou {'{{email}}'} pra referenciar valores já capturados, e {'{{q_algo}}'} para um parâmetro da URL do chat (ex.: ?q_algo=valor). Valor padrão: {'{{q_nome|amigo}}'}.
           </Typography>
           <RichTextField
             label="Mensagem de abertura (antes do 1º campo)"
@@ -1025,7 +1025,7 @@ function MessageEditor({ message, index, total, onPatch, onRemove, onMove }) {
         <RichTextField
           value={message.html || ''}
           onChange={(html) => onPatch({ html })}
-          placeholder="Digite a mensagem… use {{nome}} (capturado) ou {{q_nome}} (da URL: ?q_nome=Ana)."
+          placeholder="Digite a mensagem… use {{nome}} (capturado) ou {{q_nome}} (da URL: ?q_nome=Ana); padrão: {{q_nome|amigo}}."
         />
       )}
 
@@ -1164,7 +1164,7 @@ function OptionsEditor({ sequence, otherSequences, onPatchOption, onPatchOptionA
               value={opt.label || ''}
               onChange={(html) => onPatchOption(opt.id, { label: html })}
               minHeight={36}
-              placeholder="Ex.: Quero saber mais 🚀 — aceita {{nome}} e {{q_nome}}"
+              placeholder="Ex.: Quero saber mais 🚀 — aceita {{nome}}, {{q_nome}} e {{q_nome|amigo}}"
             />
           </Box>
           <TextField

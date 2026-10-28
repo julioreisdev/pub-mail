@@ -588,7 +588,7 @@ function WarmupStrip({ items }) {
 // ---------------------------------------------------------------- copies
 const VARS = [
   { token: '{{nome}}', label: 'nome', hint: 'Nome completo do contato (agenda ou nome do WhatsApp).' },
-  { token: '{{primeiro_nome}}', label: 'primeiro nome', hint: 'Só o primeiro nome: "Ana Paula" → "Ana". Também aceita {{first_name}}.' },
+  { token: '{{primeiro_nome}}', label: 'primeiro nome', hint: 'Só o primeiro nome: "Ana Paula" → "Ana". Também aceita {{first_name}}. Valor padrão quando não há nome: {{primeiro_nome|amigo}}.' },
   { token: '{{telefone}}', label: 'telefone', hint: 'Telefone do contato.' }
 ];
 const newMessage = () => ({ id: uid(), text: '', media: null, delay_seconds: 0 });

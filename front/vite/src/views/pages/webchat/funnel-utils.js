@@ -419,14 +419,25 @@ export function escapeHtmlValue(input) {
 // substituteVariables(sanitize(template), variables) — nunca sanitizar DEPOIS
 // (o sanitizer não desfaz o escape, então não há duplo escape).
 // `{ escape: false }` só pra contextos que NÃO renderizam HTML.
+// Variáveis: {{nome}}, {{q_nome}} (da URL)… Valor padrão com barra vertical: {{q_nome|amigo}}
+// → "amigo" quando a variável está vazia ou não existe (aspas em volta são opcionais).
+// Sem padrão: variável da URL (q_*) ausente vira vazio; as demais ficam como estão
+// (ex.: {{nome}} antes da captação).
 export function substituteVariables(text, variables, options = {}) {
   const source = String(text ?? '');
   if (!source.includes('{{') || !variables) return source;
   const escape = options.escape !== false;
-  return source.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (match, key) => {
-    const val = variables[String(key).toLowerCase()];
-    if (val === undefined || val === null) return match;
-    return escape ? escapeHtmlValue(val) : String(val);
+  const out = (v) => (escape ? escapeHtmlValue(v) : String(v));
+  return source.replace(/\{\{\s*([a-z0-9_]+)\s*(?:\|([^}]*))?\}\}/gi, (match, key, fallbackRaw) => {
+    const k = String(key).toLowerCase();
+    const val = variables[k];
+    const hasFallback = fallbackRaw !== undefined;
+    const fallback = hasFallback ? String(fallbackRaw).trim().replace(/^(["'])(.*)\1$/, '$2') : '';
+    const empty = val === undefined || val === null || String(val).trim() === '';
+    if (!empty) return out(val);
+    if (hasFallback) return out(fallback);
+    if (val === undefined || val === null) return k.startsWith('q_') ? '' : match;
+    return out(val);
   });
 }
 

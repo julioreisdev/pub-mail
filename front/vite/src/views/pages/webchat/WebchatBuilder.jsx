@@ -1842,6 +1842,7 @@ export default function WebchatBuilder() {
                       <Alert severity="info" icon={false} sx={{ py: 0.25, fontSize: 12 }}>
                         Variável da URL: escreva <b>{'{{q_nome}}'}</b> e abra o chat com <b>?q_nome=Ana</b> → aparece “Ana”.
                         Vale para qualquer parâmetro que comece com <b>q_</b>, em mensagens e textos de botão.
+                        Valor padrão quando não vier nada: <b>{'{{q_nome|amigo}}'}</b> → “amigo”.
                       </Alert>
                       {getWelcomeList(personalizacao).map((welcomeEntry, index, arr) => {
                         const entryIsClip = isClipEntry(welcomeEntry);

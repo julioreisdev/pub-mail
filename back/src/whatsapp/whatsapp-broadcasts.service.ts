@@ -60,8 +60,16 @@ const hhmmToMin = (s: string) => { const m = HHMM_RE.exec(String(s || '')); retu
 const isReady = (r: any) => Boolean(r?.openwa_session_id && r.status === 'ready');
 
 // {{nome}} {{primeiro_nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
+// Valor padrão com barra vertical: {{primeiro_nome|amigo}} → "amigo" quando a variável está vazia
+// (contato sem nome, grupo…) ou não existe; aspas em volta são opcionais.
 export function fillVars(text: string, vars: Record<string, string>) {
-  return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => { const key = String(k).toLowerCase(); return key in vars ? vars[key] ?? '' : m; });
+  return String(text || '').replace(/\{\{\s*([\w.-]+)\s*(?:\|([^}]*))?\}\}/g, (m, k, fb) => {
+    const key = String(k).toLowerCase();
+    const val = key in vars ? String(vars[key] ?? '') : undefined;
+    if (val !== undefined && val.trim() !== '') return val;
+    if (fb !== undefined) return String(fb).trim().replace(/^(["'])(.*)\1$/, '$2');
+    return val !== undefined ? val : m;
+  });
 }
 
 // 1ª palavra do nome ("Ana Paula Souza" → "Ana"); vazio quando não há nome.
