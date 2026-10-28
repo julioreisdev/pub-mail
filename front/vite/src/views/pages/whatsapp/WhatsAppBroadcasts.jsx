@@ -587,8 +587,9 @@ function WarmupStrip({ items }) {
 
 // ---------------------------------------------------------------- copies
 const VARS = [
-  { token: '{{nome}}', label: 'nome' },
-  { token: '{{telefone}}', label: 'telefone' }
+  { token: '{{nome}}', label: 'nome', hint: 'Nome completo do contato (agenda ou nome do WhatsApp).' },
+  { token: '{{primeiro_nome}}', label: 'primeiro nome', hint: 'Só o primeiro nome: "Ana Paula" → "Ana". Também aceita {{first_name}}.' },
+  { token: '{{telefone}}', label: 'telefone', hint: 'Telefone do contato.' }
 ];
 const newMessage = () => ({ id: uid(), text: '', media: null, delay_seconds: 0 });
 
@@ -644,7 +645,7 @@ function MessagesEditor({ messages, onChange }) {
               Inserir variável:
             </Typography>
             {VARS.map((v) => (
-              <Tooltip key={v.token} title="Personaliza por contato — em grupos fica vazio.">
+              <Tooltip key={v.token} title={`${v.hint || ''} Personaliza por contato — em grupos fica vazio.`}>
                 <Chip
                   size="small"
                   label={v.label}

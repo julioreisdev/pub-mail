@@ -59,9 +59,19 @@ const clamp = (v: any, min: number, max: number, dflt: number) => { const n = Nu
 const hhmmToMin = (s: string) => { const m = HHMM_RE.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
 const isReady = (r: any) => Boolean(r?.openwa_session_id && r.status === 'ready');
 
-// {{nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
+// {{nome}} {{primeiro_nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
 export function fillVars(text: string, vars: Record<string, string>) {
   return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => { const key = String(k).toLowerCase(); return key in vars ? vars[key] ?? '' : m; });
+}
+
+// 1ª palavra do nome ("Ana Paula Souza" → "Ana"); vazio quando não há nome.
+export const firstNameOf = (name: any) => String(name || '').trim().split(/\s+/)[0] || '';
+// Variáveis de pessoa das copies: {{nome}}/{{name}}, {{primeiro_nome}}/{{first_name}}, {{telefone}}/{{phone}}.
+export function personVars(contact: { name?: string | null; push_name?: string | null; phone?: string | null } | null, fallbackPhone: string | null) {
+  const nome = contact?.name || contact?.push_name || '';
+  const telefone = contact?.phone || fallbackPhone || '';
+  const primeiro = firstNameOf(nome);
+  return { nome, name: nome, primeiro_nome: primeiro, first_name: primeiro, telefone, phone: telefone } as Record<string, string>;
 }
 
 type Target = { session_id: string; chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group'; via_group?: string };
@@ -1011,8 +1021,14 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const orgId = row.organization_id as string;
     const pool: any[] = Array.isArray(run.copies) && (run.copies as any[]).length > 1 ? (run.copies as any[]) : [];
     const msgs = this.normMessages(pool.length ? pool[Math.min(pool.length - 1, Math.max(0, Number(send.copy_index ?? 0)))] : run.messages);
-    const contact = send.contact_id ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: send.contact_id } }) : null;
-    const vars: Record<string, string> = { nome: contact?.name || contact?.push_name || '', name: contact?.name || contact?.push_name || '', telefone: contact?.phone || phoneFromJid(send.chat_id), phone: contact?.phone || phoneFromJid(send.chat_id) };
+    const phoneOfTarget = phoneFromJid(send.chat_id) || null;
+    // membro de grupo sem contato na org: tenta o contato pelo telefone (nome da agenda/pushName)
+    const contact = send.contact_id
+      ? await this.prisma.whatsapp_contacts.findUnique({ where: { id: send.contact_id } })
+      : send.target_kind === 'contact' && phoneOfTarget
+        ? await this.prisma.whatsapp_contacts.findFirst({ where: { organization_id: orgId, OR: [{ phone: phoneOfTarget }, { wa_id: send.chat_id }] } })
+        : null;
+    const vars: Record<string, string> = personVars(contact, phoneOfTarget);
     if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(orgId, send.chat_id, row.id).catch(() => ({})));
     const extra = { broadcast: true, broadcast_id: bc.id, run_id: run.id };
     let idx = send.msg_index || 0;
