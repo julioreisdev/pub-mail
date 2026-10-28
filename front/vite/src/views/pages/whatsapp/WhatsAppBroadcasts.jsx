@@ -1440,7 +1440,7 @@ function EstimateBox({ estimate, loading, many, targets }) {
           .filter(Boolean)
           .map((it) => (
             <Tooltip key={it.label} title={it.hint}>
-              <Chip size="small" variant="outlined" label={`${Number(it.n).toLocaleString('pt-BR')} ${it.label}`} sx={{ borderRadius: 1.5, fontSize: 11.5 }} />
+              <Chip size="small" variant="outlined" label={it.label} sx={{ borderRadius: 1.5, fontSize: 11.5 }} />
             </Tooltip>
           ))}
       </Stack>
