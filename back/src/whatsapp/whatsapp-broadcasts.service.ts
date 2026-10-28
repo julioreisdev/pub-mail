@@ -10,6 +10,7 @@ import { WhatsAppChatService } from './whatsapp-chat.service';
 import { WhatsAppPresenter } from './whatsapp-presenter.service';
 import { WhatsAppHooks } from './whatsapp-hooks.service';
 import { WhatsAppCrmService } from './whatsapp-crm.service';
+import { WhatsAppContactsService } from './whatsapp-contacts.service';
 import { isGroupJid, isLidJid, phoneFromJid } from './wa-jid.util';
 
 // Broadcasts MULTI-NÚMERO: a campanha tem `session_ids` (1..N números da org). Horários diários
@@ -21,7 +22,9 @@ import { isGroupJid, isLidJid, phoneFromJid } from './wa-jid.util';
 //      'own' ("Cada número dispara para seus contatos"): o contato sai pelo número DELE — o da
 //        conversa mais recente ou, sem conversa, o número de cuja agenda ele veio
 //        (`whatsapp_contact_sessions`); quem não é de nenhum dos números escolhidos fica de fora.
-//    Grupos saem sempre pelo número da conversa do grupo.
+//    Grupos saem sempre pelo número da conversa do grupo. `targets.groups_mode`: 'group' (posta no
+//    grupo, padrão) | 'members' ("Enviar no privado": cada membro recebe na DM, pelo número que
+//    participa do grupo) | 'both'. Membros sem contato na org entram só com o telefone.
 //  - Fila `whatsapp_broadcast_sends` com `session_id`; worker processa POR NÚMERO (1 envio por vez
 //    por número; números diferentes em paralelo), obedecendo ao ritmo (`pacing`: preset/intervalo/
 //    jitter/limite diário/pausa a cada N/janela de horário) e ao aquecimento de cada número.
@@ -61,7 +64,8 @@ export function fillVars(text: string, vars: Record<string, string>) {
   return String(text || '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k) => { const key = String(k).toLowerCase(); return key in vars ? vars[key] ?? '' : m; });
 }
 
-type Target = { session_id: string; chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group' };
+type Target = { session_id: string; chat_id: string; contact_id: string | null; target_kind: 'contact' | 'group'; via_group?: string };
+export type GroupsMode = 'group' | 'members' | 'both';
 export type BroadcastDistribution = 'shared' | 'own';
 // De quais números vem a AUDIÊNCIA (independe de quais números ENVIAM):
 //  all = de todos os números da org (padrão, comportamento antigo) · sending = só dos números que enviam ·
@@ -89,6 +93,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     private readonly presenter: WhatsAppPresenter,
     private readonly crm: WhatsAppCrmService,
     private readonly hooks: WhatsAppHooks,
+    private readonly contacts: WhatsAppContactsService,
   ) {}
 
   // ---------------------------------------------------------------- presets / ritmo
@@ -163,6 +168,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       exclude_tags: strList(t.exclude_tags, 50),
       // uuids de conversas de grupo (campanhas antigas podem ter jids `@g.us` — aceitos como legado)
       groups: Array.isArray(t.groups) ? [...new Set<string>(t.groups.map((g: any) => String(g).trim()).filter((g: string) => UUID_RE.test(g) || /@g\.us$/.test(g)))].slice(0, 200) : [],
+      // grupos: postar no grupo (padrão) | 'members' = enviar no privado de cada membro | 'both'
+      groups_mode: (['group', 'members', 'both'].includes(t.groups_mode) ? t.groups_mode : t.groups_dm === true ? 'members' : 'group') as GroupsMode,
       source,
       source_session_ids: source === 'custom' ? strList(t.source_session_ids, 50, 36) : [],
       // contatos que não são de número nenhum (importados/criados à mão): entram por padrão só em "todos os números"
@@ -388,18 +395,27 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         uuids.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, id: { in: uuids }, kind: 'group' }, select: { id: true, session_id: true, chat_id: true } }) : ([] as GroupRow[]),
         jids.length && chosenIds.length ? this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, session_id: { in: chosenIds }, chat_id: { in: jids }, kind: 'group' }, select: { id: true, session_id: true, chat_id: true } }) : ([] as GroupRow[]),
       ]);
-      for (const g of uuids) { const row = byUuid.find((r) => r.id === g); if (row) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' }); else warnings.push(`Grupo ${g} não encontrado.`); }
-      for (const g of jids) { const rowsG = byLegacy.filter((r) => r.chat_id === g); if (!rowsG.length) warnings.push(`Grupo ${g} não encontrado nos números escolhidos.`); for (const row of rowsG) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' }); }
+      const groupRows: GroupRow[] = [];
+      for (const g of uuids) { const row = byUuid.find((r) => r.id === g); if (row) groupRows.push(row); else warnings.push(`Grupo ${g} não encontrado.`); }
+      for (const g of jids) { const rowsG = byLegacy.filter((r) => r.chat_id === g); if (!rowsG.length) warnings.push(`Grupo ${g} não encontrado nos números escolhidos.`); groupRows.push(...rowsG); }
+      if (t.groups_mode !== 'members') for (const row of groupRows) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' });
+      if (t.groups_mode !== 'group' && groupRows.length) {
+        // "Enviar no privado": cada membro vira um alvo individual pelo número que participa do grupo
+        const { targets: members, warnings: w2 } = await this.groupMemberTargets(orgId, groupRows, base);
+        warnings.push(...w2);
+        for (const m of members) push(m);
+      }
     }
     // "excluir quem não interagiu nos últimos N dias": fica só quem mandou mensagem (recebida) nesse período
     if (excludeInactiveDays && excludeInactiveDays > 0) {
       const cutoff = new Date(Date.now() - excludeInactiveDays * 86_400_000);
-      const contactsOut = out.filter((x) => x.target_kind === 'contact' && !(x.contact_id && manualIds.has(x.contact_id)));
+      const isExempt = (x: Target) => Boolean(x.via_group) || Boolean(x.contact_id && manualIds.has(x.contact_id)); // membros de grupo e escolhidos à mão sempre recebem
+      const contactsOut = out.filter((x) => x.target_kind === 'contact' && !isExempt(x));
       if (contactsOut.length) {
         const active = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, kind: 'individual', last_inbound_at: { gte: cutoff }, OR: contactsOut.slice(0, 20000).map((x) => ({ session_id: x.session_id, chat_id: x.chat_id })) }, select: { session_id: true, chat_id: true } });
         const ok = new Set(active.map((c) => `${c.session_id}|${c.chat_id}`));
         const before = out.length;
-        const kept = out.filter((x) => x.target_kind !== 'contact' || (x.contact_id && manualIds.has(x.contact_id)) || ok.has(`${x.session_id}|${x.chat_id}`));
+        const kept = out.filter((x) => x.target_kind !== 'contact' || isExempt(x) || ok.has(`${x.session_id}|${x.chat_id}`));
         const removed = before - kept.length;
         filtered.inactive = removed;
         if (removed) warnings.push(`${removed.toLocaleString('pt-BR')} contato(s) ficam de fora por não terem respondido nos últimos ${excludeInactiveDays} dias.`);
@@ -409,7 +425,73 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     return { targets: out, warnings, unassigned, filtered, sources };
   }
 
-  /** Estimativa: `{ contacts, groups, total, by_session:[{session_id,label,color,connected,contacts,groups}], distribution, unassigned }`. */
+  /**
+   * Membros dos grupos como alvos de DM ("Enviar no privado"). Participantes vêm do `group_meta`
+   * (cache de 6 h) ou do gateway (número conectado); o próprio número e os outros números da org
+   * ficam de fora; quem tem contato na org e pediu PARE / bloqueou / está bloqueado também.
+   * Sem telefone resolvível (lid desconhecido) o membro é pulado e entra no aviso.
+   */
+  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], base: any): Promise<{ targets: Target[]; warnings: string[] }> {
+    const warnings: string[] = [];
+    const targets: Target[] = [];
+    const all = await this.sessions.rowsOf(orgId);
+    const ownPhones = new Set(all.map((r) => String(r.phone || '')).filter(Boolean));
+    const rowsById = new Map(all.map((r) => [r.id, r] as const));
+    type Member = { phone: string; lid: string | null; name: string | null };
+    const perGroup: { row: SessionRow; group: { id: string; session_id: string; chat_id: string }; members: Member[] }[] = [];
+    let unresolved = 0;
+    for (const g of groups) {
+      const row = rowsById.get(g.session_id);
+      if (!row) continue;
+      const chat = await this.prisma.whatsapp_chats.findUnique({ where: { id: g.id }, select: { group_meta: true, name: true } });
+      const meta: any = chat?.group_meta || {};
+      let participants: any[] = Array.isArray(meta.participants) ? meta.participants : [];
+      const stale = !meta.fetched_at || Date.now() - new Date(meta.fetched_at).getTime() > 6 * 3_600_000;
+      if ((stale || !participants.length) && isReady(row)) {
+        try {
+          const info = await this.openwa.groupInfo(row.openwa_session_id!, g.chat_id);
+          participants = (info?.participants || []).map((p: any) => ({ id: p.id, phone: p.number || phoneFromJid(p.id), name: p.name || null, is_admin: Boolean(p.isAdmin || p.isSuperAdmin) }));
+          const me = row.phone ? `${row.phone}@c.us` : '';
+          await this.prisma.whatsapp_chats.update({ where: { id: g.id }, data: { group_meta: { ...meta, subject: info?.name || meta.subject, participants, participants_count: participants.length, is_admin: participants.some((p: any) => p.id === me && p.is_admin), fetched_at: new Date().toISOString() } } }).catch(() => undefined);
+        } catch (e: any) {
+          this.logger.debug(`groupInfo ${g.chat_id}: ${e?.message || e}`);
+        }
+      }
+      if (!participants.length) { warnings.push(`Grupo "${chat?.name || meta.subject || g.chat_id}": não foi possível listar os membros${isReady(row) ? '' : ' (número desconectado)'}.`); continue; }
+      const members: Member[] = [];
+      for (const p of participants) {
+        const id = String(p?.id || '');
+        let phone = String(p?.phone || phoneFromJid(id) || '').replace(/\D/g, '');
+        const lid = isLidJid(id) ? id : null;
+        if (!phone && lid) phone = String((await this.contacts.phoneOfLid(orgId, row, lid).catch(() => null)) || '');
+        if (!phone) { unresolved++; continue; }
+        if (ownPhones.has(phone)) continue;
+        members.push({ phone, lid, name: p?.name ? String(p.name) : null });
+      }
+      perGroup.push({ row, group: g, members });
+    }
+    // contatos da org pelos telefones (uma consulta): contact_id + LGPD/bloqueio
+    const phones = [...new Set(perGroup.flatMap((x) => x.members.map((m) => m.phone)))];
+    const known = phones.length ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ phone: { in: phones } }, { wa_id: { in: phones.map((ph) => `${ph}@c.us`) } }] }, select: { id: true, phone: true, wa_id: true, lid: true, is_blocked: true, opted_out_at: true, blocked_us_at: true } }) : [];
+    const byPhone = new Map<string, (typeof known)[number]>();
+    for (const c of known) { const ph = c.phone || phoneFromJid(c.wa_id) || ''; if (ph && !byPhone.has(ph)) byPhone.set(ph, c); }
+    let excluded = 0;
+    for (const { row, group, members } of perGroup) {
+      for (const m of members) {
+        const c = byPhone.get(m.phone) || null;
+        if (c && (c.is_blocked || c.opted_out_at || c.blocked_us_at)) { excluded++; continue; }
+        const jid = this.jidForSession(row, { wa_id: c?.wa_id || `${m.phone}@c.us`, phone: m.phone, lid: c?.lid || m.lid });
+        if (!jid) { unresolved++; continue; }
+        targets.push({ session_id: row.id, chat_id: jid, contact_id: c?.id || null, target_kind: 'contact', via_group: group.chat_id });
+      }
+    }
+    void base;
+    if (unresolved) warnings.push(`${unresolved} membro(s) de grupo sem telefone conhecido ficam de fora.`);
+    if (excluded) warnings.push(`${excluded} membro(s) de grupo descadastrados/bloqueados ficam de fora.`);
+    return { targets, warnings };
+  }
+
+  /** Estimativa: `{ contacts, groups, group_members, total, by_session:[{session_id,label,color,connected,contacts,groups}], distribution, unassigned }`. */
   async audience(orgId: string, rawTargets: any, sessionIds?: string[], rawDistribution?: any, excludeInactiveDays?: number | null) {
     const distribution = normDistribution(rawDistribution);
     const all = await this.sessions.rowsOf(orgId);
@@ -422,11 +504,12 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     for (const x of targets) { const s = stats.get(x.session_id) || { contacts: 0, groups: 0 }; if (x.target_kind === 'group') s.groups++; else s.contacts++; stats.set(x.session_id, s); }
     const rowsFor = [...chosen, ...all.filter((r) => stats.has(r.id) && !chosen.some((c) => c.id === r.id))]; // grupos de números fora da seleção
     const by_session = rowsFor.map((r) => ({ session_id: r.id, label: sessionLabel(r), color: r.color || null, connected: isReady(r), contacts: stats.get(r.id)?.contacts || 0, groups: stats.get(r.id)?.groups || 0 }));
-    const contacts = targets.filter((x) => x.target_kind === 'contact').length;
-    const groups = targets.length - contacts;
+    const group_members = targets.filter((x) => x.target_kind === 'contact' && x.via_group).length;
+    const contacts = targets.filter((x) => x.target_kind === 'contact').length - group_members;
+    const groups = targets.length - contacts - group_members;
     // contatos de cada número da org nesta audiência (antes do filtro de origem): alimenta "Escolher números" na tela
     const source_by_session = all.map((r) => ({ session_id: r.id, label: sessionLabel(r), color: r.color || null, connected: isReady(r), contacts: sources.by_session[r.id] || 0 }));
-    return { contacts, groups, total: targets.length, by_session, warnings, distribution: chosen.length > 1 ? distribution : 'shared', unassigned, filtered, source_by_session, unlinked: sources.unlinked };
+    return { contacts, groups, group_members, total: targets.length, by_session, warnings, distribution: chosen.length > 1 ? distribution : 'shared', unassigned, filtered, source_by_session, unlinked: sources.unlinked };
   }
 
   // ---------------------------------------------------------------- CRUD

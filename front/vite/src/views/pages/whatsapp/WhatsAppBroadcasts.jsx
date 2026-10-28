@@ -164,6 +164,8 @@ const audienceRulesOf = (b) => {
     if (t.cooldown_hours) out.push(`sem repetir em ${t.cooldown_hours} h`);
   }
   if (b?.exclude_inactive_days) out.push(`responderam em ${b.exclude_inactive_days} d`);
+  if ((t.groups || []).length && t.groups_mode === 'members') out.push('grupos: no privado dos membros');
+  if ((t.groups || []).length && t.groups_mode === 'both') out.push('grupos: no grupo e no privado dos membros');
   return out;
 };
 
@@ -899,6 +901,7 @@ const EMPTY = {
     tags: [],
     exclude_tags: [],
     groups: [],
+    groups_mode: 'group',
     source: 'all',
     source_session_ids: [],
     include_unlinked: true,
@@ -1417,7 +1420,8 @@ function EstimateBox({ estimate, loading, many }) {
           Audiência ≈ {(estimate?.total || 0).toLocaleString('pt-BR')}
         </Typography>
         <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-          ({estimate?.contacts || 0} contatos · {estimate?.groups || 0} grupos)
+          ({estimate?.contacts || 0} contatos · {estimate?.groups || 0} grupos
+          {estimate?.group_members ? ` · ${plural(estimate.group_members, 'membro de grupo no privado', 'membros de grupo no privado')}` : ''})
         </Typography>
       </Stack>
       {many && by.length ? (
@@ -1708,6 +1712,8 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
       }),
     [groups, byId, many]
   );
+  const groupsMode = form.targets.groups_mode || 'group';
+  const hasGroups = (form.targets.groups || []).length > 0;
 
   return (
     <CrmModal
@@ -1903,6 +1909,56 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
             <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
               Cada grupo sai pelo número que participa dele, mesmo que esse número não esteja marcado acima.
             </Typography>
+          ) : null}
+          {hasGroups ? (
+            <Box
+              sx={{
+                mt: 1.25,
+                p: 1.25,
+                borderRadius: 2.5,
+                border: '1px solid',
+                borderColor: groupsMode !== 'group' ? 'rgba(124,58,237,0.45)' : 'divider',
+                bgcolor: groupsMode !== 'group' ? 'rgba(124,58,237,0.06)' : 'transparent',
+                transition: 'all .15s'
+              }}
+            >
+              <FormControlLabel
+                sx={{ m: 0, alignItems: 'flex-start' }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={groupsMode !== 'group'}
+                    onChange={(e) => setT({ groups_mode: e.target.checked ? 'members' : 'group' })}
+                    sx={{ mt: -0.5, color: '#7c3aed', '&.Mui-checked': { color: '#7c3aed' } }}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                      Enviar no privado dos membros
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                      Em vez de postar no grupo, cada membro recebe a mensagem na conversa individual, pelo número que participa do grupo.
+                      Vale o ritmo e o limite diário do número — grupos grandes levam tempo.
+                    </Typography>
+                  </Box>
+                }
+              />
+              {groupsMode !== 'group' ? (
+                <FormControlLabel
+                  sx={{ m: 0, mt: 0.5, ml: 3.5 }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={groupsMode === 'both'}
+                      onChange={(e) => setT({ groups_mode: e.target.checked ? 'both' : 'members' })}
+                      sx={{ color: '#7c3aed', '&.Mui-checked': { color: '#7c3aed' } }}
+                    />
+                  }
+                  label={<Typography variant="body2">Também postar a mensagem no grupo</Typography>}
+                />
+              ) : null}
+            </Box>
           ) : null}
           <EstimateBox estimate={estimate} loading={estimating} many={many} />
         </Box>
