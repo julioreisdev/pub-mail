@@ -268,6 +268,47 @@ export const SESSION_STATUS_UI = {
   failed: { pill: 'error', label: 'Falhou' }
 };
 
+// ---- restrição ativa do WhatsApp num número (GET /whatsapp/sessions → `restriction {kind, code, until, at}`) ----
+export const activeRestriction = (session, now = Date.now()) => {
+  const r = session?.restriction;
+  if (!r || r.active === false) return null;
+  if (r.until && new Date(r.until).getTime() <= now) return null;
+  return r;
+};
+// "23:26" (hoje) ou "amanhã às 08:10" / "30/10 às 08:10", em Brasília
+export const restrictionUntilLabel = (session, now = Date.now()) => {
+  const r = activeRestriction(session, now);
+  if (!r?.until) return '';
+  const d = new Date(r.until);
+  const tz = 'America/Sao_Paulo';
+  const day = (x) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(x);
+  const hhmm = d.toLocaleTimeString('pt-BR', { timeZone: tz, hour: '2-digit', minute: '2-digit' });
+  const today = day(new Date(now));
+  const target = day(d);
+  if (target === today) return hhmm;
+  const tomorrow = day(new Date(now + 86_400_000));
+  if (target === tomorrow) return `amanhã às ${hhmm}`;
+  return `${d.toLocaleDateString('pt-BR', { timeZone: tz, day: '2-digit', month: '2-digit' })} às ${hhmm}`;
+};
+// "2 h 10 min" / "35 min" / "menos de 1 min"
+export const restrictionRemainingLabel = (session, now = Date.now()) => {
+  const r = activeRestriction(session, now);
+  if (!r?.until) return '';
+  const ms = new Date(r.until).getTime() - now;
+  if (ms < 60_000) return 'menos de 1 min';
+  const m = Math.ceil(ms / 60_000);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60 ? `${m % 60} min` : ''}`.trim() : `${m} min`;
+};
+// re-renderiza a cada `ms` (relógio da restrição; o aviso some sozinho quando vence)
+export const useNowTick = (ms = 30_000) => {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+  return now;
+};
+
 export const fmtPhoneBR = (p) => {
   const d = String(p || '').replace(/\D/g, '');
   if (!d) return '';

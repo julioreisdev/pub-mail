@@ -46,13 +46,25 @@ import {
   IconPlus,
   IconTag,
   IconRobot,
-  IconDotsVertical
+  IconDotsVertical,
+  IconClock
 } from '@tabler/icons-react';
 
 import { get, post, put, remove } from 'api/api';
 import { useAuth } from 'contexts/AuthContext';
 import { TgCard, TgStatusPill, TgModal, TgConfirmDialog, TgEmptyState } from 'views/pages/telegram/ui';
-import { WaPageHeader, WaNumberDot, SESSION_STATUS_UI, fmtPhoneBR, sessionLabel, useWaSessions } from './waKit';
+import {
+  WaPageHeader,
+  WaNumberDot,
+  SESSION_STATUS_UI,
+  fmtPhoneBR,
+  sessionLabel,
+  useWaSessions,
+  activeRestriction,
+  restrictionUntilLabel,
+  restrictionRemainingLabel,
+  useNowTick
+} from './waKit';
 import { useRealtimeEvent } from 'realtime/useRealtime';
 import AttendanceCard from './settings/AttendanceCard';
 import TagsCard from './settings/TagsCard';
@@ -90,6 +102,8 @@ function NumberTab({ session, selected, onClick }) {
   const st = session?.status || 'none';
   const ui = STATUS_UI[st] || STATUS_UI.none;
   const color = session?.color || WA_GREEN;
+  const now = useNowTick(30_000);
+  const restrictedUntil = activeRestriction(session, now) ? restrictionUntilLabel(session, now) : '';
   return (
     <ButtonBase
       onClick={onClick}
@@ -120,7 +134,7 @@ function NumberTab({ session, selected, onClick }) {
           sx={{ color: st === 'ready' ? 'success.main' : 'text.secondary', display: 'block', lineHeight: 1.2 }}
           noWrap
         >
-          {st === 'ready' && session?.phone ? fmtPhone(session.phone) : ui.label}
+          {restrictedUntil ? `Restrito até ${restrictedUntil}` : st === 'ready' && session?.phone ? fmtPhone(session.phone) : ui.label}
         </Typography>
       </Box>
     </ButtonBase>
@@ -237,7 +251,16 @@ function IdentityCard({ session, canEdit, flows, onSave, onRemove }) {
 function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTest, onPairing, onReconnect }) {
   const st = session?.status || 'none';
   const ui = STATUS_UI[st] || STATUS_UI.none;
-  const restricted = Boolean(session?.restricted_at);
+  // restrição ATIVA (com vencimento vindo do WhatsApp): o aviso e a trava do QR somem sozinhos quando vence
+  const now = useNowTick(30_000);
+  const restriction = activeRestriction(session, now);
+  const restricted = Boolean(restriction);
+  const untilLabel = restrictionUntilLabel(session, now);
+  const remainingLabel = restrictionRemainingLabel(session, now);
+  const [showQrAnyway, setShowQrAnyway] = useState(false);
+  useEffect(() => {
+    if (!restricted) setShowQrAnyway(false);
+  }, [restricted]);
   const connecting = ['created', 'initializing', 'authenticating'].includes(st);
   const color = session?.color || WA_GREEN;
 
@@ -265,7 +288,7 @@ function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTes
             {sessionLabel(session)}
           </Typography>
         </Box>
-        {restricted ? <TgStatusPill status="banned" label="Restrito pelo WhatsApp" /> : <TgStatusPill status={ui.pill} label={ui.label} />}
+        {restricted ? <TgStatusPill status="banned" label={untilLabel ? `Restrito até ${untilLabel}` : 'Restrito pelo WhatsApp'} /> : <TgStatusPill status={ui.pill} label={ui.label} />}
       </Stack>
 
       {session?.gateway_error ? (
@@ -275,8 +298,19 @@ function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTes
       ) : null}
       {restricted ? (
         <Alert severity="error" sx={{ mb: 2 }}>
-          O WhatsApp aplicou uma restrição a este número{session?.last_error ? `: ${session.last_error}` : ''}. Aguarde o prazo informado no
-          celular ou conecte outro número.
+          <Typography variant="body2" sx={{ fontWeight: 800 }}>
+            O WhatsApp restringiu este número{untilLabel ? ` até ${untilLabel}` : ''}
+            {remainingLabel ? ` (faltam ${remainingLabel})` : ''}.
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {restriction?.kind === 'reachout_timelock'
+              ? 'Motivo: muitas mensagens para quem não tem este número salvo. '
+              : ''}
+            {st === 'ready'
+              ? 'Não dispare broadcasts nem mande para desconhecidos até esse horário — cada envio renova a restrição e pode derrubar a conexão.'
+              : `Escaneie o QR Code só depois desse horário: conectar antes não tira a restrição, e qualquer envio durante ela a renova (foi o que aconteceu em 28/10).`}
+            {' '}Este aviso some sozinho quando o prazo passar.
+          </Typography>
         </Alert>
       ) : null}
 
@@ -318,7 +352,23 @@ function ConnectionCard({ session, qr, busy, canEdit, onConnect, onLogout, onTes
         </Stack>
       )}
 
-      {st === 'qr_ready' && (
+      {st === 'qr_ready' && restricted && !showQrAnyway ? (
+        <Stack spacing={1.5} alignItems="flex-start" sx={{ p: 2, borderRadius: 3, border: '1px dashed', borderColor: 'divider', bgcolor: 'action.hover' }}>
+          <Stack direction="row" spacing={1.25} alignItems="center">
+            <IconClock size={22} />
+            <Box>
+              <Typography sx={{ fontWeight: 800 }}>QR Code guardado até {untilLabel || 'o fim da restrição'}</Typography>
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                {remainingLabel ? `Faltam ${remainingLabel}. ` : ''}Quando o prazo passar, o QR aparece aqui sozinho e você escaneia normalmente.
+              </Typography>
+            </Box>
+          </Stack>
+          <Button size="small" variant="text" color="inherit" onClick={() => setShowQrAnyway(true)} sx={{ color: 'text.secondary', textTransform: 'none' }}>
+            Mostrar o QR mesmo assim (por minha conta)
+          </Button>
+        </Stack>
+      ) : null}
+      {st === 'qr_ready' && (!restricted || showQrAnyway) && (
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={3} alignItems={{ xs: 'center', md: 'flex-start' }}>
           <Box
             sx={{
