@@ -570,6 +570,11 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       pending.push(m);
     }
     for (const m of pending) add(leastLoaded(), m);
+    // membro de grupo EXISTE no WhatsApp por definição: marca `wa_exists` para o worker não fazer a
+    // consulta `onWhatsApp` (USync) por destinatário — dezenas dessas consultas seguidas, antes de cada
+    // mensagem a um desconhecido, são o retrato de robô que o WhatsApp procura
+    const knownIds = [...new Set(targets.map((t) => t.contact_id).filter(Boolean) as string[])];
+    if (knownIds.length) await this.prisma.whatsapp_contacts.updateMany({ where: { id: { in: knownIds }, OR: [{ wa_exists: null }, { wa_exists: false }, { wa_checked_at: null }, { wa_checked_at: { lt: new Date(Date.now() - 20 * 86_400_000) } }] }, data: { wa_exists: true, wa_checked_at: new Date() } }).catch(() => undefined);
     void chosen;
     if (unresolved) warnings.push(`${unresolved} membro(s) de grupo sem telefone conhecido ficam de fora.`);
     if (excluded) warnings.push(`${excluded} membro(s) de grupo descadastrados/bloqueados ficam de fora.`);
@@ -985,6 +990,15 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     await this.reconcile(runId);
   }
 
+  /** Presença "digitando…" (ou "gravando…" não — mídia vai como composing também) com duração humana antes de enviar. */
+  private async humanTyping(row: SessionRow, jid: string, text: string, hasMedia: boolean) {
+    const base = hasMedia ? 2500 : 1500 + Math.min(4500, String(text || '').length * 35);
+    const ms = Math.round(base * (0.8 + Math.random() * 0.5));
+    await this.openwa.typing(row.openwa_session_id, jid, 'typing').catch(() => undefined);
+    await sleep(ms);
+    await this.openwa.typing(row.openwa_session_id, jid, 'paused').catch(() => undefined);
+  }
+
   // jids já salvos neste processo (evita repetir o PUT a cada disparo; após reinício salva de novo — o PUT é idempotente)
   private savedOnPhone = new Set<string>();
 
@@ -1181,8 +1195,15 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     try {
       for (; idx < msgs.length; idx++) {
         const m = msgs[idx];
-        if (m.delay_seconds) { await this.openwa.typing(row.openwa_session_id, send.chat_id, 'typing').catch(() => undefined); await sleep(Math.min(60, m.delay_seconds) * 1000); }
         const text = fillVars(m.text, vars);
+        if (m.delay_seconds) {
+          await this.openwa.typing(row.openwa_session_id, send.chat_id, 'typing').catch(() => undefined);
+          await sleep(Math.min(60, m.delay_seconds) * 1000);
+        } else if (this.normPacing(bc.pacing, bc.interval_ms).interval_ms >= 2000) {
+          // como uma pessoa: "digitando…" por um tempo proporcional ao texto (1,5–6 s, com variação) antes de enviar.
+          // O chat do painel manda essa presença quando o atendente digita; o broadcast não mandava nada.
+          await this.humanTyping(row, send.chat_id, text, Boolean(m.media_id));
+        }
         if (m.media_id) {
           const media = await this.media.readBase64(orgId, m.media_id);
           const kind = media.kind === 'voice' || media.kind === 'audio' ? 'audio' : media.kind === 'image' ? 'image' : media.kind === 'video' ? 'video' : 'document';
