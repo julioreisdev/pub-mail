@@ -410,8 +410,12 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       for (const g of jids) { const rowsG = byLegacy.filter((r) => r.chat_id === g); if (!rowsG.length) warnings.push(`Grupo ${g} não encontrado nos números escolhidos.`); groupRows.push(...rowsG); }
       if (t.groups_mode !== 'members') for (const row of groupRows) push({ session_id: row.session_id, chat_id: row.chat_id, contact_id: null, target_kind: 'group' });
       if (t.groups_mode !== 'group' && groupRows.length) {
-        // "Enviar no privado": cada membro vira um alvo individual pelo número que participa do grupo
-        const { targets: members, warnings: w2 } = await this.groupMemberTargets(orgId, groupRows, base);
+        // "Enviar no privado": cada membro vira um alvo individual, enviado pelos NÚMEROS QUE ENVIAM
+        // (não pelo número do grupo), repartido como os contatos; quem já está na audiência não repete.
+        const phoneOfContact = new Map(everyone.map((c: any) => [c.id, c.phone || phoneFromJid(c.wa_id) || ''] as [string, string]));
+        const already = new Set<string>();
+        for (const x of out) { const ph = (x.contact_id && phoneOfContact.get(x.contact_id)) || phoneFromJid(x.chat_id) || ''; if (ph) already.add(ph); }
+        const { targets: members, warnings: w2 } = await this.groupMemberTargets(orgId, groupRows, pool, chosen, mode, out, already);
         warnings.push(...w2);
         for (const m of members) push(m);
       }
@@ -441,9 +445,10 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
    * ficam de fora; quem tem contato na org e pediu PARE / bloqueou / está bloqueado também.
    * Sem telefone resolvível (lid desconhecido) o membro é pulado e entra no aviso.
    */
-  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], base: any): Promise<{ targets: Target[]; warnings: string[] }> {
+  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], pool: SessionRow[], chosen: SessionRow[], mode: BroadcastDistribution, current: Target[], already: Set<string>): Promise<{ targets: Target[]; warnings: string[] }> {
     const warnings: string[] = [];
     const targets: Target[] = [];
+    if (!pool.length) { warnings.push('Nenhum dos números que enviam está conectado — os membros dos grupos não têm por onde sair.'); return { targets, warnings }; }
     const all = await this.sessions.rowsOf(orgId);
     const ownPhones = new Set(all.map((r) => String(r.phone || '')).filter(Boolean));
     const rowsById = new Map(all.map((r) => [r.id, r] as const));
@@ -485,19 +490,61 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const known = phones.length ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ phone: { in: phones } }, { wa_id: { in: phones.map((ph) => `${ph}@c.us`) } }] }, select: { id: true, phone: true, wa_id: true, lid: true, is_blocked: true, opted_out_at: true, blocked_us_at: true } }) : [];
     const byPhone = new Map<string, (typeof known)[number]>();
     for (const c of known) { const ph = c.phone || phoneFromJid(c.wa_id) || ''; if (ph && !byPhone.has(ph)) byPhone.set(ph, c); }
+    // lista única de membros (a mesma pessoa em 2 grupos conta 1×; quem já está na audiência não repete)
+    type Picked = Member & { contact: (typeof known)[number] | null; group_jid: string; group_session: string };
+    const picked: Picked[] = [];
+    const seenPhone = new Set<string>();
     let excluded = 0;
-    for (const { row, group, members } of perGroup) {
+    let duplicated = 0;
+    for (const { group, members } of perGroup) {
       for (const m of members) {
+        if (seenPhone.has(m.phone)) continue;
+        seenPhone.add(m.phone);
+        if (already.has(m.phone)) { duplicated++; continue; }
         const c = byPhone.get(m.phone) || null;
         if (c && (c.is_blocked || c.opted_out_at || c.blocked_us_at)) { excluded++; continue; }
-        const jid = this.jidForSession(row, { wa_id: c?.wa_id || `${m.phone}@c.us`, phone: m.phone, lid: c?.lid || m.lid });
-        if (!jid) { unresolved++; continue; }
-        targets.push({ session_id: row.id, chat_id: jid, contact_id: c?.id || null, target_kind: 'contact', via_group: group.chat_id });
+        picked.push({ ...m, contact: c, group_jid: group.chat_id, group_session: group.session_id });
       }
     }
-    void base;
+    // conversas que os números que ENVIAM já têm com esses membros (preferência de quem fala com quem)
+    const poolIds = new Set(pool.map((r) => r.id));
+    const jidCands = picked.flatMap((m) => [`${m.phone}@c.us`, m.contact?.wa_id, m.contact?.lid, m.lid].filter(Boolean) as string[]);
+    const chats = jidCands.length ? await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, kind: 'individual', session_id: { in: [...poolIds] }, chat_id: { in: [...new Set(jidCands)] } }, select: { session_id: true, chat_id: true, last_message_at: true } }) : [];
+    const chatsByJid = new Map<string, { session_id: string; chat_id: string; last_message_at: Date | null }[]>();
+    for (const ch of chats) chatsByJid.set(ch.chat_id, [...(chatsByJid.get(ch.chat_id) || []), ch]);
+    const hitsOfMember = (m: Picked) => [`${m.phone}@c.us`, m.contact?.wa_id, m.contact?.lid, m.lid].filter(Boolean).flatMap((j) => chatsByJid.get(j as string) || []).sort((a, b) => (b.last_message_at?.getTime() || 0) - (a.last_message_at?.getTime() || 0));
+    // carga atual por número (contatos já repartidos) para a divisão continuar equilibrada
+    const load = new Map(pool.map((r) => [r.id, 0] as [string, number]));
+    for (const x of current) if (x.target_kind === 'contact' && load.has(x.session_id)) load.set(x.session_id, (load.get(x.session_id) || 0) + 1);
+    const total = picked.length + [...load.values()].reduce((a, b) => a + b, 0);
+    const quota = Math.ceil(total / pool.length);
+    const leastLoaded = () => [...pool].sort((a, b) => (load.get(a.id) || 0) - (load.get(b.id) || 0))[0];
+    const rowsByIdPool = new Map(pool.map((r) => [r.id, r] as const));
+    const add = (row: SessionRow, m: Picked, chatJid?: string) => {
+      const jid = chatJid || this.jidForSession(row, { wa_id: m.contact?.wa_id || `${m.phone}@c.us`, phone: m.phone, lid: m.contact?.lid || m.lid });
+      if (!jid) { unresolved++; return; }
+      targets.push({ session_id: row.id, chat_id: jid, contact_id: m.contact?.id || null, target_kind: 'contact', via_group: m.group_jid });
+      load.set(row.id, (load.get(row.id) || 0) + 1);
+    };
+    const pending: Picked[] = [];
+    for (const m of picked) {
+      const hit = hitsOfMember(m)[0];
+      if (mode === 'own') {
+        // cada número os seus: quem já conversa com o membro; senão o número do grupo (se envia); senão o com menos carga
+        if (hit) { add(rowsByIdPool.get(hit.session_id)!, m, hit.chat_id); continue; }
+        const gs = rowsByIdPool.get(m.group_session);
+        add(gs || leastLoaded(), m);
+        continue;
+      }
+      // em conjunto: 1ª passada fica com quem já conversa (até a cota); o resto é dividido por igual
+      if (hit && (load.get(hit.session_id) || 0) < quota) { add(rowsByIdPool.get(hit.session_id)!, m, hit.chat_id); continue; }
+      pending.push(m);
+    }
+    for (const m of pending) add(leastLoaded(), m);
+    void chosen;
     if (unresolved) warnings.push(`${unresolved} membro(s) de grupo sem telefone conhecido ficam de fora.`);
     if (excluded) warnings.push(`${excluded} membro(s) de grupo descadastrados/bloqueados ficam de fora.`);
+    if (duplicated) warnings.push(`${duplicated.toLocaleString('pt-BR')} membro(s) de grupo já estavam na audiência de contatos e não recebem em dobro.`);
     return { targets, warnings };
   }
 

@@ -1400,13 +1400,23 @@ function CustomPacingFields({ pacing, limits, onChange }) {
 }
 
 // estimativa de audiência ao vivo (total + divisão por número + avisos)
-function EstimateBox({ estimate, loading, many }) {
+// texto do motivo "pela origem" conforme a opção escolhida em "De quais números vem a audiência"
+const sourceExcludedLabel = (n, source) => {
+  const who = plural(n, 'contato', 'contatos');
+  if (source === 'others') return `${who} por já serem dos números que enviam (você escolheu "Só dos outros números")`;
+  if (source === 'sending') return `${who} por não serem dos números que enviam`;
+  if (source === 'custom') return `${who} por não serem dos números escolhidos na origem`;
+  return `${who} pela origem`;
+};
+function EstimateBox({ estimate, loading, many, targets }) {
   if (!estimate && !loading) return null;
   const by = Array.isArray(estimate?.by_session) ? estimate.by_session : [];
   const warnings = Array.isArray(estimate?.warnings) ? estimate.warnings : [];
   const f = estimate?.filtered || {};
+  const unlinkedOut = targets && targets.include_unlinked === false && targets.contacts !== 'none' ? Number(estimate?.unlinked || 0) : 0;
   const filteredParts = [
-    f.source ? `${plural(f.source, 'contato', 'contatos')} pela origem` : null,
+    f.source ? sourceExcludedLabel(f.source, targets?.source) : null,
+    unlinkedOut ? `${plural(unlinkedOut, 'contato sem número de origem', 'contatos sem número de origem')} (caixa "Incluir contatos sem número de origem" desmarcada)` : null,
     f.tags ? `${plural(f.tags, 'contato', 'contatos')} pelas tags` : null,
     f.engagement ? `${plural(f.engagement, 'contato', 'contatos')} pelo histórico de resposta` : null,
     f.cooldown ? `${plural(f.cooldown, 'contato', 'contatos')} receberam broadcast há pouco` : null
@@ -1420,17 +1430,26 @@ function EstimateBox({ estimate, loading, many }) {
         <Typography variant="body2" sx={{ fontWeight: 700 }}>
           Audiência ≈ {(estimate?.total || 0).toLocaleString('pt-BR')}
         </Typography>
-        <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-          ({estimate?.contacts || 0} contatos · {estimate?.groups || 0} grupos
-          {estimate?.group_members ? ` · ${plural(estimate.group_members, 'membro de grupo no privado', 'membros de grupo no privado')}` : ''})
-        </Typography>
+      </Stack>
+      <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+        {[
+          { n: estimate?.contacts || 0, label: plural(estimate?.contacts || 0, 'contato da audiência', 'contatos da audiência'), hint: 'Bloco "Contatos" acima (salvos/todos/escolhidos), depois da origem e dos filtros.' },
+          estimate?.group_members ? { n: estimate.group_members, label: plural(estimate.group_members, 'membro de grupo, no privado', 'membros de grupo, no privado'), hint: 'Membros dos grupos escolhidos, cada um na própria conversa, enviados pelos números que enviam.' } : null,
+          estimate?.groups ? { n: estimate.groups, label: plural(estimate.groups, 'post em grupo', 'posts em grupo'), hint: 'A mensagem postada no grupo, pelo número que participa dele.' } : null
+        ]
+          .filter(Boolean)
+          .map((it) => (
+            <Tooltip key={it.label} title={it.hint}>
+              <Chip size="small" variant="outlined" label={`${Number(it.n).toLocaleString('pt-BR')} ${it.label}`} sx={{ borderRadius: 1.5, fontSize: 11.5 }} />
+            </Tooltip>
+          ))}
       </Stack>
       {many && by.length ? (
         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1 }}>
           {by.map((s) => (
             <Tooltip
               key={s.session_id}
-              title={`${s.contacts || 0} contatos · ${s.groups || 0} grupos${s.connected ? '' : ' · número não conectado'}`}
+              title={`Sai por este número: ${s.contacts || 0} no privado (contatos + membros de grupo) · ${s.groups || 0} posts em grupo${s.connected ? '' : ' · número não conectado'}`}
             >
               <Box
                 sx={{
@@ -1939,8 +1958,9 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                       Enviar no privado dos membros
                     </Typography>
                     <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
-                      Em vez de postar no grupo, cada membro recebe a mensagem na conversa individual, pelo número que participa do grupo.
-                      Vale o ritmo e o limite diário do número — grupos grandes levam tempo.
+                      Em vez de postar no grupo, cada membro recebe a mensagem na conversa individual, enviada pelos <b>números que enviam</b>
+                      (marcados no topo) e dividida entre eles como os contatos — não precisa ser o número que está no grupo.
+                      Quem já está na audiência de contatos não recebe em dobro. Vale o ritmo e o limite diário de cada número — grupos grandes levam tempo.
                     </Typography>
                   </Box>
                 }
@@ -1961,7 +1981,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
               ) : null}
             </Box>
           ) : null}
-          <EstimateBox estimate={estimate} loading={estimating} many={many} />
+          <EstimateBox estimate={estimate} loading={estimating} many={many} targets={form.targets} />
         </Box>
 
         {/* ---------- horários ---------- */}
