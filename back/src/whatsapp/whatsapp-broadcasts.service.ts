@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccessService } from '../platform-billing/access.service';
 import { OpenWaClient, OpenWaError } from './openwa.client';
-import { WhatsAppSessionsService, SessionRow, sessionLabel } from './whatsapp-sessions.service';
+import { WhatsAppSessionsService, SessionRow, sessionLabel, restrictionOf } from './whatsapp-sessions.service';
 import { WhatsAppMediaService } from './whatsapp-media.service';
 import { WhatsAppPacingService, brtDayStart } from './whatsapp-pacing.service';
 import { WhatsAppChatService } from './whatsapp-chat.service';
@@ -58,6 +58,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: any, min: number, max: number, dflt: number) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt; };
 const hhmmToMin = (s: string) => { const m = HHMM_RE.exec(String(s || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
 const isReady = (r: any) => Boolean(r?.openwa_session_id && r.status === 'ready');
+const untilBRT = (d: Date | null) => (d ? d.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }) : '');
+// número conectado E sem restrição ativa do WhatsApp (mandar durante a restrição a renova e derruba a sessão)
+const canSendNow = (r: any) => isReady(r) && !restrictionOf(r);
+const restrictionMsg = (r: any) => { const x = restrictionOf(r); return x ? `O número "${sessionLabel(r)}" está em restrição do WhatsApp${x.until ? ` até ${untilBRT(x.until)} (Brasília)` : ''}: o WhatsApp bloqueou mensagens para quem não tem o número salvo. Disparar antes disso renova a restrição e derruba a conexão.` : ''; }
 
 // {{nome}} {{primeiro_nome}} {{telefone}} + {{cliente.*}} (CRM). Chave fora do mapa fica como está.
 // Valor padrão com barra vertical: {{primeiro_nome|amigo}} → "amigo" quando a variável está vazia
@@ -580,13 +584,14 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const all = await this.sessions.rowsOf(orgId);
     const ids = this.normSessionIds(sessionIds);
     const chosen = ids.length ? all.filter((r) => ids.includes(r.id)) : all;
-    const ready = chosen.filter(isReady);
+    const ready = chosen.filter(canSendNow);
     const pool = ready.length ? ready : chosen; // sem ninguém conectado, estima como se todos estivessem
     const { targets, warnings, unassigned, filtered, sources } = await this.resolveAudience(orgId, rawTargets, chosen, pool, distribution, excludeInactiveDays);
+    for (const r of chosen) if (isReady(r) && restrictionOf(r)) warnings.unshift(restrictionMsg(r));
     const stats = new Map<string, { contacts: number; groups: number }>();
     for (const x of targets) { const s = stats.get(x.session_id) || { contacts: 0, groups: 0 }; if (x.target_kind === 'group') s.groups++; else s.contacts++; stats.set(x.session_id, s); }
     const rowsFor = [...chosen, ...all.filter((r) => stats.has(r.id) && !chosen.some((c) => c.id === r.id))]; // grupos de números fora da seleção
-    const by_session = rowsFor.map((r) => ({ session_id: r.id, label: sessionLabel(r), color: r.color || null, connected: isReady(r), contacts: stats.get(r.id)?.contacts || 0, groups: stats.get(r.id)?.groups || 0 }));
+    const by_session = rowsFor.map((r) => ({ session_id: r.id, label: sessionLabel(r), color: r.color || null, connected: canSendNow(r), restricted_until: restrictionOf(r)?.until?.toISOString() || null, contacts: stats.get(r.id)?.contacts || 0, groups: stats.get(r.id)?.groups || 0 }));
     const group_members = targets.filter((x) => x.target_kind === 'contact' && x.via_group).length;
     const contacts = targets.filter((x) => x.target_kind === 'contact').length - group_members;
     const groups = targets.length - contacts - group_members;
@@ -819,8 +824,9 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (!b) throw new NotFoundException('Broadcast não encontrado.');
     const chosen = await this.chosenSessions(orgId, b.session_ids, false);
     if (!chosen.length) throw new BadRequestException('A campanha não tem nenhum número válido. Edite e escolha os números.');
-    const ready = chosen.filter(isReady);
-    if (!ready.length) throw new BadRequestException('Conecte ao menos um dos números da campanha antes de disparar.');
+    const restricted = chosen.filter((r) => isReady(r) && restrictionOf(r));
+    const ready = chosen.filter(canSendNow);
+    if (!ready.length) throw new BadRequestException(restricted.length ? restrictionMsg(restricted[0]) : 'Conecte ao menos um dos números da campanha antes de disparar.');
     const copies = await this.prisma.whatsapp_broadcast_copies.findMany({ where: { broadcast_id: id }, orderBy: { position: 'asc' } });
     const copy = this.pickCopy(b, copies);
     if (!copy) throw new BadRequestException('Cadastre ao menos uma copy antes de disparar.');
@@ -908,6 +914,14 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
   private async processRunSession(orgId: string, runId: string, sessionId: string) {
     const row = await this.sessions.rowById(orgId, sessionId);
     if (!row?.openwa_session_id || row.status !== 'ready') return;
+    const restr = restrictionOf(row);
+    if (restr) {
+      // restrição ativa do WhatsApp: a fila deste número espera até ela vencer (+1 min)
+      const at = new Date((restr.until ? restr.until.getTime() : Date.now() + 3_600_000) + 60_000);
+      await this.prisma.whatsapp_broadcast_sends.updateMany({ where: { run_id: runId, session_id: sessionId, status: 'PENDING' }, data: { next_at: at, last_error: `Aguardando o fim da restrição do WhatsApp${restr.until ? ` (${untilBRT(restr.until)})` : ''}` } });
+      this.logger.warn(`run ${runId} · ${sessionLabel(row)}: em restrição do WhatsApp, fila adiada para ${at.toISOString()}`);
+      return;
+    }
     if (!(await this.access.isOrgActive(orgId))) return;
     const run: any = await this.prisma.whatsapp_broadcast_runs.findUnique({ where: { id: runId } });
     const bc: any = run ? await this.prisma.whatsapp_broadcasts.findUnique({ where: { id: run.broadcast_id } }) : null;

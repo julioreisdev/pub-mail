@@ -73,6 +73,23 @@ const WEBHOOK_EVENTS = [
 
 export type SessionRow = any;
 
+/**
+ * Restrição ativa do WhatsApp neste número (ex.: `reachout_timelock` = bloqueio de mensagens para
+ * quem não tem o número salvo / nunca conversou). Vem do evento `session.restriction` do gateway e
+ * fica em `settings.restriction {kind, code, active, until, at}`. Enquanto estiver ativa, broadcasts
+ * e fila não devem enviar — mandar de novo renova a restrição e derruba a sessão (visto em 28/10/2026).
+ * Sem `until` conhecido, vale 6 h a partir do evento.
+ */
+export function restrictionOf(row: any): { kind: string; code: string | null; until: Date | null; at: Date | null } | null {
+  const r = row?.settings && typeof row.settings === 'object' ? (row.settings as any).restriction : null;
+  if (!r || r.active === false) return null;
+  const at = r.at ? new Date(r.at) : row?.restricted_at ? new Date(row.restricted_at) : null;
+  let until = r.until ? new Date(r.until) : null;
+  if ((!until || Number.isNaN(until.getTime())) && at) until = new Date(at.getTime() + 6 * 3_600_000);
+  if (until && until.getTime() <= Date.now()) return null;
+  return { kind: String(r.kind || 'restriction'), code: r.code ? String(r.code) : null, until, at };
+}
+
 /** Rótulo do número para telas e eventos: nome interno > telefone > "Número". */
 export function sessionLabel(
   row: { label?: string | null; phone?: string | null } | null | undefined,
@@ -224,6 +241,8 @@ export class WhatsAppSessionsService {
       last_status_at: row?.last_status_at || null,
       last_event_at: row?.last_event_at || null,
       restricted_at: row?.restricted_at || null,
+      // restrição ATIVA do WhatsApp (null = nenhuma): o painel avisa e o broadcast não dispara
+      restriction: (() => { const r = restrictionOf(row); return r ? { kind: r.kind, code: r.code, until: r.until ? r.until.toISOString() : null, at: r.at ? r.at.toISOString() : null } : null; })(),
       disconnected_at: row?.disconnected_at || null,
       last_error: liveSess?.lastError || row?.last_error || null,
       pacing_enabled: row?.pacing_enabled ?? true,
@@ -1074,12 +1093,30 @@ export class WhatsAppSessionsService {
         patch.disconnected_at = now;
         if (data?.reason) patch.last_error = String(data.reason).slice(0, 500);
         break;
-      case 'session.restriction':
-        patch.restricted_at = now;
-        patch.last_error = String(
-          data?.reason || data?.message || 'Restrição aplicada pelo WhatsApp',
-        ).slice(0, 500);
+      case 'session.restriction': {
+        const active = data?.active !== false;
+        const st0: any = (row.settings as any) || {};
+        if (active) {
+          patch.restricted_at = now;
+          patch.last_error = String(
+            data?.reason || data?.message || 'Restrição aplicada pelo WhatsApp',
+          ).slice(0, 500);
+          patch.settings = {
+            ...st0,
+            restriction: {
+              kind: String(data?.kind || 'restriction'),
+              code: data?.code ? String(data.code) : null,
+              active: true,
+              until: data?.expiresAt ? new Date(data.expiresAt).toISOString() : null,
+              at: now.toISOString(),
+            },
+          };
+        } else {
+          patch.restricted_at = null;
+          patch.settings = { ...st0, restriction: null };
+        }
         break;
+      }
       case 'session.reconnect_loop':
         patch.last_error = 'Reconectando em loop — verifique o celular/rede.';
         break;
@@ -1097,7 +1134,7 @@ export class WhatsAppSessionsService {
     });
     if (!r.count) return; // encerrada enquanto isso
     // notificações: só nas transições de verdade (pronto ↔ caiu)
-    if (event === 'session.restriction')
+    if (event === 'session.restriction' && data?.active !== false)
       this.hooks.emit('session_restricted', {
         orgId: row.organization_id,
         row: { ...row, ...patch },

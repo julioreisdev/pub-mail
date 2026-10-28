@@ -135,7 +135,20 @@ const WARMUP = [20, 40, 80, 160, 320, 640, 1000];
 const COLD = [5, 10, 20, 40, 60, 80, 100];
 const RISK_TEXT =
   'Disparos para contatos que nunca falaram com você podem restringir ou banir o número. O WhatsApp decide isso sozinho e o Pub Mail não tem como reverter — a responsabilidade é sua.';
-const isReady = (s) => Boolean(s && (s.connected || s.status === 'ready'));
+// restrição ativa do WhatsApp no número (vem de GET /whatsapp/sessions → `restriction`)
+const restrictionOf = (s) => {
+  const r = s?.restriction;
+  if (!r || r.active === false) return null;
+  if (r.until && new Date(r.until).getTime() <= Date.now()) return null;
+  return r;
+};
+const restrictionUntil = (s) => {
+  const r = restrictionOf(s);
+  return r?.until ? new Date(r.until).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }) : '';
+};
+const isConnected = (s) => Boolean(s && (s.connected || s.status === 'ready'));
+// pronto para DISPARAR: conectado e sem restrição do WhatsApp
+const isReady = (s) => isConnected(s) && !restrictionOf(s);
 
 // resumo de audiência (linha + confirmação de disparo)
 const audienceOf = (b) => {
@@ -489,9 +502,11 @@ function WarmupRow({ session, warmup, many }) {
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
             {many ? <WaNumberChip session={session} /> : null}
-            <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15, minWidth: 0 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: 14, lineHeight: 1.15, minWidth: 0, ...(restrictionOf(session) && isConnected(session) ? { color: 'error.main' } : {}) }}>
               {!ready
-                ? 'Não conectado'
+                ? isConnected(session)
+                  ? `Restrição do WhatsApp${restrictionUntil(session) ? ` até ${restrictionUntil(session)}` : ''}`
+                  : 'Não conectado'
                 : hot
                   ? 'Número aquecido'
                   : warmup?.day
@@ -1529,7 +1544,9 @@ function ChosenWarmup({ sessionIds, byId, warmupBySession, estimate, pacing }) {
             <WaNumberChip session={s} />
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               {!ready
-                ? 'não conectado — não dispara até reconectar'
+                ? isConnected(s)
+                  ? `em restrição do WhatsApp${restrictionUntil(s) ? ` até ${restrictionUntil(s)}` : ''} — não dispara até ela vencer`
+                  : 'não conectado — não dispara até reconectar'
                 : w?.warmed || (w?.day || 0) >= 8
                   ? 'aquecido'
                   : `aquecimento dia ${w?.day || 1} de 7`}
@@ -3057,10 +3074,16 @@ function FireResultModal({ result, onClose, onRuns, byId }) {
 }
 
 // ---------------------------------------------------------------- ações da linha
-function RowActions({ b, compact, connected, onFire, onCopies, onEdit, onRuns, onReplies, onDelete, onToggle }) {
+function RowActions({ b, compact, connected, restrictedUntil, onFire, onCopies, onEdit, onRuns, onReplies, onDelete, onToggle }) {
   const [anchor, setAnchor] = useState(null);
   const noCopies = (b.copies_count || 0) === 0;
-  const fireTip = !connected ? 'Conecte o WhatsApp para disparar' : noCopies ? 'Cadastre uma copy antes de disparar' : 'Disparar agora';
+  const fireTip = !connected
+    ? restrictedUntil
+      ? `Número em restrição do WhatsApp${restrictedUntil === true ? '' : ` até ${restrictedUntil}`} — disparar agora renovaria a restrição`
+      : 'Conecte o WhatsApp para disparar'
+    : noCopies
+      ? 'Cadastre uma copy antes de disparar'
+      : 'Disparar agora';
   const secondary = [
     { key: 'edit', label: 'Editar', icon: <IconPencil size={17} />, run: () => onEdit(b) },
     { key: 'runs', label: 'Histórico', icon: <IconHistory size={17} />, run: () => onRuns(b) },
@@ -3489,6 +3512,9 @@ export default function WhatsAppBroadcasts() {
                 const mode = b.targets?.contacts || 'saved';
                 const bSessions = sessionsOf(b);
                 const bConnected = bSessions.length ? bSessions.some(isReady) : connected;
+                // nenhum número pronto mas algum conectado em restrição → o botão explica a restrição
+                const bRestricted = !bConnected ? bSessions.find((s) => isConnected(s) && restrictionOf(s)) : null;
+                const bRestrictedUntil = bRestricted ? restrictionUntil(bRestricted) || true : null;
                 const risk = RISK_UI[pacingRisk(presets, b.pacing)] || RISK_UI.medium;
                 const warm = (Array.isArray(b.warmup) ? b.warmup : []).map((w) => ({ w, s: byId.get(w.session_id) })).filter((x) => x.s);
                 return (
@@ -3607,7 +3633,7 @@ export default function WhatsAppBroadcasts() {
                                 {many ? <WaNumberDot session={s} size={8} /> : <IconFlame size={12} style={{ opacity: 0.7 }} />}
                                 <Typography variant="caption" sx={{ color: hot ? 'text.secondary' : 'warning.main', fontWeight: 600 }}>
                                   {many ? `${sessionLabel(s)}: ` : ''}
-                                  {!isReady(s) ? 'não conectado' : hot ? 'aquecido' : `dia ${w.day || 1}/7`}
+                                  {!isReady(s) ? (isConnected(s) ? `restrição do WhatsApp${restrictionUntil(s) ? ` até ${restrictionUntil(s)}` : ''}` : 'não conectado') : hot ? 'aquecido' : `dia ${w.day || 1}/7`}
                                   {isReady(s) && w.pacing_enabled === false
                                     ? ' · sem limitador'
                                     : isReady(s) && remaining != null
@@ -3638,6 +3664,7 @@ export default function WhatsAppBroadcasts() {
                       b={b}
                       compact={compact}
                       connected={bConnected}
+                      restrictedUntil={bRestrictedUntil}
                       onFire={setFiringFor}
                       onCopies={setCopiesFor}
                       onEdit={setEditing}
