@@ -423,8 +423,9 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         const phoneOfContact = new Map(everyone.map((c: any) => [c.id, c.phone || phoneFromJid(c.wa_id) || ''] as [string, string]));
         const already = new Set<string>();
         for (const x of out) { const ph = (x.contact_id && phoneOfContact.get(x.contact_id)) || phoneFromJid(x.chat_id) || ''; if (ph) already.add(ph); }
-        const { targets: members, warnings: w2 } = await this.groupMemberTargets(orgId, groupRows, pool, chosen, mode, out, already);
+        const { targets: members, warnings: w2, cooled } = await this.groupMemberTargets(orgId, groupRows, pool, chosen, mode, out, already, t.cooldown_hours);
         warnings.push(...w2);
+        filtered.cooldown += cooled;
         for (const m of members) push(m);
       }
     }
@@ -453,10 +454,11 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
    * ficam de fora; quem tem contato na org e pediu PARE / bloqueou / está bloqueado também.
    * Sem telefone resolvível (lid desconhecido) o membro é pulado e entra no aviso.
    */
-  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], pool: SessionRow[], chosen: SessionRow[], mode: BroadcastDistribution, current: Target[], already: Set<string>): Promise<{ targets: Target[]; warnings: string[] }> {
+  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], pool: SessionRow[], chosen: SessionRow[], mode: BroadcastDistribution, current: Target[], already: Set<string>, cooldownHours: number | null = null): Promise<{ targets: Target[]; warnings: string[]; cooled: number }> {
     const warnings: string[] = [];
     const targets: Target[] = [];
-    if (!pool.length) { warnings.push('Nenhum dos números que enviam está conectado — os membros dos grupos não têm por onde sair.'); return { targets, warnings }; }
+    let cooled = 0;
+    if (!pool.length) { warnings.push('Nenhum dos números que enviam está conectado — os membros dos grupos não têm por onde sair.'); return { targets, warnings, cooled }; }
     const all = await this.sessions.rowsOf(orgId);
     const ownPhones = new Set(all.map((r) => String(r.phone || '')).filter(Boolean));
     const rowsById = new Map(all.map((r) => [r.id, r] as const));
@@ -514,6 +516,19 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         picked.push({ ...m, contact: c, group_jid: group.chat_id, group_session: group.session_id });
       }
     }
+    // "não repetir para quem recebeu broadcast há pouco" vale para os membros também (por contato ou por jid)
+    if (cooldownHours && picked.length) {
+      const cutoff = new Date(Date.now() - cooldownHours * 3_600_000);
+      const ids = picked.map((m) => m.contact?.id).filter(Boolean) as string[];
+      const jids = [...new Set(picked.flatMap((m) => [`${m.phone}@c.us`, m.contact?.wa_id, m.contact?.lid, m.lid].filter(Boolean) as string[]))];
+      const recent = await this.prisma.whatsapp_broadcast_sends.findMany({ where: { organization_id: orgId, status: 'DONE', sent_at: { gte: cutoff }, OR: [...(ids.length ? [{ contact_id: { in: ids } }] : []), { chat_id: { in: jids } }] }, select: { contact_id: true, chat_id: true } });
+      const gotIds = new Set(recent.map((r) => r.contact_id).filter(Boolean) as string[]);
+      const gotJids = new Set(recent.map((r) => r.chat_id));
+      const before = picked.length;
+      const kept = picked.filter((m) => !(m.contact?.id && gotIds.has(m.contact.id)) && ![`${m.phone}@c.us`, m.contact?.wa_id, m.contact?.lid, m.lid].some((j) => j && gotJids.has(j)));
+      cooled = before - kept.length;
+      picked.length = 0; picked.push(...kept);
+    }
     // conversas que os números que ENVIAM já têm com esses membros (preferência de quem fala com quem)
     const poolIds = new Set(pool.map((r) => r.id));
     const jidCands = picked.flatMap((m) => [`${m.phone}@c.us`, m.contact?.wa_id, m.contact?.lid, m.lid].filter(Boolean) as string[]);
@@ -553,7 +568,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (unresolved) warnings.push(`${unresolved} membro(s) de grupo sem telefone conhecido ficam de fora.`);
     if (excluded) warnings.push(`${excluded} membro(s) de grupo descadastrados/bloqueados ficam de fora.`);
     if (duplicated) warnings.push(`${duplicated.toLocaleString('pt-BR')} membro(s) de grupo já estavam na audiência de contatos e não recebem em dobro.`);
-    return { targets, warnings };
+    if (cooled) warnings.push(`${cooled.toLocaleString('pt-BR')} membro(s) de grupo receberam broadcast nas últimas ${cooldownHours} h e ficam de fora.`);
+    return { targets, warnings, cooled };
   }
 
   /** Estimativa: `{ contacts, groups, group_members, total, by_session:[{session_id,label,color,connected,contacts,groups}], distribution, unassigned }`. */

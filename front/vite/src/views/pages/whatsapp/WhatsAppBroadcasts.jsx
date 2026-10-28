@@ -2120,7 +2120,7 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                 control={
                   <Switch
                     checked={Boolean(form.targets.cooldown_hours)}
-                    disabled={form.targets.contacts === 'none'}
+                    disabled={form.targets.contacts === 'none' && !(form.targets.groups || []).length}
                     onChange={(e) => setT({ cooldown_hours: e.target.checked ? form.targets.cooldown_hours || 24 : null })}
                   />
                 }
@@ -2133,7 +2133,8 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                       </Typography>
                     </Stack>
                     <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                      Pula quem recebeu qualquer broadcast da organização nesse período. Evita duas campanhas seguidas na mesma pessoa.
+                      Pula quem recebeu qualquer broadcast da organização nesse período — contatos da audiência e membros de grupo no
+                      privado. Evita duas campanhas seguidas na mesma pessoa.
                     </Typography>
                   </Box>
                 }
