@@ -609,6 +609,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         const run = runs.find((r) => brtMinuteOfDay(r.run_at) === t);
         if (!run) time_status[String(t)] = t >= nowMin ? 'pending' : 'missed';
         else if (run.status === 'paused') time_status[String(t)] = 'paused';
+        else if (run.status === 'canceled') time_status[String(t)] = run.sent > 0 ? 'sent_with_errors' : 'failed';
         else if (run.status !== 'done') time_status[String(t)] = 'sending';
         else if (run.failed === 0 && run.blocked === 0) time_status[String(t)] = 'sent';
         else if (run.sent > 0) time_status[String(t)] = 'sent_with_errors';
@@ -730,6 +731,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (q.status === 'sending') where.status = 'running';
     if (q.status === 'paused') where.status = 'paused';
     if (q.status === 'done') where.status = 'done';
+    if (q.status === 'canceled') where.status = 'canceled';
     if (q.status === 'clean') { where.status = 'done'; where.failed = 0; where.blocked = 0; }
     if (q.status === 'errors') where.OR = [{ failed: { gt: 0 } }, { blocked: { gt: 0 } }];
     const [total, found] = await Promise.all([this.prisma.whatsapp_broadcast_runs.count({ where }), this.prisma.whatsapp_broadcast_runs.findMany({ where, orderBy: { run_at: 'desc' }, skip: (page - 1) * size, take: size })]);
@@ -1024,6 +1026,23 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     return { id: upd.id, status: upd.status, forced_at: upd.forced_at };
   }
 
+  /**
+   * Cancela de vez um disparo pausado/em andamento: o que ainda está na fila (PENDING/PACED) vira
+   * SKIPPED "Disparo cancelado" e a run fecha como `canceled`. Serve para começar um disparo novo com
+   * copies/audiência/ritmo novos — a run guarda a foto das copies e dos destinos de quando começou.
+   */
+  async cancelRun(orgId: string, broadcastId: string, runId: string) {
+    const run = await this.prisma.whatsapp_broadcast_runs.findFirst({ where: { id: runId, broadcast_id: broadcastId, organization_id: orgId } });
+    if (!run) throw new NotFoundException('Disparo não encontrado.');
+    if (run.status !== 'paused' && run.status !== 'running') throw new BadRequestException('Este disparo já terminou.');
+    const r = await this.prisma.whatsapp_broadcast_sends.updateMany({ where: { run_id: runId, status: { in: ['PENDING', 'PACED'] } }, data: { status: 'SKIPPED', skip_reason: 'Disparo cancelado', last_error: null } });
+    for (const k of [...this.breaker.keys()]) if (k.startsWith(`${runId}|`)) this.breaker.delete(k);
+    await this.prisma.whatsapp_broadcast_runs.update({ where: { id: runId }, data: { status: 'canceled', paused_at: null, finished_at: new Date(), pause_reason: `Cancelado${run.pause_reason ? ` (estava pausado: ${run.pause_reason})` : ''}`.slice(0, 255) } });
+    await this.reconcile(runId);
+    this.logger.log(`Broadcast run ${runId} cancelada (${r.count} destinos na fila descartados)`);
+    return { id: runId, status: 'canceled', discarded: r.count };
+  }
+
   async pauseRunManual(orgId: string, broadcastId: string, runId: string) {
     const run = await this.prisma.whatsapp_broadcast_runs.findFirst({ where: { id: runId, broadcast_id: broadcastId, organization_id: orgId } });
     if (!run) throw new NotFoundException('Disparo não encontrado.');
@@ -1152,7 +1171,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (!prev) return;
     const replied = await this.prisma.whatsapp_broadcast_sends.count({ where: { run_id: runId, replied_at: { not: null } } });
     // pausada (disjuntor/manual) continua pausada enquanto houver fila; sem fila = concluída
-    const status = open ? (prev.status === 'paused' ? 'paused' : 'running') : 'done';
+    const status = prev.status === 'canceled' ? 'canceled' : open ? (prev.status === 'paused' ? 'paused' : 'running') : 'done';
     await this.prisma.whatsapp_broadcast_runs.update({ where: { id: runId }, data: { sent: tot.sent, failed: tot.failed, blocked: tot.blocked, skipped: tot.skipped, replied, by_session: by as any, status, ...(open ? {} : { finished_at: new Date(), paused_at: null }) } });
     // terminou agora → notificação
     if (!open && prev && prev.status !== 'done') {

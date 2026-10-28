@@ -2240,8 +2240,9 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
 
 // ---------------------------------------------------------------- histórico
 // aviso de disparo pausado (disjuntor/manual) com Retomar / Enviar mesmo assim — lista e histórico
-function PausedBanner({ run, busy, onResume, onForce, compact }) {
+function PausedBanner({ run, busy, onResume, onForce, onCancel, compact }) {
   const auto = run.pause_reason && run.pause_reason !== 'Pausado manualmente';
+  const [confirmCancel, setConfirmCancel] = useState(false);
   return (
     <Box
       sx={{
@@ -2265,6 +2266,10 @@ function PausedBanner({ run, busy, onResume, onForce, compact }) {
             {run.pause_reason || 'Pausa manual'}
             {auto ? '. O disjuntor parou o envio para proteger o número.' : '.'}
             {auto && run.total ? ` Enviados ${run.sent} de ${run.total}${run.blocked ? `, ${run.blocked} bloqueados` : ''}.` : ''}
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5, lineHeight: 1.35 }}>
+            Retomar continua <b>este</b> disparo com as copies e os destinos de quando ele começou (só o ritmo atual vale).
+            Mudou copies, sorteio ou audiência? Cancele e dispare de novo.
           </Typography>
         </Box>
       </Stack>
@@ -2290,7 +2295,34 @@ function PausedBanner({ run, busy, onResume, onForce, compact }) {
         >
           Enviar mesmo assim
         </Button>
+        {onCancel ? (
+          <Button
+            size="small"
+            variant="text"
+            color="inherit"
+            disabled={busy}
+            onClick={() => setConfirmCancel(true)}
+            startIcon={<IconX size={15} />}
+            sx={{ whiteSpace: 'nowrap', borderRadius: 2, color: 'text.secondary', ml: { sm: 'auto' } }}
+          >
+            Cancelar disparo
+          </Button>
+        ) : null}
       </Stack>
+      {onCancel ? (
+        <TgConfirmDialog
+          open={confirmCancel}
+          onClose={() => setConfirmCancel(false)}
+          onConfirm={() => {
+            setConfirmCancel(false);
+            onCancel();
+          }}
+          title="Cancelar este disparo?"
+          message={`Os ${Math.max(0, (run.total || 0) - (run.sent || 0)).toLocaleString('pt-BR')} destinos que ainda não receberam saem da fila (quem já recebeu não é afetado). Depois é só usar "Disparar" para começar um disparo novo com as configurações atuais.`}
+          confirmLabel="Cancelar disparo"
+          danger
+        />
+      ) : null}
     </Box>
   );
 }
@@ -2306,6 +2338,7 @@ const riskOfInterval = (ms) => {
 
 function runOutcome(r) {
   if (r.status === 'paused') return { key: 'paused', color: 'error.main', label: 'Pausado', Icon: IconPlayerPause };
+  if (r.status === 'canceled') return { key: 'canceled', color: 'text.disabled', label: `Cancelado${r.sent ? ` · ${r.sent} enviados antes` : ''}`, Icon: IconCircleXFilled };
   if (r.status === 'running') return { key: 'sending', color: 'info.main', label: 'Enviando…', Icon: IconLoader2 };
   if ((r.sent || 0) === 0 && (r.total || 0) > 0 && (r.paced || 0) === 0)
     return { key: 'failed', color: 'error.main', label: 'Falhou', Icon: IconCircleXFilled };
@@ -2580,13 +2613,16 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
     setActionBusy(true);
     try {
       if (what === 'pause') await post(`/whatsapp/broadcasts/${broadcast.id}/runs/${r.id}/pause`, {});
+      else if (what === 'cancel') await post(`/whatsapp/broadcasts/${broadcast.id}/runs/${r.id}/cancel`, {});
       else await post(`/whatsapp/broadcasts/${broadcast.id}/runs/${r.id}/resume`, { force: what === 'force' });
       toast.success(
         what === 'pause'
           ? 'Disparo pausado.'
-          : what === 'force'
-            ? 'Retomado — o disjuntor foi desligado neste disparo.'
-            : 'Disparo retomado.'
+          : what === 'cancel'
+            ? 'Disparo cancelado.'
+            : what === 'force'
+              ? 'Retomado — o disjuntor foi desligado neste disparo.'
+              : 'Disparo retomado.'
       );
       setRefreshTick((x) => x + 1);
     } catch (e) {
@@ -2663,6 +2699,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
           <Select labelId="wa-runs-status-label" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
             <MenuItem value="all">Todos os status</MenuItem>
             <MenuItem value="paused">Pausados</MenuItem>
+            <MenuItem value="canceled">Cancelados</MenuItem>
             <MenuItem value="clean">Sucesso</MenuItem>
             <MenuItem value="errors">Com falhas</MenuItem>
             <MenuItem value="sending">Enviando</MenuItem>
@@ -2749,6 +2786,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
                     busy={actionBusy}
                     onResume={() => runAction(r, 'resume')}
                     onForce={() => runAction(r, 'force')}
+                    onCancel={() => runAction(r, 'cancel')}
                     compact
                   />
                 ) : null}
@@ -3141,6 +3179,20 @@ export default function WhatsAppBroadcasts() {
       load();
     } catch (e) {
       toast.error(errMsg(e, 'Não deu para retomar.'));
+    } finally {
+      setRunBusy(null);
+    }
+  };
+  const cancelRun = async (b) => {
+    const run = b.paused_run;
+    if (!run) return;
+    setRunBusy(run.id);
+    try {
+      const r = await post(`/whatsapp/broadcasts/${b.id}/runs/${run.id}/cancel`, {});
+      toast.success(`Disparo cancelado${r?.discarded ? ` — ${Number(r.discarded).toLocaleString('pt-BR')} destinos saíram da fila` : ''}.`);
+      load();
+    } catch (e) {
+      toast.error(errMsg(e, 'Não deu para cancelar.'));
     } finally {
       setRunBusy(null);
     }
@@ -3550,6 +3602,7 @@ export default function WhatsAppBroadcasts() {
                           busy={runBusy === b.paused_run.id}
                           onResume={() => resumeRun(b, false)}
                           onForce={() => resumeRun(b, true)}
+                          onCancel={() => cancelRun(b)}
                         />
                       ) : null}
                     </Box>

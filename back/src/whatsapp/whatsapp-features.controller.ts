@@ -254,6 +254,7 @@ export class WhatsAppBroadcastsController {
   @Post(':id/fire') @Throttle({ default: { limit: 5, ttl: 60_000 } }) fire(@Req() req: any, @Param('id') id: string) { return this.bc.fire(req.user.organizationId, id); }
   @Get(':id/runs') runs(@Req() req: any, @Param('id') id: string, @Query() q: RunsQueryDto) { return this.bc.runs(req.user.organizationId, id, q); }
   @Post(':id/runs/:runId/pause') pauseRun(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string) { return this.bc.pauseRunManual(req.user.organizationId, id, runId); }
+  @Post(':id/runs/:runId/cancel') cancelRun(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string) { return this.bc.cancelRun(req.user.organizationId, id, runId); }
   @Post(':id/runs/:runId/resume') resumeRun(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string, @Body() dto: RunActionDto) { return this.bc.resumeRun(req.user.organizationId, id, runId, Boolean(dto?.force)); }
   @Get(':id/replies') replies(@Req() req: any, @Param('id') id: string, @Query() q: RepliesQueryDto) { return this.bc.replies(req.user.organizationId, id, q); }
   @Get(':id/runs/:runId/sends') sends(@Req() req: any, @Param('id') id: string, @Param('runId') runId: string, @Query() q: any) { return this.bc.sends(req.user.organizationId, id, runId, q); }
