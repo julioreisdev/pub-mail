@@ -46,7 +46,8 @@ import {
 } from './webchatFontCatalog';
 import RichTextField, { sanitizeRichText } from './RichTextField';
 import FunnelBuilder from './FunnelBuilder';
-import { DEFAULT_FUNIL, normalizeFunil } from './funnel-utils';
+import { DEFAULT_FUNIL, normalizeFunil, normalizeWelcomeEntry, isClipEntry } from './funnel-utils';
+import ClipMessageEditor from './ClipMessageEditor';
 
 // Dimensão fixa do preview (celular moderno tipo Pixel 7 / iPhone 14 Plus).
 const PREVIEW_SIZE = { width: 412, height: 780 };
@@ -241,17 +242,37 @@ function mergeDeep(target, source) {
   return out;
 }
 
-// Normaliza welcomeMessages para array de strings não-vazias.
+// Normaliza welcomeMessages para array de entradas não-vazias: string (HTML do
+// texto) ou vídeo público { type:'clip', url, caption, autoplay }.
 // Se array estiver vazio, usa welcomeBotMessage (legado) como fallback.
 function normalizeWelcomeMessagesList(rawArray, legacySingle) {
   const source = Array.isArray(rawArray) ? rawArray : [];
-  const cleaned = source
-    .map((item) => safeInput(item))
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
+  const cleaned = source.map((item) => normalizeWelcomeEntry(item)).filter(Boolean);
   if (cleaned.length > 0) return cleaned;
   const fallback = safeInput(legacySingle).trim();
   return fallback ? [fallback] : [];
+}
+
+// Miniatura de vídeo na prévia do construtor (sem autoplay; o player com play
+// grande é o do chat público).
+function PreviewVideo({ src }) {
+  return (
+    <video
+      key={src}
+      src={src}
+      controls
+      muted
+      playsInline
+      preload="metadata"
+      style={{ width: '100%', maxWidth: 300, maxHeight: 200, display: 'block', borderRadius: 8, background: '#000' }}
+    />
+  );
+}
+
+// Primeiro texto da lista de boas-vindas (o legado welcomeBotMessage é só texto).
+function firstWelcomeText(list) {
+  const found = (Array.isArray(list) ? list : []).find((item) => typeof item === 'string' && item.trim());
+  return found || '';
 }
 
 function normalizePersonalizacao(value) {
@@ -265,7 +286,7 @@ function normalizePersonalizacao(value) {
     normalized.welcomeBotMessage
   );
   normalized.welcomeMessages = welcomeArray.length > 0 ? welcomeArray : ['Seja bem-vindo(a)!'];
-  normalized.welcomeBotMessage = normalized.welcomeMessages[0] || '';
+  normalized.welcomeBotMessage = firstWelcomeText(normalized.welcomeMessages);
   if (Object.prototype.hasOwnProperty.call(normalized, 'welcomeScreen')) {
     delete normalized.welcomeScreen;
   }
@@ -661,8 +682,8 @@ function PreviewChat({ personalizacao }) {
                           sx={{
                             alignSelf: 'flex-start',
                             maxWidth: '82%',
-                            px: msg.type === 'image' || msg.type === 'audio' ? 0.5 : 1.75,
-                            py: msg.type === 'image' || msg.type === 'audio' ? 0.5 : 1.25,
+                            px: ['image', 'audio', 'clip'].includes(msg.type) ? 0.5 : 1.75,
+                            py: ['image', 'audio', 'clip'].includes(msg.type) ? 0.5 : 1.25,
                             borderRadius: `${bubbleRadius}px`,
                             borderBottomLeftRadius: `${tailRadius}px`,
                             bgcolor: botBubbleColor,
@@ -689,9 +710,16 @@ function PreviewChat({ personalizacao }) {
                             </>
                           ) : msg.type === 'audio' && msg.dataUrl ? (
                             <audio controls src={msg.dataUrl} style={{ width: 220, display: 'block' }} />
-                          ) : msg.type === 'image' || msg.type === 'audio' ? (
+                          ) : msg.type === 'clip' && msg.url ? (
+                            <>
+                              <PreviewVideo src={msg.url} />
+                              {msg.caption ? (
+                                <Box sx={{ p: 0.75, fontSize: 12 }} dangerouslySetInnerHTML={{ __html: richHtmlForRender(msg.caption) }} />
+                              ) : null}
+                            </>
+                          ) : msg.type === 'image' || msg.type === 'audio' || msg.type === 'clip' ? (
                             <Box sx={{ p: 1.25, fontStyle: 'italic', opacity: 0.6, fontSize: 12 }}>
-                              [{msg.type === 'image' ? 'Imagem' : 'Áudio'} sem mídia]
+                              [{msg.type === 'image' ? 'Imagem' : msg.type === 'clip' ? 'Vídeo' : 'Áudio'} sem mídia]
                             </Box>
                           ) : (
                             <Box
@@ -783,21 +811,23 @@ function PreviewChat({ personalizacao }) {
                   {(() => {
                     const welcomes = (() => {
                       const arr = Array.isArray(personalizacao.welcomeMessages) ? personalizacao.welcomeMessages : [];
-                      const cleaned = arr
-                        .map((m) => safeInput(m))
-                        .filter((m) => m.trim().length > 0);
+                      const cleaned = arr.map((m) => normalizeWelcomeEntry(m)).filter(Boolean);
                       if (cleaned.length > 0) return cleaned;
                       const legacy = safeInput(personalizacao.welcomeBotMessage).trim();
                       return legacy ? [legacy] : ['Seja bem-vindo(a)!'];
                     })();
-                    return welcomes.map((wText, wIdx) => (
+                    return welcomes.map((wEntry, wIdx) => {
+                      const isClip = isClipEntry(wEntry);
+                      const wText = isClip ? '' : wEntry;
+                      return (
                       <Box
                         key={`welcome-bubble-${wIdx}`}
                         sx={{
                           alignSelf: 'flex-start',
                           maxWidth: '82%',
-                          px: 1.75,
-                          py: 1.25,
+                          px: isClip ? 0.5 : 1.75,
+                          py: isClip ? 0.5 : 1.25,
+                          overflow: 'hidden',
                           borderRadius: `${bubbleRadius}px`,
                           borderBottomLeftRadius: `${tailRadius}px`,
                           bgcolor: botBubbleColor,
@@ -809,11 +839,19 @@ function PreviewChat({ personalizacao }) {
                           lineHeight: 1.45,
                           boxShadow: theme.bubbleShadow ? (isWhatsAppLayout ? '0 1px 1px #00000022' : '0 2px 10px #00000022') : 'none'
                         }}
-                        dangerouslySetInnerHTML={{
-                          __html: richHtmlForRender(wText) || escapeHtmlChars(wText)
-                        }}
-                      />
-                    ));
+                        {...(isClip ? {} : { dangerouslySetInnerHTML: { __html: richHtmlForRender(wText) || escapeHtmlChars(wText) } })}
+                      >
+                        {isClip ? (
+                          <>
+                            <PreviewVideo src={wEntry.url} />
+                            {wEntry.caption ? (
+                              <Box sx={{ p: 0.75, fontSize: 12 }} dangerouslySetInnerHTML={{ __html: richHtmlForRender(wEntry.caption) }} />
+                            ) : null}
+                          </>
+                        ) : undefined}
+                      </Box>
+                      );
+                    });
                   })()}
 
                   {previewQuickReplies.length > 0 ? (
@@ -1080,13 +1118,14 @@ export default function WebchatBuilder() {
   };
 
   // ===== Welcome messages (array) =====
+  // Entradas: string (texto HTML) ou vídeo público { type:'clip', url, caption, autoplay }.
   const getWelcomeList = (prev) => {
     const arr = Array.isArray(prev?.welcomeMessages) ? prev.welcomeMessages : [];
     if (arr.length === 0) {
       const legacy = safeInput(prev?.welcomeBotMessage);
       return legacy ? [legacy] : [''];
     }
-    return arr.map((item) => safeInput(item));
+    return arr.map((item) => (isClipEntry(item) ? { ...item } : safeInput(item)));
   };
 
   const handleWelcomeMessageChange = (index, value) => {
@@ -1096,16 +1135,26 @@ export default function WebchatBuilder() {
       return {
         ...prev,
         welcomeMessages: list,
-        welcomeBotMessage: list[0] || ''
+        welcomeBotMessage: firstWelcomeText(list)
       };
     });
   };
 
-  const handleAddWelcomeMessage = () => {
+  // Vídeo: mescla só os campos alterados (url/caption/autoplay).
+  const handleWelcomeClipPatch = (index, patchValue) => {
     setPersonalizacao((prev) => {
       const list = getWelcomeList(prev);
-      list.push('');
-      return { ...prev, welcomeMessages: list, welcomeBotMessage: list[0] || '' };
+      const current = isClipEntry(list[index]) ? list[index] : { type: 'clip', url: '', caption: '', autoplay: true };
+      list[index] = { ...current, ...patchValue, type: 'clip' };
+      return { ...prev, welcomeMessages: list, welcomeBotMessage: firstWelcomeText(list) };
+    });
+  };
+
+  const handleAddWelcomeMessage = (kind = 'text') => {
+    setPersonalizacao((prev) => {
+      const list = getWelcomeList(prev);
+      list.push(kind === 'clip' ? { type: 'clip', url: '', caption: '', autoplay: true } : '');
+      return { ...prev, welcomeMessages: list, welcomeBotMessage: firstWelcomeText(list) };
     });
   };
 
@@ -1114,7 +1163,7 @@ export default function WebchatBuilder() {
       const list = getWelcomeList(prev);
       if (list.length <= 1) return prev; // mantém pelo menos uma
       list.splice(index, 1);
-      return { ...prev, welcomeMessages: list, welcomeBotMessage: list[0] || '' };
+      return { ...prev, welcomeMessages: list, welcomeBotMessage: firstWelcomeText(list) };
     });
   };
 
@@ -1126,7 +1175,7 @@ export default function WebchatBuilder() {
       const tmp = list[index];
       list[index] = list[next];
       list[next] = tmp;
-      return { ...prev, welcomeMessages: list, welcomeBotMessage: list[0] || '' };
+      return { ...prev, welcomeMessages: list, welcomeBotMessage: firstWelcomeText(list) };
     });
   };
 
@@ -1794,7 +1843,10 @@ export default function WebchatBuilder() {
                         Variável da URL: escreva <b>{'{{q_nome}}'}</b> e abra o chat com <b>?q_nome=Ana</b> → aparece “Ana”.
                         Vale para qualquer parâmetro que comece com <b>q_</b>, em mensagens e textos de botão.
                       </Alert>
-                      {getWelcomeList(personalizacao).map((welcomeText, index, arr) => (
+                      {getWelcomeList(personalizacao).map((welcomeEntry, index, arr) => {
+                        const entryIsClip = isClipEntry(welcomeEntry);
+                        const welcomeText = entryIsClip ? '' : welcomeEntry;
+                        return (
                         <Box
                           key={`welcome-${index}`}
                           sx={{
@@ -1810,7 +1862,7 @@ export default function WebchatBuilder() {
                         >
                           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
                             <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
-                              Mensagem #{index + 1}
+                              Mensagem #{index + 1} · {entryIsClip ? '🎬 Vídeo' : 'Texto'}
                             </Typography>
                             <Stack direction="row" spacing={0}>
                               <Tooltip title="Subir">
@@ -1849,23 +1901,41 @@ export default function WebchatBuilder() {
                               </Tooltip>
                             </Stack>
                           </Stack>
-                          <RichTextField
-                            value={welcomeText}
-                            onChange={(html) => handleWelcomeMessageChange(index, html)}
-                            placeholder={`Mensagem de boas-vindas #${index + 1}`}
-                            minHeight={64}
-                          />
+                          {entryIsClip ? (
+                            <ClipMessageEditor
+                              value={welcomeEntry}
+                              onPatch={(patchValue) => handleWelcomeClipPatch(index, patchValue)}
+                              compact
+                            />
+                          ) : (
+                            <RichTextField
+                              value={welcomeText}
+                              onChange={(html) => handleWelcomeMessageChange(index, html)}
+                              placeholder={`Mensagem de boas-vindas #${index + 1}`}
+                              minHeight={64}
+                            />
+                          )}
                         </Box>
-                      ))}
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={<AddRoundedIcon />}
-                        onClick={handleAddWelcomeMessage}
-                        sx={{ alignSelf: 'flex-start' }}
-                      >
-                        Adicionar mensagem
-                      </Button>
+                        );
+                      })}
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<AddRoundedIcon />}
+                          onClick={() => handleAddWelcomeMessage('text')}
+                        >
+                          Texto
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<AddRoundedIcon />}
+                          onClick={() => handleAddWelcomeMessage('clip')}
+                        >
+                          Vídeo
+                        </Button>
+                      </Stack>
                     </Stack>
                     <TextField
                       label="Nome do bot"

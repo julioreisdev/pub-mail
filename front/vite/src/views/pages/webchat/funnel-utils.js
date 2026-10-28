@@ -112,6 +112,11 @@ export function createDefaultMessage(kind = 'text') {
   if (kind === 'audio') {
     return { ...base, dataUrl: '', durationSec: 0 };
   }
+  // Vídeo PÚBLICO (upload em POST /webchats/media → MP4 em /uploads, ou URL .mp4 colada).
+  // Toca no chat com o player próprio (play grande no centro; autoplay quando o navegador deixa).
+  if (kind === 'clip') {
+    return { ...base, url: '', caption: '', autoplay: true };
+  }
   // Arquivo (PDF/zip…) e vídeo: guardados no SERVIDOR (upload protegido),
   // aqui fica só a referência. Só chegam ao lead depois do pagamento.
   if (kind === 'file' || kind === 'video') {
@@ -218,7 +223,7 @@ export function normalizeFunil(value) {
 
 function normalizeMessage(raw) {
   const msg = raw && typeof raw === 'object' ? raw : {};
-  const type = ['text', 'image', 'audio', 'file', 'video'].includes(msg.type) ? msg.type : 'text';
+  const type = ['text', 'image', 'audio', 'clip', 'file', 'video'].includes(msg.type) ? msg.type : 'text';
   const base = {
     id: String(msg.id || makeId('message')),
     type,
@@ -244,6 +249,14 @@ function normalizeMessage(raw) {
       durationSec: clampNumber(msg.durationSec, 0, 600, 0),
     };
   }
+  if (type === 'clip') {
+    return {
+      ...base,
+      url: normalizeVideoUrl(msg.url),
+      caption: String(msg.caption ?? ''),
+      autoplay: msg.autoplay !== false,
+    };
+  }
   if (type === 'file' || type === 'video') {
     return {
       ...base,
@@ -257,6 +270,34 @@ function normalizeMessage(raw) {
     };
   }
   return base;
+}
+
+// URL de vídeo público (mensagem "clip"): só http(s), sem esquema perigoso, até 600 chars.
+export function normalizeVideoUrl(raw) {
+  const url = String(raw ?? '').trim().slice(0, 600);
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) return '';
+  return url;
+}
+
+// ===== Mensagens de boas-vindas (builder visual) =====
+// Cada entrada de `personalizacao.welcomeMessages` é uma string (HTML do texto)
+// OU um vídeo público { type:'clip', url, caption, autoplay }. Esta função
+// normaliza uma entrada crua; devolve null quando não há nada aproveitável
+// (texto vazio / vídeo sem URL válida).
+export function normalizeWelcomeEntry(raw) {
+  if (raw && typeof raw === 'object') {
+    if (raw.type !== 'clip') return null;
+    const url = normalizeVideoUrl(raw.url);
+    if (!url) return null;
+    return { type: 'clip', url, caption: String(raw.caption ?? ''), autoplay: raw.autoplay !== false };
+  }
+  const text = String(raw ?? '').trim();
+  return text ? text : null;
+}
+
+export function isClipEntry(entry) {
+  return Boolean(entry && typeof entry === 'object' && entry.type === 'clip');
 }
 
 // ===== URLs de redirecionamento =====

@@ -15,6 +15,9 @@ import {
   substituteVariables,
   VARIAVEIS_LEAD,
   getLeadCaptureFields,
+  normalizeWelcomeEntry,
+  isClipEntry,
+  normalizeVideoUrl,
 } from './funnel-utils';
 
 const DEFAULT_WELCOME_MESSAGE = 'Seja bem-vindo(a)!';
@@ -183,15 +186,33 @@ function resolveWelcomeMessage(config) {
 
 // Resolve a lista completa de mensagens de boas-vindas. Suporta o formato
 // novo (welcomeMessages: array) e o legado (welcomeBotMessage: string).
+// Cada entrada é uma string (texto) ou um vídeo público { type:'clip', url, caption, autoplay }.
 function resolveWelcomeMessagesList(config) {
   const personalizacao = toObject(config?.personalizacao);
   const arr = personalizacao.welcomeMessages;
   if (Array.isArray(arr)) {
-    const cleaned = arr.map((m) => safeText(m)).filter((m) => m.length > 0);
+    const cleaned = arr.map((m) => normalizeWelcomeEntry(m)).filter(Boolean);
     if (cleaned.length > 0) return cleaned;
   }
   const fallback = resolveWelcomeMessage(config);
   return fallback ? [fallback] : [];
+}
+
+// Campos da bolha do bot para uma entrada de boas-vindas (texto ou vídeo).
+// As variáveis da URL ({{q_nome}}) entram aqui.
+function welcomeEntryToBubble(entry, urlVars) {
+  if (isClipEntry(entry)) {
+    return {
+      text: '',
+      html: '',
+      mediaType: 'clip',
+      mediaUrl: entry.url,
+      autoplay: entry.autoplay !== false,
+      caption: linkifyHtml(sanitizeHtml(substituteVariables(entry.caption || '', urlVars))),
+    };
+  }
+  const text = safeText(entry);
+  return { text, html: substituteVariables(formatAssistantHtml(text), urlVars) };
 }
 
 function normalizeLeadFieldKey(value) {
@@ -421,6 +442,19 @@ function buildFunnelBotMessage(msg, variables) {
       html: '',
     };
   }
+  // Vídeo PÚBLICO (upload em /uploads ou link .mp4): player próprio com play grande.
+  if (msg.type === 'clip') {
+    return {
+      id,
+      type: 'bot',
+      mediaType: 'clip',
+      mediaUrl: normalizeVideoUrl(msg.url),
+      autoplay: msg.autoplay !== false,
+      caption: linkifyHtml(sanitizeHtml(substituteVariables(msg.caption || '', variables))),
+      text: '',
+      html: '',
+    };
+  }
   // Arquivo / vídeo protegido: só existe URL quando veio da ENTREGA
   // (servidor gera link assinado após o pagamento).
   if (msg.type === 'file' || msg.type === 'video') {
@@ -522,6 +556,107 @@ async function copyToClipboard(text) {
 // Contador regressivo do PIX (mm:ss). Avisa o pai quando zera.
 // `expiresAt` ausente/inválido conta como expirado (antes mostrava NaN:NaN).
 // onExpire dispara UMA vez por expiresAt (o pai confere no servidor).
+// Player de vídeo do chat: controles nativos depois que começa, botão de play
+// grande no centro enquanto está parado, e tentativa de autoplay (com som) —
+// o navegador só deixa quando já houve um toque na página (ex.: clicou num
+// botão do funil); na 1ª visita sem interação ele recusa e fica o play grande.
+// Não cai para "mudo": vídeo tocando sem som num chat confunde mais do que ajuda.
+function WebchatVideo({ src, autoplay, accentColor }) {
+  const ref = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !autoplay) return undefined;
+    let cancelled = false;
+    const tryPlay = () => {
+      if (cancelled) return;
+      const p = el.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {
+          /* autoplay bloqueado: fica o botão de play */
+        });
+      }
+    };
+    if (el.readyState >= 1) tryPlay();
+    else el.addEventListener('loadedmetadata', tryPlay, { once: true });
+    return () => {
+      cancelled = true;
+      el.removeEventListener('loadedmetadata', tryPlay);
+    };
+  }, [autoplay, src]);
+
+  const play = () => {
+    const el = ref.current;
+    if (!el) return;
+    const p = el.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  };
+
+  const accent = accentColor || 'var(--pubmail-primary, #2979ff)';
+
+  return (
+    <div
+      className="pubmail-video"
+      style={{ position: 'relative', borderRadius: 10, overflow: 'hidden', background: '#000', lineHeight: 0, width: '100%' }}
+    >
+      <video
+        ref={ref}
+        src={src}
+        playsInline
+        preload={autoplay ? 'auto' : 'metadata'}
+        controls={started}
+        controlsList="nodownload"
+        onPlay={() => {
+          setPlaying(true);
+          setStarted(true);
+        }}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onError={() => setFailed(true)}
+        onClick={() => {
+          if (!started) play();
+        }}
+        style={{ width: '100%', maxHeight: 420, display: 'block', background: '#000', cursor: started ? undefined : 'pointer' }}
+      />
+      {failed ? (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 13, lineHeight: 1.3, padding: 12, textAlign: 'center' }}>
+          Não foi possível carregar o vídeo.
+        </div>
+      ) : !playing ? (
+        <button
+          type="button"
+          aria-label="Reproduzir vídeo"
+          onClick={play}
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: 72,
+            height: 72,
+            borderRadius: '50%',
+            border: '3px solid rgba(255,255,255,0.9)',
+            background: accent,
+            boxShadow: '0 6px 24px rgba(0,0,0,0.45)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 0,
+          }}
+        >
+          <svg width="30" height="30" viewBox="0 0 24 24" aria-hidden="true" style={{ marginLeft: 4 }}>
+            <path d="M8 5v14l11-7z" fill="#fff" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function PixCountdown({ expiresAt, onExpire, color }) {
   const expiresMs = expiresAt ? new Date(expiresAt).getTime() : NaN;
   const valid = Number.isFinite(expiresMs) && expiresMs > 0;
@@ -2971,8 +3106,7 @@ export default function PublicWebchat() {
       };
 
       // Para cada mensagem: mostra typing, depois substitui por bot bubble.
-      welcomeMessages.forEach((rawText, idx) => {
-        const text = safeText(rawText);
+      welcomeMessages.forEach((rawEntry, idx) => {
         // Typing antes da mensagem
         schedule(idx === 0 ? INITIAL_DELAY : MSG_TO_NEXT_TYPING, () => {
           setMessages((prev) => {
@@ -2989,8 +3123,7 @@ export default function PublicWebchat() {
               {
                 id: createId('msg'),
                 type: 'bot',
-                text,
-                html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current)
+                ...welcomeEntryToBubble(rawEntry, urlVarsRef.current)
               }
             ];
           });
@@ -3253,15 +3386,17 @@ export default function PublicWebchat() {
         const leadingBots = countLeadingBots(messagesArr);
         const tail = messagesArr.slice(leadingBots);
         for (let i = 0; i < welcomeMessagesList.length; i += 1) {
-          const text = welcomeMessagesList[i];
+          const entry = welcomeMessagesList[i];
           const isLastWelcome = i === welcomeMessagesList.length - 1;
           const existing = i < leadingBots ? messagesArr[i] : null;
           if (existing) {
             const existingQr = normalizeQuickReplies(existing.quickReplies);
+            // Entrada de texto não pode herdar mídia de uma bolha antiga (e vice-versa).
+            const rest = { ...existing };
+            ['mediaType', 'mediaUrl', 'autoplay', 'caption'].forEach((k) => delete rest[k]);
             const next = {
-              ...existing,
-              text,
-              html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
+              ...rest,
+              ...welcomeEntryToBubble(entry, urlVarsRef.current),
             };
             if (isLastWelcome) {
               // Última welcome: garante que todas as QR configuradas estão lá
@@ -3276,8 +3411,7 @@ export default function PublicWebchat() {
             const fresh = {
               id: createId('msg'),
               type: 'bot',
-              text,
-              html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
+              ...welcomeEntryToBubble(entry, urlVarsRef.current),
             };
             if (isLastWelcome && availableQuickReplies.length > 0) {
               fresh.quickReplies = availableQuickReplies;
@@ -3365,13 +3499,12 @@ export default function PublicWebchat() {
           if (countLeadingBots(restoredMessages) === 0) {
             // Nenhuma welcome presente — prepende todas (histórico do server).
             // A última welcome recebe TODAS as quick replies configuradas.
-            const prepended = welcomeMessagesList.map((text, i) => {
+            const prepended = welcomeMessagesList.map((entry, i) => {
               const isLast = i === welcomeMessagesList.length - 1;
               const base = {
                 id: createId('msg'),
                 type: 'bot',
-                text,
-                html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
+                ...welcomeEntryToBubble(entry, urlVarsRef.current),
               };
               if (isLast && availableQuickReplies.length > 0) {
                 base.quickReplies = availableQuickReplies;
@@ -4421,18 +4554,15 @@ export default function PublicWebchat() {
                       </a>
                       {msg.caption ? <div style={{ padding: '8px 4px 0 4px', fontSize: 14 }} dangerouslySetInnerHTML={{ __html: msg.caption }} /> : null}
                     </div>
-                  ) : msg.mediaType === 'video' ? (
+                  ) : msg.mediaType === 'video' || msg.mediaType === 'clip' ? (
                     <>
-                      {msg.missing ? (
+                      {msg.missing || !msg.mediaUrl ? (
                         <div style={{ padding: '8px 10px', fontSize: 14 }}>🎬 Vídeo indisponível</div>
                       ) : (
-                        <video
-                          controls
-                          playsInline
-                          preload="metadata"
-                          controlsList="nodownload"
+                        <WebchatVideo
                           src={msg.mediaUrl}
-                          style={{ width: '100%', maxHeight: 420, borderRadius: 10, display: 'block', background: '#000' }}
+                          autoplay={msg.mediaType === 'clip' && msg.autoplay !== false}
+                          accentColor={theme.primaryColor}
                         />
                       )}
                       {msg.caption ? <div style={{ padding: '6px 8px 0 8px', fontSize: 14 }} dangerouslySetInnerHTML={{ __html: msg.caption }} /> : null}

@@ -46,6 +46,7 @@ import {
   normalizeRedirectUrl,
 } from './funnel-utils';
 import RichTextField from './RichTextField';
+import ClipMessageEditor from './ClipMessageEditor';
 import AudioRecorder from './AudioRecorder';
 import { get, post } from 'api/api';
 import {
@@ -763,12 +764,19 @@ function SequenceEditor({
           <Button size="small" variant="outlined" startIcon={<AddRoundedIcon />} onClick={() => onAddMessage('audio')} sx={{ borderRadius: 2 }}>
             Áudio
           </Button>
-          <Button size="small" variant="outlined" startIcon={<IconFileTypePdf size={16} />} onClick={() => onAddMessage('file')} sx={{ borderRadius: 2 }}>
-            Arquivo/PDF
-          </Button>
-          <Button size="small" variant="outlined" startIcon={<IconVideo size={16} />} onClick={() => onAddMessage('video')} sx={{ borderRadius: 2 }}>
+          <Button size="small" variant="outlined" startIcon={<IconVideo size={16} />} onClick={() => onAddMessage('clip')} sx={{ borderRadius: 2 }}>
             Vídeo
           </Button>
+          <Tooltip title="Arquivo (PDF, zip…) hospedado no servidor e liberado só depois do pagamento (entrega de produto)">
+            <Button size="small" variant="outlined" startIcon={<IconFileTypePdf size={16} />} onClick={() => onAddMessage('file')} sx={{ borderRadius: 2 }}>
+              Arquivo protegido
+            </Button>
+          </Tooltip>
+          <Tooltip title="Vídeo hospedado no servidor e liberado só depois do pagamento (entrega de produto)">
+            <Button size="small" variant="outlined" startIcon={<IconLock size={16} />} onClick={() => onAddMessage('video')} sx={{ borderRadius: 2 }}>
+              Vídeo protegido
+            </Button>
+          </Tooltip>
         </Stack>
       </Box>
 
@@ -979,8 +987,9 @@ const MESSAGE_TYPE_LABEL = {
   text: 'Texto',
   image: 'Imagem',
   audio: 'Áudio',
+  clip: '🎬 Vídeo',
   file: '📎 Arquivo (protegido)',
-  video: '🎬 Vídeo (protegido)',
+  video: '🔒 Vídeo (protegido)',
 };
 
 function MessageEditor({ message, index, total, onPatch, onRemove, onMove }) {
@@ -1026,6 +1035,10 @@ function MessageEditor({ message, index, total, onPatch, onRemove, onMove }) {
 
       {message.type === 'audio' && (
         <AudioMessageEditor message={message} onPatch={onPatch} />
+      )}
+
+      {message.type === 'clip' && (
+        <ClipMessageEditor value={message} onPatch={onPatch} />
       )}
 
       {(message.type === 'file' || message.type === 'video') && (
