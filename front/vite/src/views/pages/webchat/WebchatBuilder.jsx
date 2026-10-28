@@ -1918,7 +1918,10 @@ export default function WebchatBuilder() {
                         </Box>
                         );
                       })}
-                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mb: 1.5 }}>
+                        <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 700 }}>
+                          Adicionar:
+                        </Typography>
                         <Button
                           variant="outlined"
                           size="small"
