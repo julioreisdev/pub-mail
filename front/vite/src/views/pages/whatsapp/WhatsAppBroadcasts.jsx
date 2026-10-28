@@ -760,7 +760,11 @@ function CopiesModal({ broadcast, open, onClose }) {
       disableClose={saving}
       maxWidth="lg"
       title={`Copies — ${broadcast?.name || ''}`}
-      subtitle={`Cada copy é um conjunto de mensagens enviadas juntas. A cada disparo, uma copy é escolhida (${broadcast?.mode === 'random' ? 'aleatória' : 'em sequência'}).`}
+      subtitle={
+        broadcast?.randomize_copies
+          ? 'Cada copy é um conjunto de mensagens enviadas juntas. Sorteio por pessoa ligado: cada destinatário recebe uma copy sorteada entre todas.'
+          : `Cada copy é um conjunto de mensagens enviadas juntas. A cada disparo, uma copy é escolhida (${broadcast?.mode === 'random' ? 'aleatória' : 'em sequência'}).`
+      }
       footer={
         <>
           <Button color="inherit" onClick={() => onClose(false)} disabled={saving} sx={{ textTransform: 'none' }}>
@@ -2019,35 +2023,57 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
         {/* ---------- modo ---------- */}
         <Box>
           <Typography sx={{ fontWeight: 700, fontSize: 14, mb: 0.5 }}>Modo de envio</Typography>
-          <RadioGroup value={form.mode} onChange={(e) => setF({ mode: e.target.value })}>
-            <FormControlLabel value="sequential" control={<Radio size="small" />} label="Sequência (rotaciona; ao fim, volta ao início)" />
-            <FormControlLabel value="random" control={<Radio size="small" />} label="Aleatório (sorteia uma copy a cada disparo)" />
-          </RadioGroup>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={form.delete_used}
-                onChange={(e) => setF({ delete_used: e.target.checked })}
-                disabled={form.randomize_copies}
-              />
-            }
-            label="Apagar a copy depois de usar"
-          />
-          <Box sx={{ mt: 1, p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+          <Box
+            sx={{
+              p: 1.25,
+              mb: 1,
+              borderRadius: 2.5,
+              border: '1px solid',
+              borderColor: form.randomize_copies ? `${WA_GREEN}99` : 'divider',
+              bgcolor: form.randomize_copies ? 'rgba(37,211,102,0.08)' : 'transparent',
+              transition: 'all .15s'
+            }}
+          >
             <FormControlLabel
-              control={<Switch checked={Boolean(form.randomize_copies)} onChange={(e) => setF({ randomize_copies: e.target.checked })} />}
+              sx={{ m: 0, alignItems: 'flex-start' }}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={Boolean(form.randomize_copies)}
+                  onChange={(e) => setF({ randomize_copies: e.target.checked })}
+                  sx={{ mt: -0.5, color: WA_DARK, '&.Mui-checked': { color: WA_DARK } }}
+                />
+              }
               label={
                 <Box>
                   <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                    Randomizar envio
+                    Sortear copy no envio
                   </Typography>
-                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
-                    Usa TODAS as copies no mesmo disparo: cada contato recebe uma sorteada. Com 20 copies, 20 textos diferentes circulam ao
-                    mesmo tempo (menos "texto igual em massa"). O modo acima e "apagar depois de usar" deixam de valer.
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                    Cada pessoa recebe uma copy sorteada entre todas as cadastradas, no mesmo disparo. Com 10 copies, 10 textos
+                    diferentes circulam ao mesmo tempo — menos cara de "mensagem em massa". Precisa de 2 ou mais copies.
                   </Typography>
                 </Box>
               }
-              sx={{ alignItems: 'flex-start', m: 0 }}
+            />
+          </Box>
+          <Box sx={{ opacity: form.randomize_copies ? 0.5 : 1 }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 0.25 }}>
+              {form.randomize_copies ? 'Sem sorteio por pessoa, a cada disparo sai UMA copy para todos:' : 'A cada disparo sai UMA copy para todos:'}
+            </Typography>
+            <RadioGroup value={form.mode} onChange={(e) => setF({ mode: e.target.value })}>
+              <FormControlLabel value="sequential" control={<Radio size="small" disabled={form.randomize_copies} />} label="Sequência (rotaciona; ao fim, volta ao início)" />
+              <FormControlLabel value="random" control={<Radio size="small" disabled={form.randomize_copies} />} label="Aleatório (sorteia uma copy a cada disparo)" />
+            </RadioGroup>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={form.delete_used}
+                  onChange={(e) => setF({ delete_used: e.target.checked })}
+                  disabled={form.randomize_copies}
+                />
+              }
+              label="Apagar a copy depois de usar"
             />
           </Box>
         </Box>
@@ -3446,12 +3472,14 @@ export default function WhatsAppBroadcasts() {
                         ) : null}
                       </Stack>
                       <Stack direction="row" spacing={1} rowGap={1.25} flexWrap="wrap" useFlexGap alignItems="center" sx={{ mt: 0.75 }}>
-                        <Chip
-                          size="small"
-                          label={b.mode === 'random' ? 'aleatório' : 'sequência'}
-                          variant="outlined"
-                          sx={{ borderRadius: 1, height: 22 }}
-                        />
+                        <Tooltip title={b.randomize_copies ? 'Sortear copy no envio: cada pessoa recebe uma copy sorteada entre todas.' : 'A cada disparo sai uma copy para todos.'}>
+                          <Chip
+                            size="small"
+                            label={b.randomize_copies ? 'copy sorteada por pessoa' : b.mode === 'random' ? 'aleatório' : 'sequência'}
+                            variant="outlined"
+                            sx={{ borderRadius: 1, height: 22, ...(b.randomize_copies ? { borderColor: `${WA_GREEN}99`, color: WA_DARK, fontWeight: 700 } : {}) }}
+                          />
+                        </Tooltip>
                         <Chip
                           size="small"
                           label={`${b.copies_count || 0} copies`}
@@ -3593,8 +3621,8 @@ export default function WhatsAppBroadcasts() {
             <>
               “{firingFor.name}” será disparado agora para ≈ <b>{fireAud.total.toLocaleString('pt-BR')}</b>{' '}
               {fireAud.total === 1 ? 'destino' : 'destinos'}
-              {fireAud.parts.length ? ` (${fireAud.parts.join(' · ')})` : ''}. A copy é escolhida em{' '}
-              {firingFor.mode === 'random' ? 'ordem aleatória' : 'sequência'}; ritmo <b>{pacingLabel(presets, firingFor.pacing)}</b>
+              {fireAud.parts.length ? ` (${fireAud.parts.join(' · ')})` : ''}.{' '}
+              {firingFor.randomize_copies ? 'Cada pessoa recebe uma copy sorteada entre todas' : `A copy é escolhida em ${firingFor.mode === 'random' ? 'ordem aleatória' : 'sequência'}`}; ritmo <b>{pacingLabel(presets, firingFor.pacing)}</b>
               {firePacing.length ? ` (${firePacing.join(', ')})` : ''}. O que passar do limite do dia de cada número fica para amanhã.
               <Box component="span" sx={{ display: 'block', mt: 1.25 }}>
                 <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary', display: 'block', mb: 0.5 }}>
