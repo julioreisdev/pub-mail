@@ -2425,8 +2425,10 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
       anchor="right"
       open={open}
       onClose={onClose}
-      // abre por cima do modal de histórico (Dialog = zIndex.modal; a gaveta padrão ficaria atrás dele)
-      sx={{ zIndex: (t) => t.zIndex.modal + 5 }}
+      // mesmo z-index do Dialog do histórico: a gaveta abre depois, logo fica por cima dele — e os menus
+      // dos filtros (também zIndex.modal, abertos depois ainda) ficam por cima da gaveta. Um valor maior
+      // que zIndex.modal esconderia os menus atrás da gaveta.
+      sx={{ zIndex: (t) => t.zIndex.modal }}
       slotProps={{ paper: { sx: { width: { xs: '100%', sm: 460 }, bgcolor: 'background.default' } } }}
     >
       <Box
