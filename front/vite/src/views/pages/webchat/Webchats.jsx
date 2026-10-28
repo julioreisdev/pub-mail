@@ -2704,7 +2704,18 @@ export default function Webchats() {
                 value={visitRange}
                 onChange={handleVisitRange}
                 sx={{
-                  '& .MuiToggleButton-root': { px: 1.25, py: 0.4, fontSize: 12, fontWeight: 700, textTransform: 'none', borderRadius: 2 }
+                  gap: 0.75,
+                  '& .MuiToggleButtonGroup-grouped': {
+                    px: 1.25,
+                    py: 0.4,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    textTransform: 'none',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: '8px !important',
+                    '&:not(:first-of-type)': { ml: 0, borderLeft: '1px solid', borderLeftColor: 'divider' }
+                  }
                 }}
               >
                 {VISIT_RANGES.map((r) => (
