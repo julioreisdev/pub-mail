@@ -34,6 +34,21 @@ export class GroqAdapter extends BaseOpenAIAdapter {
     if (GPT_OSS_RE.test(body.model)) {
       body.reasoning_effort = 'low';
       body.include_reasoning = false;
+      // Saída estruturada (out/2026): com `json_object` o gpt-oss respondia em PROSA
+      // em ~3 de 4 respostas longas de chat — a Groq valida e devolve 400
+      // `json_validate_failed`. Com `json_schema` a decodificação é restrita à
+      // gramática do schema: medido 4/4 JSON válido com o prompt real do webchat.
+      // Quem chama manda `payload.jsonSchema` ({ name, schema }); sem isso fica o
+      // json_object de sempre.
+      if (body.response_format && payload.jsonSchema?.schema) {
+        body.response_format = {
+          type: 'json_schema',
+          json_schema: {
+            name: String(payload.jsonSchema.name || 'response'),
+            schema: payload.jsonSchema.schema,
+          },
+        };
+      }
     }
     return body;
   }

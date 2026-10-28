@@ -31,13 +31,36 @@ export class BaseOpenAIAdapter {
   // Monta o body OpenAI-compat. Subclasses podem sobrescrever pra ajustar
   // (ex: Gemini não suporta response_format estrito).
   buildRequestBody(payload, modelOverride) {
-    return {
+    const body = {
       model: modelOverride || this.defaultModel,
       messages: payload.messages,
       temperature: typeof payload.temperature === 'number' ? payload.temperature : 0.7,
       max_tokens: typeof payload.maxTokens === 'number' ? payload.maxTokens : 800,
       response_format: { type: 'json_object' },
     };
+    // `payload.jsonMode === false` = pedir texto livre (o chamador extrai o JSON do
+    // texto). Usado na 2ª tentativa depois de um `json_validate_failed` da Groq.
+    if (payload.jsonMode === false) delete body.response_format;
+    return body;
+  }
+
+  // Groq valida o JSON do modo `json_object` no servidor: quando o modelo responde em
+  // prosa (resposta longa de chat), vem HTTP 400 `json_validate_failed` com o texto
+  // gerado em `failed_generation`. Não é defeito de chave nem de modelo — é a resposta
+  // que não veio embrulhada em JSON. Devolve o texto quando o corpo for esse caso.
+  extractFailedGeneration(status, rawText) {
+    if (status !== 400) return null;
+    try {
+      const data = JSON.parse(rawText);
+      const err = data?.error || data;
+      const code = String(err?.code || '').toLowerCase();
+      const msg = String(err?.message || '').toLowerCase();
+      if (code !== 'json_validate_failed' && !msg.includes('failed to generate json')) return null;
+      const text = typeof err?.failed_generation === 'string' ? err.failed_generation.trim() : '';
+      return text || null;
+    } catch {
+      return null;
+    }
   }
 
   // Headers padrão. Subclasses podem adicionar (ex: SambaNova exige x-api-key).
@@ -95,6 +118,27 @@ export class BaseOpenAIAdapter {
           error: `Invalid JSON response: ${err?.message}`,
         };
       }
+    }
+
+    // Não OK. 1º caso especial: o modelo respondeu, só não em JSON (Groq
+    // `json_validate_failed`). Tratar como SUCESSO com o texto gerado — quem chama
+    // já sabe extrair JSON de texto solto e cair em texto puro se precisar. Antes
+    // isso era `fatal`: pulava todas as chaves do provider e o lead via um 502
+    // mesmo com a resposta pronta no corpo do erro.
+    const failedGeneration = this.extractFailedGeneration(response.status, rawText);
+    if (failedGeneration) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${this.name}] json_validate_failed: usando failed_generation como conteúdo (${failedGeneration.length} chars)`);
+      return {
+        ok: true,
+        jsonValidateFailed: true,
+        data: {
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: failedGeneration } }],
+          usage: {},
+          model: body.model,
+        },
+        raw: rawText,
+      };
     }
 
     // Não OK: classifica

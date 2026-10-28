@@ -455,6 +455,73 @@ function Hero({ onNav }) {
   );
 }
 
+// ---------------------------------------------------------------- clientes
+// Faixa logo abaixo do hero, no padrão dos sites de referência: logos em cinza, mesma linha, sem cor.
+// As artes ficam em public/clientes/ já tratadas (silhueta cinza sobre transparente, geradas por
+// docs/tools/make_client_logos.cjs); `h` é a altura de exibição de cada uma — logos quadradas
+// (ícone em cima do nome) precisam de mais altura para o nome ficar legível ao lado das largas.
+const CLIENTS = [
+  { src: '/clientes/audmetrix.png', name: 'Audmetrix', h: { xs: 36, md: 56 } },
+  { src: '/clientes/gcp.png', name: 'GCP Monitoramento', h: { xs: 40, md: 60 } },
+  { src: '/clientes/gerirfrota.png', name: 'Gerir Frota', h: { xs: 56, md: 84 } }
+];
+function Clients() {
+  return (
+    <Box
+      id="clientes"
+      component="section"
+      aria-label="Empresas que usam o Pub Mail"
+      sx={{
+        py: { xs: 4.5, md: 6 },
+        bgcolor: 'background.paper',
+        borderBottom: '1px solid',
+        borderColor: 'divider'
+      }}
+    >
+      <Container maxWidth="xl">
+        <Typography
+          variant="overline"
+          component="p"
+          sx={{ textAlign: 'center', color: 'text.secondary', letterSpacing: '.14em', fontWeight: 700, mb: { xs: 2.5, md: 3.5 } }}
+        >
+          Empresas que já usam o Pub Mail
+        </Typography>
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="center"
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ columnGap: { xs: 4, sm: 8, md: 12 }, rowGap: 3 }}
+        >
+          {CLIENTS.map((c) => (
+            <Box
+              key={c.name}
+              component="img"
+              src={c.src}
+              alt={c.name}
+              title={c.name}
+              loading="lazy"
+              sx={(t) => ({
+                display: 'block',
+                height: c.h,
+                width: 'auto',
+                maxWidth: { xs: 160, md: 260 },
+                objectFit: 'contain',
+                opacity: 0.72,
+                transition: 'opacity .2s',
+                '&:hover': { opacity: 1 },
+                // as artes são cinza-escuro: no escuro viram branco
+                ...t.applyStyles('dark', { filter: 'brightness(0) invert(1)', opacity: 0.6, '&:hover': { opacity: 0.9 } })
+              })}
+            />
+          ))}
+        </Stack>
+      </Container>
+    </Box>
+  );
+}
+
 // ---------------------------------------------------------------- planos
 function PlanCard({ plan, annual }) {
   const { Icon } = plan;
@@ -869,6 +936,7 @@ export default function Landing() {
     <Box sx={{ bgcolor: 'background.default', color: 'text.primary' }}>
       <Header active={active} onNav={onNav} isAuthenticated={isAuthenticated} />
       <Hero onNav={onNav} />
+      <Clients />
       <WhatsAppShowcase onNav={onNav} />
       <SubscriptionsShowcase onNav={onNav} />
       <Pricing />

@@ -812,6 +812,24 @@ const mergeLeadCaptureState = (leadState, capturedFields, releaseChat) => {
   };
 };
 
+// Formato da resposta da IA pro webchat (o mesmo descrito no prompt em
+// "RETORNE SOMENTE JSON VALIDO"). `captured_fields` fica livre porque as keys
+// vêm da config do agente (nome/telefone/email/…).
+const WEBCHAT_REPLY_SCHEMA = {
+  name: 'webchat_reply',
+  schema: {
+    type: 'object',
+    properties: {
+      reply: { type: 'string' },
+      captured_fields: { type: 'object' },
+      release_chat: { type: 'boolean' },
+      options: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['reply', 'captured_fields', 'release_chat', 'options'],
+    additionalProperties: false,
+  },
+};
+
 export const generateWebchatReply = async ({
   message,
   agent,
@@ -866,6 +884,9 @@ export const generateWebchatReply = async ({
   );
 
   // Payload neutro — o adapter do provider escolhido decide o nome do modelo.
+  // `jsonSchema` = contrato da resposta para providers com saída estruturada
+  // (hoje a Groq/gpt-oss usa como `response_format: json_schema`, que impede o
+  // modelo de responder em prosa). Os demais ignoram e seguem no json_object.
   const completionPayload = {
     messages: [
       { role: 'system', content: systemPrompt },
@@ -874,6 +895,7 @@ export const generateWebchatReply = async ({
     ],
     temperature,
     maxTokens,
+    jsonSchema: WEBCHAT_REPLY_SCHEMA,
   };
 
   let chatCompletion = null;
@@ -941,6 +963,20 @@ export const generateWebchatReply = async ({
     return '';
   };
 
+  // Quando o modelo ignora o formato e responde em PROSA (a Groq devolve isso como
+  // `json_validate_failed`; o adapter repassa o texto), o JSON não existe mas a
+  // resposta ao lead está ali inteira. `plainText` guarda esse texto para servir
+  // de último recurso — antes de um 502. Só conta como prosa quando não parece JSON
+  // (nem começa com `{`/`[`, nem tem cara de fragmento truncado de JSON).
+  const plainTextOf = (content, parsed) => {
+    const text = toSafeString(content).trim();
+    if (!text || (parsed && Object.keys(parsed).length > 0)) return '';
+    const stripped = stripMarkdownCodeFences(text);
+    if (/^[\[{]/.test(stripped)) return '';
+    if (/"reply"\s*:/.test(stripped)) return '';
+    return sanitizeUserFacingText(stripped);
+  };
+
   const extractReply = (completion) => {
     const content = completion?.choices?.[0]?.message?.content || '';
     const finishReason = completion?.choices?.[0]?.finish_reason || '';
@@ -950,7 +986,7 @@ export const generateWebchatReply = async ({
         parsed.reply ?? parsed.resposta ?? parsed.message ?? parsed.mensagem ?? parsed.answer ?? parsed.text ?? parsed.texto ?? parsed.content,
       ),
     );
-    return { content, finishReason, parsed, replyRaw };
+    return { content, finishReason, parsed, replyRaw, plainText: plainTextOf(content, parsed) };
   };
 
   let firstRun = await runCompletion(completionPayload);
@@ -959,9 +995,25 @@ export const generateWebchatReply = async ({
   usedModel = firstRun.model;
   degraded = firstRun.degraded;
 
-  let { content: rawContent, finishReason, parsed: payload, replyRaw } =
+  let { content: rawContent, finishReason, parsed: payload, replyRaw, plainText } =
     extractReply(chatCompletion);
   let reply = avoidReintroduction ? stripRepeatedIntroduction(replyRaw) : replyRaw;
+  // Melhor resposta em prosa vista em qualquer tentativa (último recurso).
+  let bestPlainText = plainText;
+
+  // Conversa livre (captação concluída/liberada/desligada): se o modelo já
+  // respondeu ao lead em prosa COMPLETA (finish≠length), usa direto. Retentar
+  // aqui só serve para ganhar "options"/"captured_fields", que nessa fase não
+  // mudam nada — e custa 2 chamadas a mais (com o prompt de ~4k tokens, estoura
+  // o limite por minuto da Groq e derruba para o modelo menor). Na captação o
+  // JSON importa (captured_fields), então lá as retentativas continuam.
+  if (!reply && plainText && !isCaptureStage && finishReason !== 'length') {
+    console.warn(
+      `[ia-webchat] conversa livre: resposta veio em prosa (sem JSON); usando direto. provider=${usedProvider} model=${usedModel} len=${plainText.length}`,
+    );
+    reply = avoidReintroduction ? stripRepeatedIntroduction(plainText) : plainText;
+    payload = {};
+  }
 
   // Retry escalonado quando reply vem vazio. Duas tentativas, cada uma mais
   // agressiva, pra maximizar a chance de obter resposta substantiva.
@@ -987,7 +1039,11 @@ export const generateWebchatReply = async ({
                 : 'CRÍTICO: as tentativas anteriores não tiveram o campo "reply" preenchido. Sua resposta DEVE ser um JSON COMPLETO e VÁLIDO no formato { "reply": "<texto substantivo pro lead aqui>", "captured_fields": {}, "release_chat": false, "options": [] }. SEM markdown, SEM texto fora do JSON. Foque em entregar valor real ao lead com a "reply".',
           },
         ];
-    return { ...prevPayload, messages, maxTokens: expanded };
+    // Se a tentativa anterior veio em prosa, o modo JSON do provider está
+    // recusando a resposta: na 2ª tentativa pede texto livre (sem response_format)
+    // e extrai o JSON do texto — o prompt continua exigindo JSON.
+    const jsonMode = attempt === 2 && bestPlainText ? false : prevPayload.jsonMode;
+    return { ...prevPayload, messages, maxTokens: expanded, jsonMode };
   };
 
   if (!reply) {
@@ -1011,12 +1067,24 @@ export const generateWebchatReply = async ({
         reply = avoidReintroduction
           ? stripRepeatedIntroduction(retryExtract.replyRaw)
           : retryExtract.replyRaw;
+        if (retryExtract.plainText.length > bestPlainText.length) bestPlainText = retryExtract.plainText;
         lastPayload = retryPayload;
       } catch (retryErr) {
         console.warn(`[ia-webchat] retry ${attempt} lançou: ${retryErr?.message || retryErr}`);
       }
       attempt++;
     }
+  }
+
+  if (!reply && bestPlainText) {
+    // O modelo respondeu ao lead, só não em JSON (3 vezes). Entregar a prosa
+    // vale mais que um 502: sem captured_fields/options nesta rodada, mas a
+    // conversa segue. Log pra acompanhar a frequência.
+    console.warn(
+      `[ia-webchat] usando resposta em texto puro (sem JSON) após ${rawContent ? 'tentativas' : 'falha'}; provider=${usedProvider} model=${usedModel} len=${bestPlainText.length}`,
+    );
+    reply = avoidReintroduction ? stripRepeatedIntroduction(bestPlainText) : bestPlainText;
+    payload = {};
   }
 
   if (!reply) {
