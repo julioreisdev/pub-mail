@@ -106,8 +106,10 @@ import {
   WaNumberDot,
   WaNumberMultiSelect,
   WaNumberSelect,
-  sessionLabel
+  sessionLabel,
+  fmtPhoneBR
 } from './waKit';
+import { TgAvatar } from 'views/pages/telegram/ui';
 
 // ============================================================================
 // WhatsApp → Broadcasts: disparos em massa para contatos e grupos com rotação
@@ -323,8 +325,35 @@ function TimeChip({ minute, status }) {
 }
 
 // ---- multi-select com busca ----
+// Opção: { value, label, name?, secondary?, photoPath?, kind?: 'contact'|'group' }. Com `name`
+// a lista e os chips mostram a foto (ou inicial) e, em grupo, a etiqueta "Grupo".
+const GroupTag = ({ sx }) => (
+  <Box
+    component="span"
+    sx={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 0.35,
+      px: 0.7,
+      height: 18,
+      borderRadius: 1,
+      fontSize: 10.5,
+      fontWeight: 800,
+      letterSpacing: 0.2,
+      textTransform: 'uppercase',
+      color: '#7c3aed',
+      bgcolor: 'rgba(124,58,237,0.12)',
+      border: '1px solid rgba(124,58,237,0.35)',
+      flexShrink: 0,
+      ...sx
+    }}
+  >
+    <IconUsersGroup size={11} /> Grupo
+  </Box>
+);
 function MultiSelect({ label, options, value, onChange, placeholder, limitTags = 3 }) {
   const selected = options.filter((o) => (value || []).includes(o.value));
+  const rich = options.some((o) => o && o.name !== undefined);
   return (
     <Autocomplete
       multiple
@@ -337,6 +366,56 @@ function MultiSelect({ label, options, value, onChange, placeholder, limitTags =
       size="small"
       renderInput={(p) => <TextField {...p} label={label} placeholder={placeholder} />}
       slotProps={{ paper: { sx: { borderRadius: 2 } } }}
+      {...(rich
+        ? {
+            renderOption: (props, o) => {
+              const { key, ...rest } = props;
+              const isGroup = o.kind === 'group';
+              return (
+                <li key={key} {...rest} style={{ ...(rest.style || {}), alignItems: 'center', gap: 10, paddingTop: 6, paddingBottom: 6 }}>
+                  <TgAvatar name={o.name} photoPath={o.photoPath} size={34} kind={isGroup ? 'group' : 'contact'} icon={isGroup ? IconUsersGroup : undefined} />
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" noWrap sx={{ fontWeight: 600, minWidth: 0 }}>
+                        {o.name}
+                      </Typography>
+                      {isGroup ? <GroupTag /> : null}
+                    </Stack>
+                    {o.secondary ? (
+                      <Typography variant="caption" noWrap sx={{ color: 'text.secondary', display: 'block' }}>
+                        {o.secondary}
+                      </Typography>
+                    ) : null}
+                  </Box>
+                </li>
+              );
+            },
+            renderTags: (vals, getTagProps) =>
+              vals.map((o, index) => {
+                const { key, ...tagProps } = getTagProps({ index });
+                const isGroup = o.kind === 'group';
+                return (
+                  <Chip
+                    key={key}
+                    {...tagProps}
+                    size="small"
+                    avatar={
+                      <Box sx={{ display: 'inline-flex', ml: '2px !important' }}>
+                        <TgAvatar name={o.name} photoPath={o.photoPath} size={22} kind={isGroup ? 'group' : 'contact'} icon={isGroup ? IconUsersGroup : undefined} />
+                      </Box>
+                    }
+                    label={
+                      <Stack direction="row" spacing={0.6} alignItems="center">
+                        <span>{o.name}</span>
+                        {isGroup ? <GroupTag sx={{ height: 16, fontSize: 9.5, px: 0.5 }} /> : null}
+                      </Stack>
+                    }
+                    sx={{ borderRadius: 1.5, '& .MuiChip-avatar': { width: 22, height: 22 } }}
+                  />
+                );
+              })
+          }
+        : {})}
     />
   );
 }
@@ -1598,19 +1677,33 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
 
   const contactOptions = useMemo(
     () =>
-      contacts.map((c) => ({
-        value: c.id,
-        label: `${c.display_name || c.phone || c.id}${c.display_name && c.phone ? ` · ${c.phone}` : ''}`
-      })),
+      contacts.map((c) => {
+        const name = c.display_name || c.phone || c.id;
+        return {
+          value: c.id,
+          label: `${name}${c.display_name && c.phone ? ` · ${c.phone}` : ''}`,
+          name,
+          secondary: c.display_name && c.phone ? fmtPhoneBR(c.phone) : '',
+          photoPath: `/whatsapp/contacts/${c.id}/photo`,
+          kind: 'contact'
+        };
+      }),
     [contacts]
   );
   const groupOptions = useMemo(
     () =>
       groups.map((g) => {
         const s = (g.session_id && byId.get(g.session_id)) || g.session || null;
+        const count = g.participants_count || g.group_meta?.participants_count || 0;
+        const name = g.name || g.jid || g.chat_id;
+        const parts = [count ? plural(count, 'membro', 'membros') : null, many && s ? `via ${sessionLabel(s)}` : null].filter(Boolean);
         return {
           value: g.chat_id,
-          label: `${g.name || g.jid || g.chat_id}${g.participants_count || g.group_meta?.participants_count ? ` (${g.participants_count || g.group_meta?.participants_count})` : ''}${many && s ? ` · ${sessionLabel(s)}` : ''}`
+          label: `${name}${count ? ` (${count})` : ''}${many && s ? ` · ${sessionLabel(s)}` : ''}`,
+          name,
+          secondary: parts.join(' · '),
+          photoPath: `/whatsapp/chats/${g.chat_id}/photo`,
+          kind: 'group'
         };
       }),
     [groups, byId, many]
