@@ -50,6 +50,27 @@ type CertificateProvisionResult = {
   details?: string;
 };
 
+// `location` do HTML do webchat público: proxia /webchat/<slug> para o back, que devolve o
+// index.html da SPA com as metas da prévia do link (Open Graph) daquele webchat. `^~` para a
+// regex dos estáticos não interceptar; assets da SPA ficam em /assets/, fora deste prefixo.
+const WEBCHAT_PAGE_LOCATION = (backendInternalUrl: string) => `    # HTML do webchat com as metas de prévia (WhatsApp/Telegram) — resolvido pelo back por Host + slug.
+    location ^~ /webchat/ {
+        proxy_pass ${backendInternalUrl}/public/webchat-page/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_redirect off;
+    }
+`;
+
+// Acrescenta os locations que faltam num vhost existente (idempotente). Insere antes de cada
+// `location / {` (há um por server block: o 443 do certbot e, antes do certbot, o 80).
+export function patchVhostLocations(content: string, backendInternalUrl: string): string {
+  if (/location\s+\^~\s+\/webchat\//.test(content)) return content;
+  return content.replace(/^([ \t]*)location \/ \{/gm, (m) => `${WEBCHAT_PAGE_LOCATION(backendInternalUrl)}${m}`);
+}
+
 @Injectable()
 export class WebchatDomainsService {
   private readonly logger = new Logger(WebchatDomainsService.name);
@@ -642,13 +663,23 @@ server {
         try_files $uri =404;
     }
 
+${WEBCHAT_PAGE_LOCATION(backendInternalUrl)}
     location / {
         try_files $uri $uri/ /index.html;
     }
 }
 `;
 
-    await writeFile(siteFilePath, config, { mode: 0o644 });
+    // Vhost que JÁ existe (certbot já acrescentou o bloco 443 "managed by Certbot"): nunca
+    // reescrever — só acrescentar o que falta (locations novos) em cada server block.
+    let existing: string | null = null;
+    try { existing = await readFile(siteFilePath, 'utf8'); } catch { existing = null; }
+    if (existing) {
+      const patched = patchVhostLocations(existing, backendInternalUrl);
+      if (patched !== existing) await writeFile(siteFilePath, patched, { mode: 0o644 });
+    } else {
+      await writeFile(siteFilePath, config, { mode: 0o644 });
+    }
 
     // Symlink idempotente
     try {

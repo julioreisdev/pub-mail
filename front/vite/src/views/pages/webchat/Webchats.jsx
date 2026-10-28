@@ -38,6 +38,7 @@ import { TuneRoundedIcon as TuneRoundedIcon } from 'ui-component/icons';
 import { DashboardCustomizeRoundedIcon as DashboardCustomizeRoundedIcon } from 'ui-component/icons';
 import { CampaignRoundedIcon as CampaignRoundedIcon } from 'ui-component/icons';
 import { IconEye } from '@tabler/icons-react';
+import WebchatSeoEditor, { DEFAULT_SEO, LinkPreviewCard, hasSeo, normalizeSeo } from './WebchatSeoEditor';
 
 import MainCard from 'ui-component/cards/MainCard';
 
@@ -521,6 +522,7 @@ function WebchatFormDialog({
   const [active, setActive] = useState(true);
   const [defaultCategory, setDefaultCategory] = useState('');
   const [headerAdsCode, setHeaderAdsCode] = useState('');
+  const [seo, setSeo] = useState(DEFAULT_SEO);
   const [footerAdsCode, setFooterAdsCode] = useState('');
 
   const [newAgentName, setNewAgentName] = useState('');
@@ -595,6 +597,7 @@ function WebchatFormDialog({
           ''
       )
     );
+    setSeo(normalizeSeo(initialData?.settings?.seo));
     setFooterAdsCode(
       String(
         initialData?.footer_scripts ||
@@ -706,7 +709,8 @@ function WebchatFormDialog({
       ...existingSettings,
       categoria_padrao: categoria || null,
       header_ads_code: headerCode || null,
-      footer_ads_code: footerCode || null
+      footer_ads_code: footerCode || null,
+      seo: normalizeSeo(seo)
     };
 
     const basePayload = {
@@ -954,6 +958,8 @@ function WebchatFormDialog({
                 placeholder={"<!-- Meta Pixel, GA4, Hotjar, etc -->\n<script>\n  // tracking code aqui\n</script>"}
                 helperText="HTML/scripts injetados no rodapé do webchat (antes de </body>). Ideal para pixels de conversão, GA4, Hotjar e demais ferramentas de tracking."
               />
+
+              <WebchatSeoEditor value={seo} onChange={setSeo} fallbackTitle={name.trim()} host={normalizedDomain} />
 
               <Stack direction="row" spacing={1} alignItems="center">
                 <Switch checked={active} onChange={(e) => setActive(e.target.checked)} color="secondary" />
@@ -2863,6 +2869,11 @@ export default function Webchats() {
                         <Typography variant="body2" color="text.secondary" noWrap title={chat.slug}>
                           Slug: {chat.slug}
                         </Typography>
+                        <Tooltip title={hasSeo(chat?.settings?.seo) ? 'Prévia do link configurada (lápis → Prévia do link)' : 'Sem prévia configurada: o link mostra só o nome do webchat. Configure no lápis → Prévia do link.'}>
+                          <Box sx={{ mt: 1, display: 'inline-flex', width: '100%', maxWidth: 420, opacity: hasSeo(chat?.settings?.seo) ? 1 : 0.65 }}>
+                            <LinkPreviewCard seo={chat?.settings?.seo} fallbackTitle={chat.name} host={normalizeHost(chat.domain)} compact />
+                          </Box>
+                        </Tooltip>
                       </Box>
 
                       <Stack direction="row" spacing={0.5} alignItems="center">

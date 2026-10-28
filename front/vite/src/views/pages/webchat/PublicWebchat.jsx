@@ -3285,7 +3285,7 @@ export default function PublicWebchat() {
   useEffect(() => {
     if (typeof document === 'undefined' || !config) return;
 
-    document.title = safeText(config?.name) || 'Webchat';
+    document.title = safeText(toObject(toObject(config?.settings).seo).title) || safeText(config?.name) || 'Webchat';
 
     const iconHref = resolveWebchatPageIcon(config);
     if (!iconHref) return;

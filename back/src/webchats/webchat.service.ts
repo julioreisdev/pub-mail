@@ -2118,6 +2118,22 @@ export class WebchatsService {
 
   // Conta da org sem acesso ativo (assinatura vencida/pendente/bloqueada) → webchat
   // público fica indisponível (D4: "vencido = tudo para"). 503 com mensagem amigável.
+  /**
+   * Metas da prévia do link (Open Graph) do webchat: `settings.seo {title, description, image,
+   * image_w, image_h}` com fallback no nome do webchat. null = webchat não resolvido/inativo.
+   */
+  async getPublicPageMeta(slug: string, domainHint?: string) {
+    const webchat = await this.resolvePublicWebchatRaw(slug, domainHint);
+    if (!webchat || webchat.active === false) return null;
+    const settings = (webchat.settings && typeof webchat.settings === 'object' ? webchat.settings : {}) as any;
+    const seo = settings.seo && typeof settings.seo === 'object' ? settings.seo : {};
+    const title = String(seo.title || webchat.name || 'Webchat').trim().slice(0, 120);
+    const description = String(seo.description || '').trim().slice(0, 300);
+    const image = /^https:\/\//i.test(String(seo.image || '')) ? String(seo.image).slice(0, 600) : '';
+    const dim = (v: any) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n) : null; };
+    return { title, description, image, image_w: dim(seo.image_w), image_h: dim(seo.image_h) };
+  }
+
   async resolvePublicWebchat(slug: string, domainHint?: string) {
     const webchat = await this.resolvePublicWebchatRaw(slug, domainHint);
     if (!(await this.access.isOrgActive(webchat.organization_id))) {
