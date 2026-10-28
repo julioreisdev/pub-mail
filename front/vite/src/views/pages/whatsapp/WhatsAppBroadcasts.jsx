@@ -907,6 +907,7 @@ const EMPTY = {
     exclude_tags: [],
     groups: [],
     groups_mode: 'group',
+    save_contacts: true,
     source: 'all',
     source_session_ids: [],
     include_unlinked: true,
@@ -1986,6 +1987,32 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
             </Box>
           ) : null}
           <EstimateBox estimate={estimate} loading={estimating} many={many} targets={form.targets} />
+        </Box>
+
+        {/* ---------- salvar contato antes de enviar ---------- */}
+        <Box sx={{ p: 1.25, borderRadius: 2.5, border: '1px solid', borderColor: 'divider' }}>
+          <FormControlLabel
+            sx={{ m: 0, alignItems: 'flex-start' }}
+            control={
+              <Checkbox
+                size="small"
+                checked={form.targets.save_contacts !== false}
+                onChange={(e) => setT({ save_contacts: e.target.checked })}
+                sx={{ mt: -0.5, color: WA_DARK, '&.Mui-checked': { color: WA_DARK } }}
+              />
+            }
+            label={
+              <Box>
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  Salvar o número nos contatos do WhatsApp antes de enviar
+                </Typography>
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                  Quem não está na agenda do número que envia é salvo nos contatos do WhatsApp com o primeiro nome (ou "Contato N" quando
+                  não há nome) — a conversa aparece com nome no celular em vez de "Usuário desconhecido". Quem já está na agenda não é tocado.
+                </Typography>
+              </Box>
+            }
+          />
         </Box>
 
         {/* ---------- horários ---------- */}

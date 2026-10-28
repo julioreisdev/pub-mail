@@ -198,6 +198,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       engagement: (['any', 'replied', 'never'].includes(t.engagement) ? t.engagement : 'any') as 'any' | 'replied' | 'never',
       // não repete para quem recebeu QUALQUER broadcast da org nas últimas N horas (null = desligado)
       cooldown_hours: cooldown >= 1 ? Math.min(720, cooldown) : null,
+      // salva o número nos contatos do WhatsApp antes do 1º envio (nome/pushName ou "Contato N") — ligado por padrão
+      save_contacts: t.save_contacts !== false,
     };
   }
   private normSessionIds(raw: any): string[] {
@@ -969,6 +971,36 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     await this.reconcile(runId);
   }
 
+  // jids já salvos neste processo (evita repetir o PUT a cada disparo; após reinício salva de novo — o PUT é idempotente)
+  private savedOnPhone = new Set<string>();
+
+  /**
+   * Salva o destinatário nos contatos do WhatsApp do número que envia ("Contatos salvos no WhatsApp",
+   * não na agenda do aparelho) para a conversa aparecer com nome em vez de "Usuário desconhecido".
+   * Nome = primeiro nome do contato/pushName; sem nome, "Contato N" (N = contador do número).
+   * Best-effort: nunca derruba o envio. Quem já está na agenda do número (is_my_contact) não é tocado.
+   */
+  private async saveContactOnPhone(row: SessionRow, jid: string, contact: any | null) {
+    if (!row?.openwa_session_id || !/@c\.us$/.test(jid)) return;
+    const key = `${row.id}|${jid}`;
+    if (this.savedOnPhone.has(key)) return;
+    if (contact?.is_my_contact) { this.savedOnPhone.add(key); return; }
+    const known = firstNameOf(contact?.name || contact?.push_name || '');
+    let first = known;
+    if (!first) {
+      // contador por número, guardado em settings.saved_contacts_seq (o worker é 1 por número → sem corrida)
+      const fresh = await this.prisma.whatsapp_sessions.findUnique({ where: { id: row.id }, select: { settings: true } });
+      const st: any = fresh?.settings && typeof fresh.settings === 'object' ? fresh.settings : {};
+      const seq = Math.max(0, Number(st.saved_contacts_seq) || 0) + 1;
+      await this.prisma.whatsapp_sessions.update({ where: { id: row.id }, data: { settings: { ...st, saved_contacts_seq: seq } } });
+      first = `Contato ${seq}`;
+    }
+    const last = known ? String(contact?.name || contact?.push_name || '').trim().split(/\s+/).slice(1).join(' ').slice(0, 60) : '';
+    await this.openwa.upsertContact(row.openwa_session_id, jid, first.slice(0, 60), last || undefined);
+    this.savedOnPhone.add(key);
+    this.logger.log(`contato salvo no WhatsApp de ${sessionLabel(row)}: ${jid} → ${[first, last].filter(Boolean).join(' ')}`);
+  }
+
   /** Motivo para PULAR este destino (null = pode enviar): contato bloqueou o número, descadastrado, número sem WhatsApp. */
   private async checkTarget(row: SessionRow, send: any, cache: Map<string, any>): Promise<string | null> {
     if (send.target_kind !== 'contact' || !send.contact_id) return null;
@@ -1131,6 +1163,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (msgs.some((m) => /\{\{\s*cliente\./i.test(String(m.text || '')))) Object.assign(vars, await this.crm.varsForChat(orgId, send.chat_id, row.id).catch(() => ({})));
     const extra = { broadcast: true, broadcast_id: bc.id, run_id: run.id };
     let idx = send.msg_index || 0;
+    if (idx === 0 && send.target_kind === 'contact' && this.normTargets(bc.targets).save_contacts) await this.saveContactOnPhone(row, send.chat_id, contact).catch(() => undefined);
     try {
       for (; idx < msgs.length; idx++) {
         const m = msgs[idx];

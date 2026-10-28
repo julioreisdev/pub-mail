@@ -175,6 +175,8 @@ export class OpenWaClient {
   contactPhone(sid: string, contactId: string) { return this.request<{ contactId: string; phone: string | null }>('GET', `${this.s(sid)}/contacts/${enc(contactId)}/phone`); }
   profilePicture(sid: string, contactId: string) { return this.request<{ url: string | null }>('GET', `${this.s(sid)}/contacts/${enc(contactId)}/profile-picture`); }
   profilePictures(sid: string, ids: string[]) { return this.request<{ pictures: Record<string, string | null> }>('GET', `${this.s(sid)}/contacts/profile-pictures?ids=${enc(ids.join(','))}`); }
+  /** Salva/edita o contato nos contatos do WhatsApp da conta (Baileys addOrEditContact; aparece com nome no celular em vez de "Usuário desconhecido"). */
+  upsertContact(sid: string, contactId: string, firstName: string, lastName?: string) { return this.request<any>('PUT', `${this.s(sid)}/contacts/${enc(contactId)}`, { firstName, ...(lastName ? { lastName } : {}) }, { timeoutMs: 25_000 }); }
   blockContact(sid: string, contactId: string, block: boolean) { return this.request(block ? 'POST' : 'DELETE', `${this.s(sid)}/contacts/${enc(contactId)}/block`); }
 
   // ---- grupos
