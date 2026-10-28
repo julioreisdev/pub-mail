@@ -724,7 +724,16 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     if (q.status === 'done') where.status = 'done';
     if (q.status === 'clean') { where.status = 'done'; where.failed = 0; where.blocked = 0; }
     if (q.status === 'errors') where.OR = [{ failed: { gt: 0 } }, { blocked: { gt: 0 } }];
-    const [total, rows] = await Promise.all([this.prisma.whatsapp_broadcast_runs.count({ where }), this.prisma.whatsapp_broadcast_runs.findMany({ where, orderBy: { run_at: 'desc' }, skip: (page - 1) * size, take: size })]);
+    const [total, found] = await Promise.all([this.prisma.whatsapp_broadcast_runs.count({ where }), this.prisma.whatsapp_broadcast_runs.findMany({ where, orderBy: { run_at: 'desc' }, skip: (page - 1) * size, take: size })]);
+    // run em andamento: os contadores da linha só são gravados a cada 25 envios e no fim → recalcula
+    // agora a partir da fila (`reconcile`) para a tela acompanhar em tempo real
+    let rows = found;
+    const live = found.filter((r) => r.status === 'running' || r.status === 'paused');
+    if (live.length) {
+      await Promise.all(live.map((r) => this.reconcile(r.id).catch(() => undefined)));
+      const fresh = await this.prisma.whatsapp_broadcast_runs.findMany({ where: { id: { in: live.map((r) => r.id) } } });
+      rows = found.map((r) => fresh.find((f) => f.id === r.id) || r);
+    }
     const smap = await this.presenter.sessionMap(orgId);
     const items: any[] = [];
     for (const r of rows) {

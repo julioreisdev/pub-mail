@@ -2388,25 +2388,45 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
     setPage(1);
   }, [status, sess, run]);
 
-  useEffect(() => {
-    if (!open || !broadcast || !run) return;
-    setLoading(true);
-    get(`/whatsapp/broadcasts/${broadcast.id}/runs/${run.id}/sends`, {
-      params: { page, page_size: 25, ...(status !== 'all' ? { status } : {}), ...(sess ? { session_id: sess } : {}) }
-    })
-      .then((d) => setData({ items: asList(d), total: d?.total ?? 0, page: d?.page ?? page, pages: d?.pages ?? 1 }))
-      .catch((e) => {
-        toast.error(errMsg(e, 'Falha ao carregar os envios.'));
-        setData({ items: [], total: 0, page: 1, pages: 1 });
+  const runId = run?.id;
+  const loadSends = useCallback(
+    (silent = false) => {
+      if (!open || !broadcast || !runId) return Promise.resolve();
+      if (!silent) setLoading(true);
+      return get(`/whatsapp/broadcasts/${broadcast.id}/runs/${runId}/sends`, {
+        params: { page, page_size: 25, ...(status !== 'all' ? { status } : {}), ...(sess ? { session_id: sess } : {}) }
       })
-      .finally(() => setLoading(false));
-  }, [open, broadcast, run, status, sess, page]);
+        .then((d) => setData({ items: asList(d), total: d?.total ?? 0, page: d?.page ?? page, pages: d?.pages ?? 1 }))
+        .catch((e) => {
+          if (!silent) {
+            toast.error(errMsg(e, 'Falha ao carregar os envios.'));
+            setData({ items: [], total: 0, page: 1, pages: 1 });
+          }
+        })
+        .finally(() => {
+          if (!silent) setLoading(false);
+        });
+    },
+    [open, broadcast, runId, status, sess, page]
+  );
+  useEffect(() => {
+    loadSends(false);
+  }, [loadSends]);
+  // disparo em andamento: a lista acompanha sozinha (sem piscar skeleton)
+  const liveRun = run?.status === 'running';
+  useEffect(() => {
+    if (!open || !liveRun) return undefined;
+    const id = setInterval(() => loadSends(true), 4000);
+    return () => clearInterval(id);
+  }, [open, liveRun, loadSends]);
 
   return (
     <Drawer
       anchor="right"
       open={open}
       onClose={onClose}
+      // abre por cima do modal de histórico (Dialog = zIndex.modal; a gaveta padrão ficaria atrás dele)
+      sx={{ zIndex: (t) => t.zIndex.modal + 5 }}
       slotProps={{ paper: { sx: { width: { xs: '100%', sm: 460 }, bgcolor: 'background.default' } } }}
     >
       <Box
@@ -2420,11 +2440,19 @@ function SendsDrawer({ broadcast, run, onClose, sessions = [], byId }) {
             </Typography>
             <Typography variant="caption" sx={{ color: 'text.secondary' }}>
               {run ? fmtDateBRT(run.run_at) : ''} · {data.total} {data.total === 1 ? 'destino' : 'destinos'}
+              {liveRun ? ' · atualizando a cada 4 s' : ''}
             </Typography>
           </Box>
-          <IconButton size="small" onClick={onClose}>
-            <IconX size={18} />
-          </IconButton>
+          <Tooltip title="Atualizar">
+            <IconButton size="small" onClick={() => loadSends(false)}>
+              <IconRefresh size={18} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Fechar os envios (o histórico continua aberto)">
+            <IconButton size="small" onClick={onClose}>
+              <IconX size={18} />
+            </IconButton>
+          </Tooltip>
         </Stack>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1.5 }}>
           <FormControl size="small" fullWidth>
@@ -2552,9 +2580,9 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
     setPage(1);
   }, [status, period, open]);
 
-  const load = useCallback(() => {
+  const load = useCallback((silent = false) => {
     if (!open || !broadcast) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     const params = { page, page_size: 8, status };
     if (period !== 'all') {
       const d = new Date();
@@ -2565,21 +2593,28 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
     }
     get(`/whatsapp/broadcasts/${broadcast.id}/runs`, { params })
       .then((d) => setData({ items: asList(d), total: d?.total ?? 0, page: d?.page ?? page, pages: d?.pages ?? 1 }))
-      .catch(() => setData({ items: [], total: 0, page: 1, pages: 1 }))
-      .finally(() => setLoading(false));
+      .catch(() => { if (!silent) setData({ items: [], total: 0, page: 1, pages: 1 }); })
+      .finally(() => { if (!silent) setLoading(false); });
   }, [open, broadcast, status, period, page, refreshTick]);
 
   useEffect(() => {
-    load();
+    load(false);
   }, [load]);
 
-  // enquanto há run em andamento, atualiza sozinho
+  // enquanto há run em andamento, atualiza sozinho (sem piscar o skeleton); o back
+  // recalcula os contadores da run em andamento a cada leitura
   const running = data.items.some((r) => r.status === 'running');
   useEffect(() => {
     if (!open || !running) return undefined;
-    const id = setInterval(load, 5000);
+    const id = setInterval(() => load(true), 4000);
     return () => clearInterval(id);
   }, [open, running, load]);
+  // a gaveta de envios recebe sempre a versão mais recente da run (status/contadores)
+  const sendsRun = useMemo(() => {
+    if (!sendsFor) return null;
+    const fresh = data.items.find((r) => r.id === sendsFor.id);
+    return fresh ? { ...fresh, _session: sendsFor._session } : sendsFor;
+  }, [sendsFor, data.items]);
 
   return (
     <CrmModal
@@ -2616,7 +2651,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
           </Select>
         </FormControl>
         <Tooltip title="Atualizar">
-          <IconButton size="small" onClick={load}>
+          <IconButton size="small" onClick={() => load(false)}>
             <IconRefresh size={17} />
           </IconButton>
         </Tooltip>
@@ -2752,7 +2787,7 @@ function RunsModal({ broadcast, open, onClose, sessions = [], byId }) {
         </Stack>
       )}
 
-      <SendsDrawer broadcast={broadcast} run={sendsFor} onClose={() => setSendsFor(null)} sessions={sessions} byId={byId} />
+      <SendsDrawer broadcast={broadcast} run={sendsRun} onClose={() => setSendsFor(null)} sessions={sessions} byId={byId} />
     </CrmModal>
   );
 }
