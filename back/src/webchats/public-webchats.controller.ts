@@ -41,11 +41,11 @@ export class PublicWebchatsController {
     @Req() req: any,
   ) {
     const domainHint = this.resolveDomainHint(req, domainQuery);
-    return this.webchatsService.getPublicSessionState(
-      slug,
-      domainHint,
-      sessionId,
-    );
+    return this.webchatsService.getPublicSessionState(slug, domainHint, sessionId, {
+      pageUrl: typeof req?.query?.page_url === 'string' ? req.query.page_url : null,
+      referrer: typeof req?.headers?.referer === 'string' ? req.headers.referer : null,
+      userAgent: typeof req?.headers?.['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+    });
   }
 
   // A-13: 20 captações/min por IP.

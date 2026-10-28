@@ -3159,6 +3159,8 @@ export default function PublicWebchat() {
           params: {
             domain,
             session_id: sessionId,
+            // visita (contagem na lista de webchats): página de onde o chat foi aberto
+            page_url: typeof window !== 'undefined' ? String(window.location.href).slice(0, 500) : undefined,
           },
         });
         const normalizedSession = normalizeSessionStateResponse(sessionRaw);

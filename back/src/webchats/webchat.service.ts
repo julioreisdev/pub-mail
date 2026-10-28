@@ -41,6 +41,13 @@ const AD_EVENT_NAMES = [
   'error',
 ] as const;
 
+export type VisitContext = { pageUrl?: string | null; referrer?: string | null; userAgent?: string | null };
+
+// Dia em Brasília no formato YYYY-MM-DD (as visitas e os filtros "Hoje/Ontem/…" usam este calendário).
+function brtDayString(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
 @Injectable()
 export class WebchatsService {
   private readonly logger = new Logger(WebchatsService.name);
@@ -568,10 +575,55 @@ export class WebchatsService {
     };
   }
 
+  // ===== Visitas =====
+  // Uma linha por (webchat, sessão, dia em Brasília); `hits` conta reaberturas no mesmo dia.
+  async recordVisit(webchat: { id: string; organization_id: string }, sessionId: string, ctx?: VisitContext) {
+    try {
+      const now = new Date();
+      const day = new Date(`${brtDayString(now)}T00:00:00.000Z`);
+      const pageUrl = ctx?.pageUrl ? String(ctx.pageUrl).slice(0, 500) : null;
+      const referrer = ctx?.referrer ? String(ctx.referrer).slice(0, 500) : null;
+      const userAgent = ctx?.userAgent ? String(ctx.userAgent).slice(0, 255) : null;
+      await this.prisma.webchat_visits.upsert({
+        where: { webchat_id_session_id_day: { webchat_id: webchat.id, session_id: sessionId, day } },
+        create: { organization_id: webchat.organization_id, webchat_id: webchat.id, session_id: sessionId, day, first_at: now, last_at: now, hits: 1, page_url: pageUrl, referrer, user_agent: userAgent },
+        update: { last_at: now, hits: { increment: 1 }, ...(pageUrl ? { page_url: pageUrl } : {}) },
+      });
+    } catch (e: any) {
+      this.logger.warn(`recordVisit ${webchat.id}: ${e?.message || e}`);
+    }
+  }
+
+  /**
+   * Visitantes únicos por webchat no período (dias em Brasília):
+   * today | yesterday | 7d (hoje + 6 dias) | 30d (hoje + 29 dias).
+   */
+  async visitsSummary(organizationId: string, rangeRaw: string) {
+    const range = (['today', 'yesterday', '7d', '30d'] as const).find((r) => r === rangeRaw) || 'today';
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const today = brtDayString(new Date(now));
+    let from = today;
+    let to = today;
+    if (range === 'yesterday') { from = to = brtDayString(new Date(now - dayMs)); }
+    if (range === '7d') from = brtDayString(new Date(now - 6 * dayMs));
+    if (range === '30d') from = brtDayString(new Date(now - 29 * dayMs));
+    const rows = await this.prisma.$queryRaw<{ webchat_id: string; n: bigint | number }[]>`
+      SELECT webchat_id, COUNT(DISTINCT session_id) AS n
+      FROM webchat_visits
+      WHERE organization_id = ${organizationId} AND day BETWEEN ${from} AND ${to}
+      GROUP BY webchat_id`;
+    const counts: Record<string, number> = {};
+    let total = 0;
+    for (const r of rows) { const n = Number(r.n) || 0; counts[r.webchat_id] = n; total += n; }
+    return { range, from, to, total, counts };
+  }
+
   async getPublicSessionState(
     slug: string,
     domainHint: string | undefined,
     sessionIdRaw: string | undefined,
+    visitCtx?: VisitContext,
   ) {
     const webchat = await this.resolvePublicWebchat(slug, domainHint);
     const normalizedSessionId = this.normalizeSessionId(sessionIdRaw);
@@ -579,6 +631,8 @@ export class WebchatsService {
     if (!normalizedSessionId) {
       throw new BadRequestException('session_id é obrigatório.');
     }
+    // Visita = pessoa que abriu a página do webchat (o front chama esta rota a cada abertura).
+    void this.recordVisit(webchat, normalizedSessionId, visitCtx);
 
     const persistedSessionState = await this.getWebchatSessionState(
       webchat.organization_id,

@@ -283,6 +283,7 @@ export class AdminService {
           await tx.webchat_ads.deleteMany(where);
           await tx.webchat_leads.deleteMany(where);
           await tx.webchat_sessions.deleteMany(where);
+          await tx.webchat_visits.deleteMany(where);
           await tx.webchat_domains.deleteMany(where);
           await tx.webchat_payments.deleteMany(where); // cobranças PIX do funil
           await tx.webchat_assets.deleteMany(where); // arquivos de produto (metadados; disco fica)

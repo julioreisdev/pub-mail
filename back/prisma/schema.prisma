@@ -392,6 +392,7 @@ model webchats {
   webchat_ad_events webchat_ad_events[]
   webchat_leads     webchat_leads[]
   webchat_sessions  webchat_sessions[]
+  webchat_visits    webchat_visits[]
 
   @@unique([domain, slug], map: "uk_webchats_domain_slug")
   @@index([split_id], map: "idx_webchats_split")
@@ -581,6 +582,25 @@ model webchat_sessions {
   @@unique([webchat_id, session_id], map: "uk_webchat_sessions_webchat_session")
   @@index([organization_id, webchat_id], map: "idx_webchat_sessions_org_webchat")
   @@index([organization_id, session_id], map: "idx_webchat_sessions_org_session")
+}
+
+model webchat_visits {
+  id              String   @id @default(dbgenerated("(uuid())")) @db.Char(36)
+  organization_id String   @db.Char(36)
+  webchat_id      String   @db.Char(36)
+  session_id      String   @db.VarChar(100)
+  day             DateTime @db.Date
+  first_at        DateTime @default(now()) @db.DateTime(3)
+  last_at         DateTime @default(now()) @db.DateTime(3)
+  hits            Int      @default(1)
+  page_url        String?  @db.VarChar(500)
+  referrer        String?  @db.VarChar(500)
+  user_agent      String?  @db.VarChar(255)
+  webchats        webchats @relation(fields: [webchat_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_webchat_visits_webchat")
+
+  @@unique([webchat_id, session_id, day], map: "uk_webchat_visits_session_day")
+  @@index([organization_id, day], map: "idx_webchat_visits_org_day")
+  @@index([webchat_id, day], map: "idx_webchat_visits_webchat_day")
 }
 
 model webchat_domains {

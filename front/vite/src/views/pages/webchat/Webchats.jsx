@@ -23,6 +23,8 @@ import {
   Tab,
   Tabs,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography
 } from '@mui/material';
@@ -35,8 +37,19 @@ import { RefreshRoundedIcon as RefreshRoundedIcon } from 'ui-component/icons';
 import { TuneRoundedIcon as TuneRoundedIcon } from 'ui-component/icons';
 import { DashboardCustomizeRoundedIcon as DashboardCustomizeRoundedIcon } from 'ui-component/icons';
 import { CampaignRoundedIcon as CampaignRoundedIcon } from 'ui-component/icons';
+import { IconEye } from '@tabler/icons-react';
 
 import MainCard from 'ui-component/cards/MainCard';
+
+// Filtro de visitas da lista (botões pequenos no cabeçalho). Valores = `range` da API.
+const VISIT_RANGES = [
+  { value: 'today', label: 'Hoje' },
+  { value: 'yesterday', label: 'Ontem' },
+  { value: '7d', label: '7 dias' },
+  { value: '30d', label: 'Mês' }
+];
+const VISITS_RANGE_KEY = 'pm-webchat-visits-range';
+const VISIT_RANGE_LABEL = Object.fromEntries(VISIT_RANGES.map((r) => [r.value, r.label]));
 import useWebchats from '../../../hooks/useWebchats';
 import useAgentes from '../../../hooks/useAgentes';
 import useEmailProjects from '../../../hooks/useEmailProjects';
@@ -1719,6 +1732,43 @@ function WebchatAdsDialog({
 export default function Webchats() {
   const navigate = useNavigate();
   const { webchats, isLoading, error, mutate, refresh } = useWebchats();
+
+  // ===== Visitas (pessoas que abriram a página do webchat) =====
+  // Período lembrado no navegador; os dias são contados em Brasília no servidor.
+  const [visitRange, setVisitRange] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(VISITS_RANGE_KEY);
+      return VISIT_RANGES.some((r) => r.value === saved) ? saved : 'today';
+    } catch {
+      return 'today';
+    }
+  });
+  const [visits, setVisits] = useState({ counts: {}, total: 0, loading: true });
+  const loadVisits = async (range) => {
+    setVisits((prev) => ({ ...prev, loading: true }));
+    try {
+      const res = await get('/webchats/visits', { params: { range } });
+      setVisits({ counts: res?.counts || {}, total: Number(res?.total) || 0, loading: false });
+    } catch {
+      setVisits((prev) => ({ ...prev, loading: false }));
+    }
+  };
+  useEffect(() => {
+    loadVisits(visitRange);
+  }, [visitRange]);
+  const handleVisitRange = (_e, next) => {
+    if (!next) return;
+    setVisitRange(next);
+    try {
+      window.localStorage.setItem(VISITS_RANGE_KEY, next);
+    } catch {
+      /* localStorage bloqueado */
+    }
+  };
+  const handleRefreshAll = () => {
+    refresh();
+    loadVisits(visitRange);
+  };
   const { agentes, isLoading: agentesLoading, mutate: mutateAgentes } = useAgentes();
   const { emailProjects } = useEmailProjects();
   const {
@@ -2634,14 +2684,34 @@ export default function Webchats() {
             <Typography variant="h4">{activeSplit ? activeSplit.name : 'Webchats'}</Typography>
             <Typography variant="body2" color="text.secondary">
               {filteredChats.length} no total
+              {' · '}
+              {visits.loading ? '…' : filteredChats.reduce((acc, c) => acc + (visits.counts[c.id] || 0), 0).toLocaleString('pt-BR')}{' '}
+              {visitRange === 'today' ? 'visitas hoje' : visitRange === 'yesterday' ? 'visitas ontem' : visitRange === '7d' ? 'visitas em 7 dias' : 'visitas no mês'}
             </Typography>
           </Box>
 
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Tooltip title="Período das visitas (dias contados em Brasília). Mês = últimos 30 dias.">
+              <ToggleButtonGroup
+                size="small"
+                exclusive
+                value={visitRange}
+                onChange={handleVisitRange}
+                sx={{
+                  '& .MuiToggleButton-root': { px: 1.25, py: 0.4, fontSize: 12, fontWeight: 700, textTransform: 'none', borderRadius: 2 }
+                }}
+              >
+                {VISIT_RANGES.map((r) => (
+                  <ToggleButton key={r.value} value={r.value}>
+                    {r.label}
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Tooltip>
             <Tooltip title="Atualizar">
               <span>
                 <IconButton
-                  onClick={refresh}
+                  onClick={handleRefreshAll}
                   disabled={isLoading || actionLoading}
                   size="small"
                   sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}
@@ -2776,6 +2846,16 @@ export default function Webchats() {
                           ) : (
                             <Chip size="small" variant="outlined" label="Somente webchat_leads" sx={{ borderRadius: 2, fontWeight: 800 }} />
                           )}
+                          <Tooltip title={`Pessoas que abriram este webchat · ${VISIT_RANGE_LABEL[visitRange]}`}>
+                            <Chip
+                              size="small"
+                              icon={<IconEye size={14} />}
+                              label={visits.loading ? '…' : `${(visits.counts[chat.id] || 0).toLocaleString('pt-BR')} visita${(visits.counts[chat.id] || 0) === 1 ? '' : 's'}`}
+                              color={(visits.counts[chat.id] || 0) > 0 ? 'primary' : 'default'}
+                              variant="outlined"
+                              sx={{ borderRadius: 2, fontWeight: 800, '& .MuiChip-icon': { ml: 0.75 } }}
+                            />
+                          </Tooltip>
                         </Stack>
                         <Typography variant="body2" color="text.secondary" noWrap title={chat.domain}>
                           Domínio: {chat.domain}

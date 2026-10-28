@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -46,6 +47,12 @@ export class WebchatsController {
   @ApiOkResponse({ description: 'Lista de webchats retornada com sucesso' })
   list(@Req() req: any) {
     return this.webchatsService.list(req.user.organizationId);
+  }
+
+  @Get('visits')
+  @ApiOperation({ summary: 'Visitantes únicos por webchat no período (today | yesterday | 7d | 30d)' })
+  visits(@Req() req: any, @Query('range') range?: string) {
+    return this.webchatsService.visitsSummary(req.user.organizationId, String(range || 'today'));
   }
 
   @Get(':id')
