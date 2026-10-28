@@ -1790,6 +1790,10 @@ export default function WebchatBuilder() {
                         Aparecerão uma de cada vez no chat público, com indicador de digitação entre elas.
                         A última mensagem recebe os botões.
                       </Typography>
+                      <Alert severity="info" icon={false} sx={{ py: 0.25, fontSize: 12 }}>
+                        Variável da URL: escreva <b>{'{{q_nome}}'}</b> e abra o chat com <b>?q_nome=Ana</b> → aparece “Ana”.
+                        Vale para qualquer parâmetro que comece com <b>q_</b>, em mensagens e textos de botão.
+                      </Alert>
                       {getWelcomeList(personalizacao).map((welcomeText, index, arr) => (
                         <Box
                           key={`welcome-${index}`}

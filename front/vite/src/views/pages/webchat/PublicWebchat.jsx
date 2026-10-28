@@ -721,6 +721,45 @@ function resolvePublicDomain() {
   return safeText(window.location.hostname).toLowerCase();
 }
 
+// ===== Variáveis vindas da URL =====
+// `?q_nome=Ana` vira {{q_nome}} em qualquer texto do chat (boas-vindas, funil, legendas,
+// botões). Só parâmetros com prefixo `q_` entram (não vaza `domain`, `nsr`…). Ficam
+// guardados por webchat no navegador, então sobrevivem a reload/volta sem os parâmetros;
+// um parâmetro novo na URL sobrescreve o guardado.
+const URL_VAR_RE = /^q_[a-z0-9_]{1,40}$/i;
+function readUrlVariables(domain, slug) {
+  if (typeof window === 'undefined') return {};
+  const key = `webchat_urlvars:${domain}:${slug}`;
+  let stored = {};
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object') stored = parsed;
+  } catch {
+    stored = {};
+  }
+  const fromUrl = {};
+  try {
+    const params = new URLSearchParams(window.location.search);
+    params.forEach((value, name) => {
+      if (!URL_VAR_RE.test(name)) return;
+      const clean = String(value ?? '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 200);
+      if (clean) fromUrl[name.toLowerCase()] = clean;
+    });
+  } catch {
+    /* URL inválida */
+  }
+  const merged = { ...stored, ...fromUrl };
+  if (Object.keys(fromUrl).length > 0) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(merged));
+    } catch {
+      /* localStorage bloqueado */
+    }
+  }
+  return merged;
+}
+
 function resolveWebchatPageIcon(config) {
   const personalizacao = toObject(config?.personalizacao);
   const theme = toObject(personalizacao.theme);
@@ -1813,6 +1852,10 @@ export default function PublicWebchat() {
   const { slug = '' } = useParams();
   const domain = useMemo(() => resolvePublicDomain(), []);
   const sessionId = useMemo(() => getOrCreateLocalStorage(`webchat_session:${domain}:${slug}`, 'session'), [domain, slug]);
+  // {{q_*}} da URL — entram nas variáveis do funil e nos textos de boas-vindas/botões.
+  const urlVars = useMemo(() => readUrlVariables(domain, slug), [domain, slug]);
+  const urlVarsRef = useRef(urlVars);
+  urlVarsRef.current = urlVars;
   const originalTitleRef = useRef('');
   const messageInputRef = useRef(null);
   const originalFaviconRef = useRef({
@@ -1888,7 +1931,7 @@ export default function PublicWebchat() {
   //   pendingOptions: opções a renderizar quando playSequence terminar
   const [funnelState, setFunnelState] = useState({
     currentSequenceId: null,
-    variables: {},
+    variables: { ...urlVars },
     awaitingInput: false,
     awaitingInputVariable: '',
     awaitingInputNextSeq: '',
@@ -2947,7 +2990,7 @@ export default function PublicWebchat() {
                 id: createId('msg'),
                 type: 'bot',
                 text,
-                html: formatAssistantHtml(text)
+                html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current)
               }
             ];
           });
@@ -3218,7 +3261,7 @@ export default function PublicWebchat() {
             const next = {
               ...existing,
               text,
-              html: formatAssistantHtml(text),
+              html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
             };
             if (isLastWelcome) {
               // Última welcome: garante que todas as QR configuradas estão lá
@@ -3234,7 +3277,7 @@ export default function PublicWebchat() {
               id: createId('msg'),
               type: 'bot',
               text,
-              html: formatAssistantHtml(text),
+              html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
             };
             if (isLastWelcome && availableQuickReplies.length > 0) {
               fresh.quickReplies = availableQuickReplies;
@@ -3285,7 +3328,7 @@ export default function PublicWebchat() {
         setMessages([]);
         setFunnelState({
           currentSequenceId: null,
-          variables: {},
+          variables: { ...urlVarsRef.current },
           awaitingInput: false,
           awaitingInputVariable: '',
           awaitingInputNextSeq: '',
@@ -3328,7 +3371,7 @@ export default function PublicWebchat() {
                 id: createId('msg'),
                 type: 'bot',
                 text,
-                html: formatAssistantHtml(text),
+                html: substituteVariables(formatAssistantHtml(text), urlVarsRef.current),
               };
               if (isLast && availableQuickReplies.length > 0) {
                 base.quickReplies = availableQuickReplies;
@@ -4550,7 +4593,7 @@ export default function PublicWebchat() {
                             : '0 4px 12px rgba(37, 99, 235, 0.18)',
                         transition: 'transform 0.12s ease, box-shadow 0.15s ease'
                       }}
-                      dangerouslySetInnerHTML={{ __html: reply.__html ? sanitizeRichText(reply.text) : quickReplyHtml(reply.text) }}
+                      dangerouslySetInnerHTML={{ __html: substituteVariables(reply.__html ? sanitizeRichText(reply.text) : quickReplyHtml(reply.text), urlVarsRef.current) }}
                     />
                     );
                   })}
