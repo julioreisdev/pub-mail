@@ -179,6 +179,7 @@ const audienceRulesOf = (b) => {
   if (b?.exclude_inactive_days) out.push(`responderam em ${b.exclude_inactive_days} d`);
   if ((t.groups || []).length && t.groups_mode === 'members') out.push('grupos: no privado dos membros');
   if ((t.groups || []).length && t.groups_mode === 'both') out.push('grupos: no grupo e no privado dos membros');
+  if ((t.groups || []).length && t.groups_mode !== 'group' && t.skip_admins) out.push('sem os admins dos grupos');
   return out;
 };
 
@@ -922,6 +923,7 @@ const EMPTY = {
     exclude_tags: [],
     groups: [],
     groups_mode: 'group',
+    skip_admins: false,
     save_contacts: true,
     source: 'all',
     source_session_ids: [],
@@ -1439,7 +1441,8 @@ function EstimateBox({ estimate, loading, many, targets }) {
     unlinkedOut ? `${plural(unlinkedOut, 'contato sem número de origem', 'contatos sem número de origem')} (caixa "Incluir contatos sem número de origem" desmarcada)` : null,
     f.tags ? `${plural(f.tags, 'contato', 'contatos')} pelas tags` : null,
     f.engagement ? `${plural(f.engagement, 'contato', 'contatos')} pelo histórico de resposta` : null,
-    f.cooldown ? `${plural(f.cooldown, 'contato', 'contatos')} receberam broadcast há pouco` : null
+    f.cooldown ? `${plural(f.cooldown, 'contato', 'contatos')} receberam broadcast há pouco` : null,
+    f.admins ? `${plural(f.admins, 'admin de grupo', 'admins de grupo')} (caixa "Não enviar para os admins" marcada)` : null
   ].filter(Boolean);
   return (
     <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2.5, border: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
@@ -1999,6 +2002,28 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                     />
                   }
                   label={<Typography variant="body2">Também postar a mensagem no grupo</Typography>}
+                />
+              ) : null}
+              {groupsMode !== 'group' ? (
+                <FormControlLabel
+                  sx={{ m: 0, mt: 0.25, ml: 3.5, alignItems: 'flex-start' }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={Boolean(form.targets.skip_admins)}
+                      onChange={(e) => setT({ skip_admins: e.target.checked })}
+                      sx={{ mt: -0.5, color: '#7c3aed', '&.Mui-checked': { color: '#7c3aed' } }}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2">Não enviar para os admins dos grupos</Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                        Todos os membros recebem, menos quem é administrador de algum dos grupos escolhidos (vale mesmo que a pessoa seja
+                        membro comum em outro grupo da lista). A estimativa mostra quantos ficaram de fora.
+                      </Typography>
+                    </Box>
+                  }
                 />
               ) : null}
             </Box>
