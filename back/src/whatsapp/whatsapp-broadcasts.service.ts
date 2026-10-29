@@ -1161,14 +1161,18 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
     const runIds = runs.map((r) => r.id);
     if (!runIds.length) return { days, runs: 0, sent: 0, contacts: 0, replied: 0, rate: 0, items: [], total: 0, page, pages: 1 };
     const base = { run_id: { in: runIds }, status: 'DONE', target_kind: 'contact' };
-    const [sent, repliedRows, distinct] = await Promise.all([
+    // "pessoa" = contato OU (número, conversa) quando o destino não tem contato cadastrado (membro de grupo):
+    // agrupar só por `contact_id` juntava todos os sem-contato num único "1" (47 pessoas viravam 6)
+    const personKey = (r: { contact_id: string | null; session_id: string | null; chat_id: string }) => r.contact_id || `${r.session_id}|${r.chat_id}`;
+    const [sent, repliedAll, allSent] = await Promise.all([
       this.prisma.whatsapp_broadcast_sends.count({ where: base }),
-      this.prisma.whatsapp_broadcast_sends.findMany({ where: { ...base, replied_at: { not: null } }, select: { contact_id: true, chat_id: true, session_id: true } }),
-      this.prisma.whatsapp_broadcast_sends.groupBy({ by: ['contact_id'], where: base }),
+      this.prisma.whatsapp_broadcast_sends.findMany({ where: { ...base, replied_at: { not: null } }, orderBy: { replied_at: 'desc' }, take: 5000 }),
+      this.prisma.whatsapp_broadcast_sends.findMany({ where: base, select: { contact_id: true, chat_id: true, session_id: true }, take: 100_000 }),
     ]);
-    const repliedKeys = new Set(repliedRows.map((r) => r.contact_id || `${r.session_id}|${r.chat_id}`));
-    const total = repliedKeys.size;
-    const rows = await this.prisma.whatsapp_broadcast_sends.findMany({ where: { ...base, replied_at: { not: null } }, orderBy: { replied_at: 'desc' }, distinct: ['contact_id'], skip: (page - 1) * size, take: size });
+    const seen = new Set<string>();
+    const uniqueReplied = repliedAll.filter((r) => { const k = personKey(r); if (seen.has(k)) return false; seen.add(k); return true; });
+    const total = uniqueReplied.length;
+    const rows = uniqueReplied.slice((page - 1) * size, page * size);
     const ids = rows.map((r) => r.contact_id).filter(Boolean) as string[];
     const contacts = ids.length ? await this.prisma.whatsapp_contacts.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, push_name: true, phone: true } }) : [];
     const cmap = new Map(contacts.map((c) => [c.id, c]));
@@ -1179,7 +1183,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       const chatUuid = r.session_id ? await this.presenter.chatUuid(orgId, r.session_id, r.chat_id).catch(() => null) : null;
       return { contact_id: r.contact_id, chat_id: chatUuid, jid: r.chat_id, name: c?.name || c?.push_name || (phoneFromJid(r.chat_id) ? `+${phoneFromJid(r.chat_id)}` : r.chat_id), phone: c?.phone || phoneFromJid(r.chat_id) || null, session: (r.session_id && smap.get(r.session_id)) || null, sent_at: r.sent_at, replied_at: r.replied_at, run_at: runAt.get(r.run_id) || null };
     }));
-    const contactsCount = distinct.length;
+    const contactsCount = new Set(allSent.map(personKey)).size;
     return { days, runs: runs.length, sent, contacts: contactsCount, replied: total, not_replied: Math.max(0, contactsCount - total), rate: sent ? Math.round((total / contactsCount) * 1000) / 10 : 0, items, total, page, pages: Math.max(1, Math.ceil(total / size)) };
   }
 

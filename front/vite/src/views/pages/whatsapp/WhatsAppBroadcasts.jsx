@@ -566,8 +566,18 @@ function WarmupRow({ session, warmup, many }) {
           />
         ) : null}
         {warmup?.cold_limit ? (
-          <Tooltip title="Contatos que nunca falaram com o número. Acima disso, o envio para frios fica aguardando o próximo dia.">
-            <Chip size="small" label={`Frios: até ${warmup.cold_limit}/dia`} variant="outlined" sx={{ fontWeight: 700, borderRadius: 1 }} />
+          <Tooltip title="Contatos que nunca falaram com o número (membros de grupo, números novos). Acima disso, o envio para frios fica aguardando o próximo dia — mesmo que o limite geral ainda tenha folga.">
+            <Chip
+              size="small"
+              label={
+                warmup.cold_today != null && paced
+                  ? `Frios hoje: ${warmup.cold_today.toLocaleString('pt-BR')} / ${warmup.cold_limit.toLocaleString('pt-BR')}`
+                  : `Frios: até ${warmup.cold_limit}/dia`
+              }
+              variant="outlined"
+              color={warmup.cold_today != null && paced && warmup.cold_today >= warmup.cold_limit ? 'error' : warmup.cold_today != null && paced && warmup.cold_today >= warmup.cold_limit * 0.8 ? 'warning' : 'default'}
+              sx={{ fontWeight: 700, borderRadius: 1 }}
+            />
           </Tooltip>
         ) : null}
         <Chip
@@ -1556,6 +1566,9 @@ function ChosenWarmup({ sessionIds, byId, warmupBySession, estimate, pacing }) {
               {ready && w?.pacing_enabled === false ? ' · sem limitador' : ''}
               {ready && remaining != null
                 ? ` · hoje ainda pode enviar ${remaining.toLocaleString('pt-BR')}${w?.sent_today != null ? ` (já enviou ${w.sent_today})` : ''}`
+                : ''}
+              {ready && w?.pacing_enabled !== false && w?.cold_remaining != null && w?.cold_limit
+                ? ` · frios (quem nunca falou com o número): ${w.cold_remaining.toLocaleString('pt-BR')} de ${w.cold_limit.toLocaleString('pt-BR')} ainda hoje`
                 : ''}
             </Typography>
             {ready && over ? (
