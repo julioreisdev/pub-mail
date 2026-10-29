@@ -42,7 +42,7 @@ export class WhatsAppPacingService {
     return { day, daily: WARMUP_DAILY[day - 1], cold: WARMUP_COLD[day - 1], warmed: false };
   }
 
-  // Enviadas hoje (BRT) pelo número e, dentre elas, "frias" = para chats individuais sem nenhuma mensagem recebida antes.
+  // Conversas individuais que receberam mensagem hoje (BRT) pelo número e, dentre elas, "frias" = sem nenhuma mensagem recebida antes.
   async sentToday(row: PacingRow) {
     const start = brtDayStart();
     const cached = this.todayCache.get(row.id);
@@ -57,14 +57,15 @@ export class WhatsAppPacingService {
       where: { organization_id: row.organization_id, session_id: row.id, direction: 'OUT', timestamp: { gte: start }, chat_id: { endsWith: '@c.us' } },
       select: { chat_id: true },
     });
-    const total = out.length;
-    if (!total) return { total: 0, cold: 0 };
+    if (!out.length) return { total: 0, cold: 0 };
+    // o aquecimento conta PESSOAS (conversas distintas), não mensagens: uma copy de 3 mensagens
+    // para o mesmo contato é 1 envio — contar mensagens estourava o teto de frios (100) com 34 pessoas
     const chats = [...new Set(out.map((m) => m.chat_id))];
+    const total = chats.length;
     // chats que já receberam algo (não são frios)
     const warmChats = await this.prisma.whatsapp_messages.groupBy({ by: ['chat_id'], where: { organization_id: row.organization_id, session_id: row.id, direction: 'IN', chat_id: { in: chats } } });
     const warm = new Set(warmChats.map((w) => w.chat_id));
-    const coldChats = new Set(chats.filter((c) => !warm.has(c)));
-    const cold = out.filter((m) => coldChats.has(m.chat_id)).length;
+    const cold = chats.filter((c) => !warm.has(c)).length;
     return { total, cold };
   }
 
