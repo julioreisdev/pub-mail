@@ -48,7 +48,7 @@ const WA_GREEN = '#25D366';
 const WA_DARK = '#128C7E';
 const WA_TEAL = '#075E54';
 const NAVY = '#0b1120';
-const CONTACT_PHONE = '558988136674';
+const CONTACT_PHONE = '5589981043496';
 const CONTACT_URL = `https://wa.me/${CONTACT_PHONE}?text=${encodeURIComponent('Olá! Quero saber mais sobre o módulo WhatsApp do Pub Mail.')}`;
 
 // ---------------------------------------------------------------- maquetes

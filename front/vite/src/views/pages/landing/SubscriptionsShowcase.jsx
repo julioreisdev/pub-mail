@@ -48,7 +48,7 @@ const BLUE = '#377EF0';
 const BLUE_DARK = '#1E5FD0';
 const NAVY = '#0b1120';
 const WA_GREEN = '#25D366';
-const CONTACT_URL = `https://wa.me/558988136674?text=${encodeURIComponent('Olá! Quero saber mais sobre as assinaturas pelo WhatsApp no Pub Mail.')}`;
+const CONTACT_URL = `https://wa.me/5589981043496?text=${encodeURIComponent('Olá! Quero saber mais sobre as assinaturas pelo WhatsApp no Pub Mail.')}`;
 
 const JOURNEY = [
   {

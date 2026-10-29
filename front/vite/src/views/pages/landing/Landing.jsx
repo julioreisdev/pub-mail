@@ -42,7 +42,7 @@ const PRIMARY_DARK = '#1e5dc8';
 const WA_GREEN = '#25D366';
 const WA_DARK = '#128C7E';
 const HEADER_H = 72;
-const CONTACT_PHONE = '558988136674';
+const CONTACT_PHONE = '5589981043496';
 const CONTACT_URL = `https://wa.me/${CONTACT_PHONE}?text=${encodeURIComponent('Olá! Quero saber mais sobre o Pub Mail.')}`;
 
 // Preço mensal em reais e desconto no anual (pedido do dono).
@@ -866,7 +866,7 @@ function Contact() {
             startIcon={<IconBrandWhatsapp size={22} />}
             sx={{ mt: 3, bgcolor: '#fff', color: WA_DARK, fontWeight: 800, borderRadius: 2.5, px: 3.5, '&:hover': { bgcolor: '#f1fdf6' } }}
           >
-            +55 (89) 8813-6674
+            +55 (89) 98104-3496
           </Button>
         </Box>
       </Container>

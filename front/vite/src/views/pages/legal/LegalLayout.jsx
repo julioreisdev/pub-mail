@@ -17,8 +17,8 @@ export const LEGAL = {
   company: 'Pub Mail',
   site: 'https://reveleonline.com',
   email: 'julioreisdev@gmail.com',
-  whatsapp: '+55 (89) 8813-6674',
-  whatsappUrl: 'https://wa.me/558988136674',
+  whatsapp: '+55 (89) 98104-3496',
+  whatsappUrl: 'https://wa.me/5589981043496',
   updated: '06 de outubro de 2026'
 };
 
