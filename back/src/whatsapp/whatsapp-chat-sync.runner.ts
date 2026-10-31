@@ -144,12 +144,16 @@ export class WhatsAppChatSyncRunner implements OnModuleInit, OnModuleDestroy {
     }
     const ours = await this.prisma.whatsapp_chats.findMany({
       where: { organization_id: orgId, session_id: sessionId, chat_id: { in: [...wanted.keys()] } },
-      select: { id: true, chat_id: true, unread_count: true, archived: true, pinned: true, muted: true, last_message_at: true, flag_overrides: true },
+      select: { id: true, chat_id: true, name: true, kind: true, unread_count: true, archived: true, pinned: true, muted: true, last_message_at: true, flag_overrides: true },
     });
     let changed = 0;
     for (const c of ours) {
       const w = wanted.get(c.chat_id)!;
       const data: any = {};
+      // conversa criada por mensagem (grupo em que o número entrou, contato novo) nasce sem nome;
+      // o gateway já sabe o nome → preenche (grupo e contato), nunca sobrescreve um nome existente
+      const gwName = w.gw?.name && !isIdLikeName(w.gw.name) ? String(w.gw.name).slice(0, 255) : null;
+      if (!c.name && gwName) data.name = gwName;
       // não lidas: o gateway manda. Exceção: mensagem que acabou de chegar (< 15 s) e o
       // gateway ainda não contou → não zera por engano.
       const fresh = c.last_message_at && Date.now() - new Date(c.last_message_at).getTime() < 15_000;

@@ -180,6 +180,7 @@ const audienceRulesOf = (b) => {
   if ((t.groups || []).length && t.groups_mode === 'members') out.push('grupos: no privado dos membros');
   if ((t.groups || []).length && t.groups_mode === 'both') out.push('grupos: no grupo e no privado dos membros');
   if ((t.groups || []).length && t.groups_mode !== 'group' && t.skip_admins) out.push('sem os admins dos grupos');
+  if ((t.groups || []).length && t.groups_mode !== 'group' && t.reverse_members) out.push('membros na ordem contrária');
   return out;
 };
 
@@ -368,7 +369,11 @@ const GroupTag = ({ sx }) => (
   </Box>
 );
 function MultiSelect({ label, options, value, onChange, placeholder, limitTags = 3 }) {
-  const selected = options.filter((o) => (value || []).includes(o.value));
+  // `value` memoizado + texto da busca controlado: o MUI zera a busca ("reset") sempre que o `value`
+  // muda de referência — qualquer re-render do formulário (estimativa chegando, sessões atualizando)
+  // apagava o que a pessoa estava digitando. Aqui só o blur/seleção mexem no texto.
+  const selected = useMemo(() => options.filter((o) => (value || []).includes(o.value)), [options, value]);
+  const [input, setInput] = useState('');
   const rich = options.some((o) => o && o.name !== undefined);
   return (
     <Autocomplete
@@ -376,6 +381,14 @@ function MultiSelect({ label, options, value, onChange, placeholder, limitTags =
       limitTags={limitTags}
       options={options}
       value={selected}
+      // chave do React por id: o MUI usa o rótulo como chave e dois grupos com o mesmo nome (comunidade +
+      // grupo de avisos) colidiam → a lista filtrada mostrava opções "fantasmas" que não casavam com a busca
+      getOptionKey={(o) => o.value}
+      inputValue={input}
+      onInputChange={(_, v, reason) => {
+        if (reason === 'reset') return;
+        setInput(v);
+      }}
       onChange={(_, vs) => onChange(vs.map((v) => v.value))}
       getOptionLabel={(o) => o?.label ?? ''}
       isOptionEqualToValue={(o, v) => o.value === v.value}
@@ -933,6 +946,7 @@ const EMPTY = {
     exclude_tags: [],
     groups: [],
     groups_mode: 'group',
+    reverse_members: false,
     skip_admins: false,
     save_contacts: true,
     source: 'all',
@@ -1752,24 +1766,51 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
       }),
     [contacts]
   );
-  const groupOptions = useMemo(
-    () =>
-      groups.map((g) => {
-        const s = (g.session_id && byId.get(g.session_id)) || g.session || null;
-        const count = g.participants_count || g.group_meta?.participants_count || 0;
-        const name = g.name || g.jid || g.chat_id;
-        const parts = [count ? plural(count, 'membro', 'membros') : null, many && s ? `via ${sessionLabel(s)}` : null].filter(Boolean);
-        return {
-          value: g.chat_id,
-          label: `${name}${count ? ` (${count})` : ''}${many && s ? ` · ${sessionLabel(s)}` : ''}`,
-          name,
-          secondary: parts.join(' · '),
-          photoPath: `/whatsapp/chats/${g.chat_id}/photo`,
-          kind: 'group'
-        };
-      }),
-    [groups, byId, many]
-  );
+  // O MESMO grupo existe como uma conversa por número que participa dele. Aqui vira UMA opção por grupo,
+  // saindo pelo número que ENVIA nesta campanha quando ele participa (senão pelo que participa); o nome
+  // vem de qualquer linha que o conheça (a conversa criada por mensagem pode nascer só com o id).
+  const sendingIds = form.session_ids || [];
+  const selectedGroups = form.targets.groups || [];
+  const groupOptions = useMemo(() => {
+    const byJid = new Map();
+    for (const g of groups) {
+      const k = g.jid || g.chat_id;
+      byJid.set(k, [...(byJid.get(k) || []), g]);
+    }
+    const chosen = new Set(selectedGroups);
+    const out = [];
+    for (const [jid, rows] of byJid) {
+      const pick = rows.find((r) => chosen.has(r.chat_id)) || rows.find((r) => sendingIds.includes(r.session_id)) || rows.find((r) => r.name && r.name !== jid) || rows[0];
+      const name = (rows.find((r) => r.name && r.name !== jid) || {}).name || pick.name || jid;
+      const count = rows.map((r) => r.participants_count || r.group_meta?.participants_count || 0).find((n) => n > 0) || 0;
+      const s = (pick.session_id && byId.get(pick.session_id)) || pick.session || null;
+      const sends = !sendingIds.length || sendingIds.includes(pick.session_id);
+      const via = many && s ? `via ${sessionLabel(s)}${sends ? '' : ' (esse número não envia nesta campanha)'}` : null;
+      out.push({
+        value: pick.chat_id,
+        label: `${name}${count ? ` (${count})` : ''}${many && s ? ` · ${sessionLabel(s)}` : ''}`,
+        name,
+        secondary: [count ? plural(count, 'membro', 'membros') : null, via].filter(Boolean).join(' · '),
+        photoPath: `/whatsapp/chats/${pick.chat_id}/photo`,
+        kind: 'group'
+      });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, byId, many, sendingIds.join(','), selectedGroups.join(',')]);
+  // trocou os números que enviam → o grupo escolhido passa a ser a conversa do número que envia (quando ele participa)
+  useEffect(() => {
+    if (!groups.length || !selectedGroups.length) return;
+    const jidOf = new Map(groups.map((g) => [g.chat_id, g.jid || g.chat_id]));
+    const next = selectedGroups.map((uuid) => {
+      const jid = jidOf.get(uuid);
+      if (!jid) return uuid;
+      const pref = groups.find((g) => (g.jid || g.chat_id) === jid && sendingIds.includes(g.session_id));
+      return pref ? pref.chat_id : uuid;
+    });
+    if (next.some((v, i) => v !== selectedGroups[i])) setT({ groups: [...new Set(next)] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, form.session_ids]);
   const groupsMode = form.targets.groups_mode || 'group';
   const hasGroups = (form.targets.groups || []).length > 0;
 
@@ -1965,7 +2006,8 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
           />
           {many ? (
             <Typography variant="caption" sx={{ color: 'text.disabled', display: 'block', mt: 0.5 }}>
-              Cada grupo sai pelo número que participa dele, mesmo que esse número não esteja marcado acima.
+              O post no grupo sai pelo número que envia nesta campanha quando ele participa do grupo; senão, pelo número que participa. O "via" de
+              cada grupo mostra qual é.
             </Typography>
           ) : null}
           {hasGroups ? (
@@ -2034,6 +2076,28 @@ function BroadcastModal({ initial, open, onClose, groups, contacts, tags, sessio
                       <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
                         Todos os membros recebem, menos quem é administrador de algum dos grupos escolhidos (vale mesmo que a pessoa seja
                         membro comum em outro grupo da lista). A estimativa mostra quantos ficaram de fora.
+                      </Typography>
+                    </Box>
+                  }
+                />
+              ) : null}
+              {groupsMode !== 'group' ? (
+                <FormControlLabel
+                  sx={{ m: 0, mt: 0.25, ml: 3.5, alignItems: 'flex-start' }}
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={Boolean(form.targets.reverse_members)}
+                      onChange={(e) => setT({ reverse_members: e.target.checked })}
+                      sx={{ mt: -0.5, color: '#7c3aed', '&.Mui-checked': { color: '#7c3aed' } }}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2">Enviar na ordem contrária</Typography>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block' }}>
+                        Começa pelos membros do fim da lista do grupo e vai até os do início (com vários grupos, o último grupo escolhido
+                        vem primeiro). Útil para não repetir sempre as mesmas pessoas quando o disparo para no limite do dia.
                       </Typography>
                     </Box>
                   }

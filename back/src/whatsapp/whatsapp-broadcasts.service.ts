@@ -194,6 +194,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       groups_mode: (['group', 'members', 'both'].includes(t.groups_mode) ? t.groups_mode : t.groups_dm === true ? 'members' : 'group') as GroupsMode,
       // "Enviar no privado": não manda para quem é admin de algum dos grupos escolhidos (desligado por padrão)
       skip_admins: t.skip_admins === true,
+      // "Enviar na ordem contrária": membros do fim da lista do grupo primeiro (desligado por padrão)
+      reverse_members: t.reverse_members === true,
       source,
       source_session_ids: source === 'custom' ? strList(t.source_session_ids, 50, 36) : [],
       // contatos que não são de número nenhum (importados/criados à mão): entram por padrão só em "todos os números"
@@ -431,7 +433,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
         const phoneOfContact = new Map(everyone.map((c: any) => [c.id, c.phone || phoneFromJid(c.wa_id) || ''] as [string, string]));
         const already = new Set<string>();
         for (const x of out) { const ph = (x.contact_id && phoneOfContact.get(x.contact_id)) || phoneFromJid(x.chat_id) || ''; if (ph) already.add(ph); }
-        const { targets: members, warnings: w2, cooled, admins } = await this.groupMemberTargets(orgId, groupRows, pool, chosen, mode, out, already, t.cooldown_hours, t.skip_admins);
+        const { targets: members, warnings: w2, cooled, admins } = await this.groupMemberTargets(orgId, groupRows, pool, chosen, mode, out, already, t.cooldown_hours, t.skip_admins, t.reverse_members);
         warnings.push(...w2);
         filtered.cooldown += cooled;
         filtered.admins += admins;
@@ -463,7 +465,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
    * ficam de fora; quem tem contato na org e pediu PARE / bloqueou / está bloqueado também.
    * Sem telefone resolvível (lid desconhecido) o membro é pulado e entra no aviso.
    */
-  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], pool: SessionRow[], chosen: SessionRow[], mode: BroadcastDistribution, current: Target[], already: Set<string>, cooldownHours: number | null = null, skipAdmins = false): Promise<{ targets: Target[]; warnings: string[]; cooled: number; admins: number }> {
+  private async groupMemberTargets(orgId: string, groups: { id: string; session_id: string; chat_id: string }[], pool: SessionRow[], chosen: SessionRow[], mode: BroadcastDistribution, current: Target[], already: Set<string>, cooldownHours: number | null = null, skipAdmins = false, reverseMembers = false): Promise<{ targets: Target[]; warnings: string[]; cooled: number; admins: number }> {
     const warnings: string[] = [];
     const targets: Target[] = [];
     let cooled = 0;
@@ -487,7 +489,7 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
           const info = await this.openwa.groupInfo(row.openwa_session_id!, g.chat_id);
           participants = (info?.participants || []).map((p: any) => ({ id: p.id, phone: p.number || phoneFromJid(p.id), name: p.name || null, is_admin: Boolean(p.isAdmin || p.isSuperAdmin) }));
           const me = row.phone ? `${row.phone}@c.us` : '';
-          await this.prisma.whatsapp_chats.update({ where: { id: g.id }, data: { group_meta: { ...meta, subject: info?.name || meta.subject, participants, participants_count: participants.length, is_admin: participants.some((p: any) => p.id === me && p.is_admin), fetched_at: new Date().toISOString() } } }).catch(() => undefined);
+          await this.prisma.whatsapp_chats.update({ where: { id: g.id }, data: { ...(info?.name && !chat?.name ? { name: String(info.name).slice(0, 255) } : {}), group_meta: { ...meta, subject: info?.name || meta.subject, participants, participants_count: participants.length, is_admin: participants.some((p: any) => p.id === me && p.is_admin), fetched_at: new Date().toISOString() } } }).catch(() => undefined);
         } catch (e: any) {
           this.logger.debug(`groupInfo ${g.chat_id}: ${e?.message || e}`);
         }
@@ -505,6 +507,8 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       }
       perGroup.push({ row, group: g, members });
     }
+    // ordem contrária: do último membro da lista do grupo para o primeiro (e o último grupo escolhido primeiro)
+    if (reverseMembers) { perGroup.reverse(); for (const x of perGroup) x.members.reverse(); }
     // contatos da org pelos telefones (uma consulta): contact_id + LGPD/bloqueio
     const phones = [...new Set(perGroup.flatMap((x) => x.members.map((m) => m.phone)))];
     const known = phones.length ? await this.prisma.whatsapp_contacts.findMany({ where: { organization_id: orgId, OR: [{ phone: { in: phones } }, { wa_id: { in: phones.map((ph) => `${ph}@c.us`) } }] }, select: { id: true, phone: true, wa_id: true, lid: true, is_blocked: true, opted_out_at: true, blocked_us_at: true } }) : [];
@@ -860,8 +864,11 @@ export class WhatsAppBroadcastsService implements OnModuleInit, OnModuleDestroy 
       if (e?.code === 'P2002') throw new BadRequestException('Já existe um disparo neste minuto.');
       throw e;
     }
+    // o worker envia na ordem de `created_at`; o id é uuid e um `createMany` grava o mesmo instante para
+    // todas as linhas → `created_at` recebe 1 ms por destino para a ordem da audiência (e a contrária) valer
+    const createdBase = Date.now();
     for (let i = 0; i < targets.length; i += 500) {
-      await this.prisma.whatsapp_broadcast_sends.createMany({ data: targets.slice(i, i + 500).map((a) => ({ organization_id: orgId, session_id: a.session_id, broadcast_id: id, run_id: run.id, target_kind: a.target_kind, chat_id: a.chat_id, contact_id: a.contact_id, status: 'PENDING', next_at: firstAt, copy_index: randomize ? Math.floor(Math.random() * copies.length) : null })) });
+      await this.prisma.whatsapp_broadcast_sends.createMany({ data: targets.slice(i, i + 500).map((a, k) => ({ organization_id: orgId, session_id: a.session_id, broadcast_id: id, run_id: run.id, target_kind: a.target_kind, chat_id: a.chat_id, contact_id: a.contact_id, status: 'PENDING', next_at: firstAt, created_at: new Date(createdBase + i + k), copy_index: randomize ? Math.floor(Math.random() * copies.length) : null })) });
     }
     await this.prisma.whatsapp_broadcasts.update({ where: { id }, data: { last_copy_index: (b.last_copy_index + 1) % Math.max(1, copies.length) } });
     if (b.delete_used && !randomize) await this.prisma.whatsapp_broadcast_copies.delete({ where: { id: copy.id } }).catch(() => undefined);

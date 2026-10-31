@@ -648,7 +648,21 @@ export class WhatsAppChatService {
     if (sess === null) return [];
     const rows = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, kind: 'group', ...sess }, orderBy: { name: 'asc' } });
     const smap = await this.presenter.sessionMap(orgId);
-    return rows.map((c) => ({ chat_id: c.id, jid: c.chat_id, session_id: c.session_id, session: smap.get(c.session_id) || null, name: c.name || (c.group_meta as any)?.subject || c.chat_id, participants_count: (c.group_meta as any)?.participants_count ?? null }));
+    // o MESMO grupo existe como uma linha por número que participa dele; a linha criada por mensagem
+    // pode estar sem nome/participantes → completa com o que outra linha do mesmo jid (da org) já sabe
+    const byJid = new Map<string, { name: string | null; count: number | null }>();
+    const all = await this.prisma.whatsapp_chats.findMany({ where: { organization_id: orgId, kind: 'group', chat_id: { in: [...new Set(rows.map((c) => c.chat_id))] } }, select: { chat_id: true, name: true, group_meta: true } });
+    for (const c of all) {
+      const cur = byJid.get(c.chat_id) || { name: null, count: null };
+      const nm = c.name || (c.group_meta as any)?.subject || null;
+      const pc = (c.group_meta as any)?.participants_count;
+      byJid.set(c.chat_id, { name: cur.name || nm, count: cur.count ?? (typeof pc === 'number' ? pc : null) });
+    }
+    return rows.map((c) => {
+      const k = byJid.get(c.chat_id);
+      const name = c.name || (c.group_meta as any)?.subject || k?.name || c.chat_id;
+      return { chat_id: c.id, jid: c.chat_id, session_id: c.session_id, session: smap.get(c.session_id) || null, name, named: name !== c.chat_id, participants_count: (c.group_meta as any)?.participants_count ?? k?.count ?? null };
+    });
   }
 
   // Sincroniza a lista de chats/grupos de UM número com o gateway (1× ao conectar e sob demanda).
